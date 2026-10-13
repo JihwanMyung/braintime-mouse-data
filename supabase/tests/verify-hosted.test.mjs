@@ -1,0 +1,15 @@
+import {PGlite} from '@electric-sql/pglite';
+import {readFile,writeFile} from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const db=new PGlite();
+await db.exec(`create role anon;create role authenticated;create role service_role;create schema auth;create table auth.users(id uuid primary key);create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;create schema storage;create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);create table storage.objects(id uuid primary key default gen_random_uuid(),bucket_id text,name text);alter table storage.objects enable row level security;`);
+for(const f of ['schema.sql','history-storage.sql','sheet-sync.sql'])await db.exec(await readFile(new URL('../'+f,import.meta.url),'utf8'));
+const results=await db.exec(await readFile(new URL('../verify-hosted-full.sql',import.meta.url),'utf8'));
+const checks=results.flatMap(r=>r.rows).filter(r=>'check_name' in r);
+assert.ok(checks.length>30);assert.deepEqual(checks.filter(r=>r.result!=='PASS'),[]);
+const compact=await db.exec(await readFile(new URL('../verify-hosted.sql',import.meta.url),'utf8'));
+const compactChecks=compact.flatMap(r=>r.rows).find(r=>r.verification)?.verification;
+assert.ok(compactChecks);assert.ok(Object.values(compactChecks).every(x=>x===true||x==='PASS'));
+assert.equal((await db.query('select count(*)::integer as n from public.entity_records')).rows[0].n,0);
+await writeFile(new URL('hosted-verification-local-results.json',import.meta.url),JSON.stringify({engine:'PGlite local dry-run of exact hosted verification SQL',passed:checks.length,checks,compactChecks},null,2));
+console.log(JSON.stringify({passed:checks.length,compactChecks}));await db.close();

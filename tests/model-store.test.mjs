@@ -1,0 +1,293 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {normalizeDataset,createSyntheticDataset,validateRecord,ID_FIELDS} from '../web/model.js';
+import {encodeArchive,decodeArchive,canonicalStringify,MAX_ARCHIVE_PAYLOAD_BYTES,MAX_RPC_BYTES,utf8Size,isArchiveChunk,partitionChanges} from '../web/archive-format.js';
+import * as store from '../web/data-store.js';
+
+class Storage { values=new Map();getItem(k){return this.values.get(k)??null;}setItem(k,v){this.values.set(k,String(v));}removeItem(k){this.values.delete(k);}clear(){this.values.clear();} }
+globalThis.localStorage=new Storage();globalThis.sessionStorage=new Storage();
+const idbData=new Map();
+const db={objectStoreNames:{contains:()=>true},transaction(){const tx={};tx.objectStore=()=>({get:k=>run(()=>idbData.get(k)),put:(v,k)=>run(()=>{idbData.set(k,structuredClone(v));return k;}),delete:k=>run(()=>idbData.delete(k))});function run(fn){const request={};queueMicrotask(()=>{request.result=structuredClone(fn());request.onsuccess?.();tx.oncomplete?.();});return request;}return tx;}};
+globalThis.indexedDB={open(){const request={};queueMicrotask(()=>{request.result=db;request.onsuccess?.();});return request;}};
+const cid='11111111-1111-4111-8111-111111111111',uid='22222222-2222-4222-8222-222222222222';
+const jwt=role=>`x.${btoa(JSON.stringify({role}))}.x`;
+let server;
+function response(body,status=200){return new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});}
+function configure(){store.configureCloud({url:'https://test.supabase.co',anonKey:jwt('anon'),colonyId:cid});}
+function callbackPage(hash=''){
+  globalThis.location=new URL(`https://colony.example.test/app/${hash}`);
+  globalThis.history={state:null,replaceState(_state,_title,url){globalThis.location=new URL(url,globalThis.location);}};
+}
+function callbackToken(overrides={}){return `x.${btoa(JSON.stringify({iss:'https://test.supabase.co/auth/v1',aud:'authenticated',role:'authenticated',sub:uid,exp:Math.floor(Date.now()/1000)+3600,...overrides}))}.x`;}
+function callbackHash(token=callbackToken(),type='magiclink'){return '#'+new URLSearchParams({access_token:token,refresh_token:'synthetic-refresh',token_type:'bearer',type}).toString();}
+function installServer(){
+  server={records:new Map(),objects:new Map(),role:'owner',calls:[],refreshes:0,deny:false,expires:3600,failBatch:null,batches:0};
+  globalThis.fetch=async(url,options={})=>{
+    server.calls.push({url,options});const u=new URL(url);const body=options.body?JSON.parse(options.body):null;
+    if(u.pathname.endsWith('/token')){
+      if(u.searchParams.get('grant_type')==='refresh_token')server.refreshes++;
+      return response({access_token:'access',refresh_token:'refresh',expires_in:server.expires,user:{id:uid,email:'demo@example.test'}});
+    }
+    if(u.pathname.endsWith('/otp'))return server.otpDenied?response({message:'Email request rate limit exceeded'},429):response({});
+    if(u.pathname.endsWith('/verify'))return body.token==='123456'?response({access_token:'access',refresh_token:'refresh',expires_in:3600,user:{id:uid,email:body.email}}):response({message:'Token has expired or is invalid'},403);
+    if(u.pathname.endsWith('/auth/v1/user'))return server.authRejected?response({message:'invalid token'},401):response({id:server.authUser??uid,email:'demo@example.test',is_anonymous:false});
+    if(u.pathname.endsWith('/logout'))return response({});
+    if(server.deny)return response({message:'denied',code:'42501'},403);
+    if(u.pathname.endsWith('/memberships'))return response([{role:server.role}]);
+    if(u.pathname.includes('/storage/v1/')){
+      const prefix='/storage/v1/object/';
+      if(u.pathname.includes('/object/list/'))return response([...server.objects.keys()].filter(p=>p.startsWith(`${body.prefix}/`)).reverse().slice(body.offset,body.offset+body.limit).map(p=>({name:p.split('/').at(-1)})));
+      const authenticated=u.pathname.includes('/object/authenticated/'),path=u.pathname.slice((authenticated?`${prefix}authenticated/colony-history/`:`${prefix}colony-history/`).length);
+      if(options.method==='POST'){
+        if(server.role==='viewer')return response({message:'forbidden'},403);
+        if(server.objects.has(path))return response({message:'The resource already exists'},409);
+        server.objects.set(path,options.body);return response({Key:path});
+      }
+      if(!server.objects.has(path))return response({message:'Not found'},404);
+      return new Response(server.objects.get(path),{headers:{'Content-Type':'application/json'}});
+    }
+    if(u.pathname.endsWith('/entity_records')){
+      const type=u.searchParams.get('entity_type');
+      const all=[...server.records.values()].filter(r=>type==='eq.archive'?r.entity_type==='archive':type==='neq.archive'?r.entity_type!=='archive':true).sort((a,b)=>`${a.entity_type}:${a.entity_id}`.localeCompare(`${b.entity_type}:${b.entity_id}`));
+      const offset=Number(u.searchParams.get('offset')??0);return response(all.slice(offset,offset+Number(u.searchParams.get('limit')??1000)));
+    }
+    if(u.pathname.endsWith('/rpc/save_records')){
+      server.batches++;if(server.failBatch===server.batches)throw new TypeError('Network unavailable');
+      if(server.role==='viewer')return response({message:'forbidden',code:'42501'},403);
+      const next=new Map(server.records),saved=[];
+      for(const change of body.p_changes){const k=`${change.entity_type}:${change.entity_id}`,old=next.get(k);if((old?.version??0)!==change.expected_version)return response({code:'40001',message:'stale'},409);const row={...change,colony_id:cid,version:(old?.version??0)+1};delete row.expected_version;next.set(k,row);saved.push(row);}
+      server.records=next;return response(saved);
+    }
+    if(u.pathname.endsWith('/audit_log'))return response([]);
+    throw new Error(`Unexpected mocked HTTP route: ${url}`);
+  };
+}
+async function fresh(){localStorage.clear();sessionStorage.clear();idbData.clear();installServer();await store.clearDataset();configure();}
+async function connected(data=createSyntheticDataset()){await fresh();await store.saveDataset(data,{localOnly:true});await store.signIn('demo@example.test','test-password');await store.pushToCloud(data);return store.loadDataset();}
+async function privateFixture(context,name){
+  try{return JSON.parse(await readFile(new URL(`../../outputs/reconstruction_2026-10-14/${name}`,import.meta.url),'utf8'));}
+  catch(error){if(error.code!=='ENOENT')throw error;context.skip('Private source fixture is not part of the public repository.');return null;}
+}
+
+test('identifiers preserve leading zeros; duplicates and provenance changes are rejected',()=>{
+  const d=createSyntheticDataset();const draft={...d.tables.mice[0],mouse_sid:'0007',source_record_id:'import:1'};
+  assert.deepEqual(validateRecord('mice',draft,d).errors,[]);
+  d.tables.mice.push(draft);
+  assert.match(validateRecord('mice',{...draft,comment:'note'},d).errors.join(' '),/already exists/);
+  assert.match(validateRecord('mice',{...draft,source_record_id:'changed'},d,'0007').errors.join(' '),/provenance/);
+  assert.equal(normalizeDataset(d).tables.mice.at(-1).mouse_sid,'0007');
+});
+test('existing imported anomalies remain reviewable, while new anomalies and sex side-effects fail',()=>{
+  const d=createSyntheticDataset();d.tables.mice[0].procedure_date='1969-12-31';
+  const retained=validateRecord('mice',{...d.tables.mice[0],comment:'reviewed'},d,'SYN-M001');
+  assert.equal(retained.errors.length,0);assert(retained.warnings.some(w=>w.includes('precedes birth')));
+  const invalid=validateRecord('mice',{...d.tables.mice[0],procedure_date:'2026-02-30'},d,'SYN-M001');assert(invalid.errors.some(x=>x.includes('valid')));
+  const sex=validateRecord('mice',{...d.tables.mice[0],sex:'Female'},d,'SYN-M001');assert(sex.errors.some(x=>x.includes('sire')));
+});
+test('possible ancestry cycles and unknown parents fail; multiple known dams remain ambiguous',()=>{
+  const d=createSyntheticDataset();const m=d.tables.mice[0];
+  assert(validateRecord('mice',{...m,sire_sids:['SYN-M003']},d,m.mouse_sid).errors.some(x=>x.includes('cycle')));
+  assert(validateRecord('mice',{...m,sire_sids:['missing']},d,m.mouse_sid).errors.some(x=>x.includes('does not exist')));
+  d.tables.mice.push({...d.tables.mice[1],mouse_sid:'SYN-M004'});
+  const child={...d.tables.mice[2],dam_sids:['SYN-M002','SYN-M004']};const result=validateRecord('mice',child,d,child.mouse_sid);
+  assert.equal(result.errors.length,0);assert(result.warnings.some(x=>x.includes('candidates')));
+});
+test('mating member normalization seeds missing arrays once and respects later edits',()=>{
+  const d=createSyntheticDataset();delete d.tables.matings[0].male_sids;d.tables.mating_members=[{mating_sid:'SYN-B1',mouse_sid:'SYN-M001',recorded_role:'male_member'}];
+  const n=normalizeDataset(d);assert.deepEqual(n.tables.matings[0].male_sids,['SYN-M001']);n.tables.matings[0].male_sids=[];assert.deepEqual(normalizeDataset(n).tables.matings[0].male_sids,[]);
+});
+test('public-key configuration rejects service and secret keys without storing them',async()=>{
+  await fresh();const before=localStorage.getItem('mouse-colony.cloud.v1');
+  for(const anonKey of [jwt('service_role'),'sb_secret_forbidden'])assert.throws(()=>store.configureCloud({url:'https://test.supabase.co',colonyId:cid,anonKey}),/public|service|Secret/);
+  assert.equal(localStorage.getItem('mouse-colony.cloud.v1'),before);
+});
+test('email-code sign-in requests existing users only, verifies membership and stores no code',async()=>{
+  await fresh();await store.requestEmailCode('demo@example.test');
+  assert.equal(JSON.parse(server.calls.find(c=>c.url.endsWith('/otp')).options.body).create_user,false);
+  assert.equal(store.getCloudStatus().signedIn,false);assert.equal(store.getCloudStatus().pendingEmail,'demo@example.test');
+  await assert.rejects(store.verifyEmailCode('demo@example.test','654321'),/permission|expired|invalid/);
+  await store.verifyEmailCode('demo@example.test','123456');assert.equal(store.getCloudStatus().role,'owner');assert.equal(store.getCloudStatus().pendingEmail,null);
+  assert(!JSON.stringify([...sessionStorage.values]).includes('123456'));assert.equal(localStorage.getItem('mouse-colony.session.v1'),null);
+  await store.signOut();server.deny=true;await assert.rejects(store.verifyEmailCode('demo@example.test','123456'),/permission/);assert.equal(store.getCloudStatus().signedIn,false);
+  server.deny=false;server.otpDenied=true;await assert.rejects(store.requestEmailCode('demo@example.test'),/rate limit/);
+});
+test('email-link requests existing users with an exact same-origin redirect',async()=>{
+  await fresh();callbackPage();
+  await store.requestEmailLink('demo@example.test','https://colony.example.test/app/');
+  const call=server.calls.find(c=>new URL(c.url).pathname.endsWith('/otp'));
+  assert.equal(new URL(call.url).searchParams.get('redirect_to'),'https://colony.example.test/app/');
+  assert.equal(JSON.parse(call.options.body).create_user,false);assert.equal(store.getCloudStatus().signedIn,false);
+  const count=server.calls.length;
+  for(const url of ['https://other.example.test/','https://colony.example.test/app/#token','https://colony.example.test/app/?token=secret'])await assert.rejects(store.requestEmailLink('demo@example.test',url),/return to this app/);
+  assert.equal(server.calls.length,count);
+});
+test('magic-link and invitation callbacks clear the fragment before verification and persist only authorized membership',async()=>{
+  for(const type of ['magiclink','invite']){
+    await fresh();callbackPage(callbackHash(callbackToken(),type));
+    const originalFetch=fetch;globalThis.fetch=async(...args)=>{assert.equal(location.hash,'');assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),null);return originalFetch(...args);};
+    const status=await store.consumeAuthCallback();assert.equal(status.signedIn,true);assert.equal(status.role,'owner');
+    assert.equal(JSON.parse(sessionStorage.getItem('mouse-colony.session.v1')).user.id,uid);assert.equal(localStorage.getItem('mouse-colony.session.v1'),null);
+    assert(server.calls.some(c=>c.url.endsWith('/auth/v1/user')));assert(server.calls.some(c=>c.url.includes('/memberships?')));
+    assert.equal(await store.consumeAuthCallback(),null);
+  }
+});
+test('callback rejects foreign projects, expired tokens, invalid users and forbidden memberships without retaining credentials',async()=>{
+  const cases=[{claims:{iss:'https://foreign.supabase.co/auth/v1'},pattern:/different cloud/},{claims:{exp:1},pattern:/expired/},{authRejected:true,pattern:/rejected/},{authUser:cid,pattern:/verify this account/},{deny:true,pattern:/membership/},{role:'none',pattern:/not a member/}];
+  for(const scenario of cases){
+    await fresh();Object.assign(server,scenario);callbackPage(callbackHash(callbackToken(scenario.claims)));
+    await assert.rejects(store.consumeAuthCallback(),scenario.pattern);assert.equal(location.hash,'');assert.equal(store.getCloudStatus().signedIn,false);assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),null);
+    if(scenario.claims)assert.equal(server.calls.length,0);
+  }
+  await fresh();callbackPage('#error=access_denied&error_description=DO_NOT_ECHO_THIS_TOKEN');
+  await assert.rejects(store.consumeAuthCallback(),error=>/invalid or has expired/.test(error.message)&&!error.message.includes('DO_NOT_ECHO'));assert.equal(location.hash,'');assert.equal(server.calls.length,0);
+  callbackPage('#record=00001');assert.equal(await store.consumeAuthCallback(),null);assert.equal(location.hash,'#record=00001');
+});
+test('initial cloud upload is idempotent and preserves complete non-managed archive data',async()=>{
+  const d=createSyntheticDataset();d.extra_metadata={keep:'all'};d.tables.custom_scientific_notes=[{text:'unknown schema preserved'}];
+  const loaded=await connected(d);assert.deepEqual(loaded.extra_metadata,d.extra_metadata);assert.deepEqual(loaded.tables.custom_scientific_notes,d.tables.custom_scientific_notes);
+  const before=server.batches;await store.pushToCloud(d);assert.equal(server.batches,before);assert.equal(store.getCloudStatus().mode,'cloud');
+  assert.equal(localStorage.getItem('mouse-colony.session.v1'),null);assert(sessionStorage.getItem('mouse-colony.session.v1'));
+});
+test('atomic multi-record conflict leaves local and all other cloud records unchanged',async()=>{
+  const before=await connected();const changed=structuredClone(before);changed.tables.mice[0].comment='new first';changed.tables.mice[1].comment='new second';
+  const stale=server.records.get('mice:SYN-M002');stale.version++;stale.payload.comment='external edit';
+  await assert.rejects(store.saveDataset(changed),/changed in another session/);
+  assert.equal(server.records.get('mice:SYN-M001').payload.comment,undefined);assert.deepEqual(await store.loadDataset(),before);
+  await assert.rejects(store.saveDataset(changed),/Pull the latest/);
+});
+test('viewer and network failures never save cloud edits locally; import resets local mode',async()=>{
+  const before=await connected(),changed=structuredClone(before);changed.tables.mice[0].comment='not saved';server.role='viewer';
+  await assert.rejects(store.saveDataset(changed),/viewer/);assert.deepEqual(await store.loadDataset(),before);
+  server.role='owner';server.deny=true;await assert.rejects(store.saveDataset(changed),/permission/);assert.deepEqual(await store.loadDataset(),before);
+  server.deny=false;server.failBatch=server.batches+1;await assert.rejects(store.saveDataset(changed),/not confirmed/);assert.deepEqual(await store.loadDataset(),before);
+  await store.saveDataset(changed,{localOnly:true});assert.equal(store.getCloudStatus().mode,'local');assert.equal((await store.loadDataset()).tables.mice[0].comment,'not saved');
+});
+test('archive transitions use version checks and payload flags; hard deletion is rejected',async()=>{
+  const d=await connected();d.tables.mice[0].app_archived_at='2026-10-14T00:00:00Z';await store.saveDataset(d);
+  assert.equal(server.records.get('mice:SYN-M001').archived,true);assert.equal(server.records.get('mice:SYN-M001').version,2);
+  delete d.tables.mice[0].app_archived_at;await store.saveDataset(d);assert.equal(server.records.get('mice:SYN-M001').archived,false);
+  d.tables.mice.shift();await assert.rejects(store.saveDataset(d),/Archive records instead/);
+});
+test('paginated pull includes more than 1000 mice, batch upload caps at 200, refresh occurs',async()=>{
+  await fresh();server.expires=-1;await store.signIn('demo@example.test','test-password');server.expires=3600;
+  const d=createSyntheticDataset();d.tables.mice=Array.from({length:2101},(_,i)=>({mouse_sid:`SYN-${String(i).padStart(5,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
+  await store.pushToCloud(d);assert.equal((await store.loadDataset()).tables.mice.length,2101);assert(server.refreshes>=1);
+  const batches=server.calls.filter(c=>c.url.endsWith('/rpc/save_records')).map(c=>JSON.parse(c.options.body).p_changes.length);assert(batches.every(n=>n<=200));
+  assert(server.calls.some(c=>c.url.includes('offset=2000')));
+});
+test('different existing cloud payload blocks initial upload before any overwrite',async()=>{
+  const d=await connected(),count=server.batches;d.tables.mice[0].comment='different import';
+  await assert.rejects(store.pushToCloud(d),/already contains different data/);assert.equal(server.batches,count);
+});
+test('location hierarchy and light schedules validate without invented defaults',()=>{
+  const d=createSyntheticDataset();d.tables.rooms=[{room_id:'R001'}];d.tables.racks=[{rack_id:'K001',room_id:'R001'}];d.tables.locations=[{location_id:'L001',room_id:'R001',rack_id:'K001'}];
+  const light={event_id:'E001',location_id:'L001',start_date:'2026-10-14',cycle_hours:24,light_hours:12,lights_on:'07:00',lights_off:'19:00'};
+  assert.deepEqual(validateRecord('light_events',light,d).errors,[]);
+  assert(validateRecord('light_events',{...light,cycle_hours:0,light_hours:25,lights_on:'25:00'},d).errors.length>=3);
+  assert(validateRecord('light_events',{...light,location_id:'missing'},d).errors.some(x=>x.includes('does not exist')));
+  const unknown={event_id:'E002',location_id:'L001',protocol:'Reported schedule, timings unknown'};
+  assert.equal(validateRecord('light_events',unknown,d).errors.length,0);assert.equal(normalizeDataset({...d,tables:{...d.tables,light_events:[unknown]}}).tables.light_events[0].cycle_hours,undefined);
+  assert(validateRecord('husbandry_events',{event_id:'H001',event_date:'2026-02-30',mouse_sid:'missing'},d).errors.length>=2);
+});
+test('new managed room and husbandry entities round-trip separately from archive',async()=>{
+  const d=createSyntheticDataset();d.tables.rooms=[{room_id:'0001',label:'Synthetic room'}];d.tables.husbandry_events=[{event_id:'H001',mouse_sid:'SYN-M001',event_date:'2026-10-14',event_type:'Observation'}];
+  await connected(d);assert(server.records.has('rooms:0001'));assert(server.records.has('husbandry_events:H001'));
+  assert.equal(server.records.get('archive:reconstruction').payload.tables.rooms,undefined);assert.equal((await store.loadDataset()).tables.rooms[0].room_id,'0001');
+});
+test('interrupted initial upload keeps the local import and retries identical batches idempotently',async()=>{
+  await fresh();const d=createSyntheticDataset();d.tables.mice=Array.from({length:405},(_,i)=>({mouse_sid:`PART-${i}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
+  await store.saveDataset(d,{localOnly:true});const original=await store.loadDataset();await store.signIn('demo@example.test','test-password');server.failBatch=2;
+  await assert.rejects(store.pushToCloud(d),/confirmed 200 records/);assert.equal(server.records.size,200);assert.deepEqual(await store.loadDataset(),original);
+  await assert.rejects(store.pullFromCloud(),/manifest is missing/);assert.deepEqual(await store.loadDataset(),original);
+  server.failBatch=null;await store.pushToCloud(d);assert.equal((await store.loadDataset()).tables.mice.length,405);assert([...server.records.values()].every(r=>r.version===1));
+});
+test('private history upload is immutable, verified, idempotent and discoverable without local locator',async()=>{
+  await fresh();await store.signIn('demo@example.test','test-password');
+  const index={sources:[{id:'synthetic'}],sheets:[],cells:[['0001','A1','literal']]};
+  const metadata=await store.uploadHistoryIndex(index);assert.match(metadata.path,new RegExp(`^${cid}/history/[a-f0-9]{64}\\.json$`));
+  assert.equal(server.objects.size,1);await store.uploadHistoryIndex(index);assert.equal(server.objects.size,1);
+  const config=JSON.parse(localStorage.getItem('mouse-colony.cloud.v1'));delete config.historyPath;localStorage.setItem('mouse-colony.cloud.v1',JSON.stringify(config));
+  assert.deepEqual(await store.downloadHistoryIndex(),index);assert.equal(store.getCloudStatus().historyPath,metadata.path);
+  for(const c of server.calls.filter(c=>c.url.includes('/storage/v1/'))){assert.equal(c.options.cache,'no-store');assert.equal(c.options.headers.Authorization,'Bearer access');assert.equal(c.options.headers['x-upsert'],undefined);assert(!c.url.includes('/public/'));}
+});
+test('private history rejects unsigned access, cross-colony paths, tampered bytes and viewer uploads',async()=>{
+  await fresh();const path=`${cid}/history/${'a'.repeat(64)}.json`;
+  await assert.rejects(store.fetchHistoryArchive(path),/signed-in|Sign in/);
+  await store.signIn('demo@example.test','test-password');
+  await assert.rejects(store.fetchHistoryArchive(path.replace(cid,uid)),/configured colony/);
+  server.objects.set(path,JSON.stringify({sources:[],sheets:[],cells:[]}));
+  await assert.rejects(store.fetchHistoryArchive(path),/checksum/);
+  server.role='viewer';const before=server.objects.size;await assert.rejects(store.uploadHistoryIndex({sources:[],sheets:[],cells:[]}),/viewer/);assert.equal(server.objects.size,before);
+  server.deny=true;await assert.rejects(store.downloadHistoryIndex(),/permission/);
+});
+test('synthetic scale dataset preserves archive history through bounded uploads and paginated pulls',async()=>{
+  const d=createSyntheticDataset();
+  d.tables.mice.push(...Array.from({length:6101},(_,i)=>({mouse_sid:`SYN-SCALE-${String(i).padStart(6,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[],genotype:null})));
+  d.tables.historical_observations=Array.from({length:1200},(_,i)=>({observation_id:`SYN-OBS-${i}`,source_cell:`A${i+1}`,raw_text:'Synthetic light schedule α; '.repeat(40),unknown:null,measured:i%2?0:false}));
+  const expected=normalizeDataset(d),loaded=await connected(d);
+  for(const [type,id] of Object.entries(ID_FIELDS)){const sort=(a,b)=>a[id].localeCompare(b[id]);expected.tables[type].sort(sort);loaded.tables[type].sort(sort);}
+  assert.deepEqual(loaded,expected);
+  const archives=[...server.records.values()].filter(r=>r.entity_type==='archive');
+  assert(archives.length>3);assert(archives.every(r=>utf8Size(r.payload)<=MAX_ARCHIVE_PAYLOAD_BYTES));
+  const writes=server.calls.filter(c=>c.url.endsWith('/rpc/save_records'));assert(writes.every(c=>Buffer.byteLength(c.options.body)<=MAX_RPC_BYTES));
+  assert(server.calls.some(c=>c.url.includes('offset=6000')));
+  assert(server.calls.some(c=>c.url.includes('entity_type=eq.archive')&&c.url.includes('offset=3')));
+});
+test('complete reconstructed dataset plus augmented history round-trips all records through paginated cloud storage',async context=>{
+  const d=await privateFixture(context,'dataset.json');if(!d)return;
+  d.tables.historical_observations=Array.from({length:1007},(_,i)=>({source_cell:`A${i+1}`,value:i%2?null:'=literal'}));
+  d.historical_import={sources:[{source_id:'synthetic-archive',sha256:'a'.repeat(64)}],unresolved:['00001']};
+  const expected=normalizeDataset(d),loaded=await connected(d);
+  for(const [type,id] of Object.entries(ID_FIELDS)){
+    const order=(a,b)=>a[id].localeCompare(b[id]);
+    expected.tables[type].sort(order);loaded.tables[type].sort(order);
+  }
+  assert.deepEqual(loaded,expected);
+  const archive=await decodeArchive([...server.records.values()]);assert.deepEqual(archive.tables.historical_observations,d.tables.historical_observations);
+  assert.deepEqual(archive.historical_import,d.historical_import);assert.deepEqual(archive.tables.parent_observations,d.tables.parent_observations);
+  assert(server.calls.some(c=>c.url.includes('offset=6000')));
+  const index={sources:d.historical_import.sources,sheets:[{name:'synthetic'}],cells:Array.from({length:1007},(_,i)=>[0,0,`A${i+1}`,String(i).padStart(5,'0')])};
+  await store.uploadHistoryIndex(index);assert.deepEqual(await store.downloadHistoryIndex(),index);
+});
+test('archive chunks are byte bounded, stable under key reordering, and reject missing or corrupted chunks',async()=>{
+  const d=createSyntheticDataset();d.tables.history=Array.from({length:301},(_,i)=>({id:`000${i}`,note:'生物'.repeat(300)}));
+  const encoded=await encodeArchive(d),chunks=encoded.filter(isArchiveChunk);
+  assert(chunks.length>1);assert(encoded.every(r=>utf8Size(r.payload)<=MAX_ARCHIVE_PAYLOAD_BYTES));
+  assert.deepEqual((await decodeArchive(encoded)).tables.history,d.tables.history);
+  const reordered=structuredClone(d);reordered.tables.history=reordered.tables.history.map(r=>({note:r.note,id:r.id}));
+  assert.deepEqual((await encodeArchive(reordered)).map(r=>r.entity_id),encoded.map(r=>r.entity_id));
+  await assert.rejects(decodeArchive(encoded.filter(r=>r!==chunks[0])),/Missing/);
+  const corrupt=structuredClone(encoded);corrupt.find(isArchiveChunk).payload.rows[0].note='tampered';await assert.rejects(decodeArchive(corrupt),/checksum/);
+  const batches=partitionChanges(encoded.map(r=>({...r,expected_version:0})));
+  assert(batches.every(p_changes=>utf8Size({p_colony_id:cid,p_changes})<=MAX_RPC_BYTES));
+});
+test('legacy archive is readable and migrates safely on the first ordinary edit',async()=>{
+  const d=await connected();const manifest=server.records.get('archive:reconstruction');
+  manifest.payload=await decodeArchive([...server.records.values()]);
+  for(const [k,r] of server.records)if(isArchiveChunk(r))server.records.delete(k);
+  const before=await store.pullFromCloud();before.tables.mice[0].comment='legacy edit';await store.saveDataset(before);
+  assert.equal(server.records.get('archive:reconstruction').payload.archive_format,'colony-archive-manifest-v1');
+  assert.equal((await store.pullFromCloud()).tables.mice[0].comment,'legacy edit');
+});
+test('failed manifest commit keeps previous history authoritative and ordinary edits skip unchanged chunks',async()=>{
+  const d=createSyntheticDataset();d.tables.history=[{text:'original'}];const before=await connected(d);
+  const edit=structuredClone(before);edit.tables.mice[0].comment='ordinary edit';const start=server.calls.length;await store.saveDataset(edit);
+  const ordinary=server.calls.slice(start).filter(c=>c.url.endsWith('/rpc/save_records')).flatMap(c=>JSON.parse(c.options.body).p_changes);assert(!ordinary.some(isArchiveChunk));
+  const changed=structuredClone(edit);changed.tables.history=[{text:'new staged content'}];server.failBatch=server.batches+2;
+  await assert.rejects(store.saveDataset(changed),/not confirmed/);assert.deepEqual((await store.loadDataset()).tables.history,d.tables.history);
+  assert.deepEqual((await decodeArchive([...server.records.values()])).tables.history,d.tables.history);
+  assert.equal(store.getCloudStatus().readyForEdits,false);
+});
+test('real augmented dataset round-trips with bounded archive payloads, RPCs and archive pages',async context=>{
+  const d=await privateFixture(context,'dataset_augmented.json');if(!d)return;
+  const expected=normalizeDataset(d),loaded=await connected(d);
+  for(const [type,id] of Object.entries(ID_FIELDS)){const sort=(a,b)=>a[id].localeCompare(b[id]);expected.tables[type].sort(sort);loaded.tables[type].sort(sort);}
+  const hash=value=>createHash('sha256').update(canonicalStringify(value)).digest('hex');
+  assert.equal(hash(loaded),hash(expected));
+  const archives=[...server.records.values()].filter(r=>r.entity_type==='archive');assert(archives.length>1);assert(archives.every(r=>utf8Size(r.payload)<=MAX_ARCHIVE_PAYLOAD_BYTES));
+  const writes=server.calls.filter(c=>c.url.endsWith('/rpc/save_records'));assert(writes.every(c=>Buffer.byteLength(c.options.body)<=MAX_RPC_BYTES));
+  assert(server.calls.filter(c=>c.url.includes('entity_type=eq.archive')).every(c=>new URL(c.url).searchParams.get('limit')==='3'));
+  assert.equal(loaded.tables.historical_observations.length,d.tables.historical_observations.length);
+});

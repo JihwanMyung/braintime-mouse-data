@@ -1,0 +1,2 @@
+[functions.sync-animal-sheet]
+verify_jwt = false
