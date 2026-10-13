@@ -1,0 +1,345 @@
+import { normalizeDataset, ID_FIELDS } from './model.js';
+import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
+
+const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1';
+const MANAGED=Object.keys(ID_FIELDS);
+const clone=value=>structuredClone(value);
+let versions=new Map(),baseline=null,synced=false,refreshPromise=null,statusMessage='',pendingEmail=null;
+const memory=new Map();
+function getStorage(kind,key){try{return globalThis[kind]?.getItem(key)??null;}catch{return memory.get(`${kind}:${key}`)??null;}}
+function setStorage(kind,key,value){try{if(!globalThis[kind])throw Error();value===null?globalThis[kind].removeItem(key):globalThis[kind].setItem(key,value);}catch{value===null?memory.delete(`${kind}:${key}`):memory.set(`${kind}:${key}`,value);}}
+function readJSON(kind,key){try{return JSON.parse(getStorage(kind,key)||'null');}catch{return null;}}
+const configuration=()=>readJSON('localStorage',CONFIG_KEY);
+const session=()=>readJSON('sessionStorage',SESSION_KEY);
+const mode=()=>getStorage('localStorage',MODE_KEY)==='cloud'?'cloud':'local';
+function setMode(value){setStorage('localStorage',MODE_KEY,value);}
+function invalidate(){synced=false;baseline=null;versions=new Map();}
+function saveSession(s){setStorage('sessionStorage',SESSION_KEY,s?JSON.stringify(s):null);}
+function stable(value){if(Array.isArray(value))return `[${value.map(stable).join(',')}]`;if(value&&typeof value==='object')return `{${Object.keys(value).sort().filter(k=>value[k]!==undefined).map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')}}`;return JSON.stringify(value);}
+
+let dbPromise;
+function database(){
+  if(!globalThis.indexedDB)return Promise.reject(new Error('Local database storage is unavailable in this browser.'));
+  if(!dbPromise)dbPromise=new Promise((resolve,reject)=>{
+    const request=indexedDB.open('mouse-colony',1);
+    request.onupgradeneeded=()=>{if(!request.result.objectStoreNames.contains('datasets'))request.result.createObjectStore('datasets');};
+    request.onerror=()=>reject(new Error('Unable to open the local colony database.'));
+    request.onsuccess=()=>resolve(request.result);
+    request.onblocked=()=>reject(new Error('Close older colony tabs before updating local storage.'));
+  }).catch(e=>{dbPromise=null;throw e;});
+  return dbPromise;
+}
+async function local(action,value){
+  const db=await database();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction('datasets',action==='get'?'readonly':'readwrite'),store=tx.objectStore('datasets');
+    const request=action==='get'?store.get('current'):action==='delete'?store.delete('current'):store.put(clone(value),'current');
+    let result;
+    request.onsuccess=()=>{result=request.result;};
+    tx.oncomplete=()=>resolve(result??null);
+    tx.onerror=()=>reject(new Error('Local database write failed. No save was confirmed.'));
+    tx.onabort=()=>reject(new Error('Local database transaction was cancelled.'));
+  });
+}
+export async function loadDataset(){const d=await local('get');return d?normalizeDataset(d):null;}
+export async function clearDataset(){await local('delete');setMode('local');invalidate();statusMessage='Local dataset cleared.';}
+
+function publicKey(key){
+  if(typeof key!=='string'||!key.trim())throw new Error('A Supabase publishable or anon key is required.');
+  if(key.startsWith('sb_secret_'))throw new Error('Secret and service-role keys must never be entered in the app.');
+  if(key.startsWith('sb_publishable_'))return key;
+  try{
+    const part=key.split('.')[1];
+    const claims=JSON.parse(atob(part.replace(/-/g,'+').replace(/_/g,'/')));
+    if(claims.role!=='anon')throw new Error();
+  }catch{throw new Error('Use only the public anon or publishable key, never a service-role key.');}
+  return key;
+}
+export function configureCloud({url,anonKey,colonyId}){
+  const u=new URL(url);
+  if(u.protocol!=='https:'&&!(u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname)))throw new Error('Supabase URL must use HTTPS.');
+  if(u.username||u.password||u.search||u.hash||u.pathname!=='/')throw new Error('Enter the Supabase project URL without credentials or a path.');
+  if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(colonyId??''))throw new Error('A valid colony UUID is required.');
+  const config={url:u.origin,anonKey:publicKey(anonKey.trim()),colonyId};
+  setStorage('localStorage',CONFIG_KEY,JSON.stringify(config));saveSession(null);pendingEmail=null;setMode('local');invalidate();statusMessage='Cloud configured. Sign in to connect.';
+}
+export function getCloudStatus(){
+  const c=configuration(),s=session();
+  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),email:s?.user?.email??null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:mode()==='local'||synced,colonyId:c?.colonyId??null,role:s?.role??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
+}
+async function responseJSON(response){const text=await response.text();if(!text)return null;try{return JSON.parse(text);}catch{throw new Error('The cloud server returned an unreadable response.');}}
+function apiError(response,body){
+  const message=body?.message||body?.error_description||body?.msg||body?.error||`Cloud request failed (${response.status}).`;
+  if(response.status===409||body?.code==='40001')return new Error('This record changed in another session. Pull the latest cloud data and review your edit before trying again.');
+  if(response.status===401)return new Error('The cloud session expired or sign-in was rejected. Sign in again.');
+  if(response.status===403||body?.code==='42501')return new Error('Your account does not have permission for this cloud operation.');
+  return new Error(String(message));
+}
+async function authRequest(route,body,token){
+  const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
+  const response=await fetch(`${c.url}/auth/v1/${route}`,{method:'POST',headers:{apikey:c.anonKey,'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body?JSON.stringify(body):undefined});
+  const result=await responseJSON(response);
+  if(!response.ok){
+    const message=result?.message||result?.error_description||result?.msg;
+    if(route==='verify'&&message)throw new Error(String(message));
+    throw apiError(response,result);
+  }
+  return result;
+}
+function normalizeSession(s){if(!s?.access_token||!s?.refresh_token)throw new Error('The server did not return a complete session.');return {...s,expires_at:s.expires_at??Math.floor(Date.now()/1000)+(s.expires_in??3600)};}
+async function accessToken(){
+  let s=session();if(!s?.access_token)throw new Error('Sign in before using cloud data.');
+  if(s.expires_at<=Date.now()/1000+60){
+    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{const next={...normalizeSession(result),role:s.role};saveSession(next);return next;}).catch(e=>{saveSession(null);invalidate();throw e;}).finally(()=>{refreshPromise=null;});
+    s=await refreshPromise;
+  }
+  return s.access_token;
+}
+async function request(route,{method='GET',body}={}){
+  const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
+  const token=await accessToken();
+  const response=await fetch(`${c.url}/rest/v1/${route}`,{method,headers:{apikey:c.anonKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json',...(method==='POST'?{Prefer:'return=representation'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
+  const result=await responseJSON(response);if(!response.ok)throw apiError(response,result);return result;
+}
+async function membership(){
+  const c=configuration(),s=session();
+  if(!s?.user?.id)throw new Error('The signed-in user is unavailable. Sign in again.');
+  const rows=await request(`memberships?select=role&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
+  if(!Array.isArray(rows)||rows.length!==1||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not a member of the configured colony.');
+  saveSession({...session(),role:rows[0].role});return rows[0].role;
+}
+export async function signIn(email,password){
+  if(typeof email!=='string'||typeof password!=='string'||!email.trim()||!password)throw new Error('Enter your email and password.');
+  const s=normalizeSession(await authRequest('token?grant_type=password',{email:email.trim(),password}));
+  saveSession(s);invalidate();
+  try{await membership();statusMessage='Signed in. Pull existing cloud data or upload the local dataset.';}catch(e){statusMessage=e.message;throw e;}
+  return getCloudStatus();
+}
+function emailAddress(email){
+  if(typeof email!=='string'||!/^\S+@\S+\.\S+$/.test(email.trim()))throw new Error('Enter a valid email address.');
+  return email.trim();
+}
+export async function requestEmailCode(email){
+  const address=emailAddress(email);
+  // Supabase's email template must include {{ .Token }} for the code entry flow.
+  await authRequest('otp',{email:address,create_user:false});
+  pendingEmail=address;statusMessage='Email code requested. Check your inbox and enter the code.';
+  return {email:address,message:statusMessage};
+}
+export async function requestEmailLink(email,redirectTo){
+  const address=emailAddress(email),app=globalThis.location;
+  let redirect;try{redirect=new URL(redirectTo);}catch{throw new Error('A valid app return URL is required.');}
+  const local=['localhost','127.0.0.1','[::1]'].includes(redirect.hostname);
+  if(!app?.origin||redirect.origin!==app.origin||redirect.username||redirect.password||redirect.search||redirect.hash||(redirect.protocol!=='https:'&&!(local&&redirect.protocol==='http:')))throw new Error('The sign-in link must return to this app without query parameters or a fragment.');
+  await authRequest(`otp?redirect_to=${encodeURIComponent(redirect.href)}`,{email:address,create_user:false});
+  pendingEmail=address;statusMessage='Sign-in link requested. Open the link from your email on the device you want to use.';
+  return {email:address,message:statusMessage};
+}
+export async function consumeAuthCallback(){
+  const location=globalThis.location,fragment=new URLSearchParams((location?.hash??'').replace(/^#/,''));
+  if(!['access_token','refresh_token','error','error_description','error_code'].some(key=>fragment.has(key)))return null;
+  // Remove credentials from the address and history before doing any asynchronous
+  // work. Never place callback tokens in logs, DOM text, or persistent storage.
+  try{globalThis.history.replaceState(globalThis.history.state,'',`${location.pathname}${location.search}`);}
+  catch{saveSession(null);invalidate();throw new Error('Unable to clear the sign-in callback from the address. Close this tab and request a new link.');}
+  saveSession(null);invalidate();
+  try{
+    if(fragment.has('error')||fragment.has('error_code'))throw new Error('This sign-in link is invalid or has expired. Request a new link.');
+    const c=configuration();if(!c)throw new Error('Configure this app’s cloud project, then request a new sign-in link.');
+    publicKey(c.anonKey);
+    const access=fragment.get('access_token'),refresh=fragment.get('refresh_token'),type=fragment.get('type');
+    if(!access||!refresh||(fragment.get('token_type')??'bearer').toLowerCase()!=='bearer'||(type&&!['magiclink','invite','signup','recovery','email'].includes(type)))throw new Error('The sign-in callback is incomplete or unsupported. Request a new link.');
+    let claims;
+    try{claims=JSON.parse(atob(access.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));}catch{throw new Error('The sign-in token is invalid. Request a new link.');}
+    if(claims.iss!==`${c.url}/auth/v1`||claims.role!=='authenticated'||!(Array.isArray(claims.aud)?claims.aud:[claims.aud]).includes('authenticated')||typeof claims.sub!=='string'||!Number.isFinite(claims.exp)||claims.exp<=Date.now()/1000)throw new Error('This sign-in link is expired or belongs to a different cloud project.');
+    const headers={apikey:c.anonKey,Authorization:`Bearer ${access}`};
+    const verified=await fetch(`${c.url}/auth/v1/user`,{headers,cache:'no-store'});
+    if(!verified.ok)throw new Error('The cloud project rejected this sign-in link. Request a new link.');
+    const user=await responseJSON(verified);
+    if(user?.id!==claims.sub||user.is_anonymous)throw new Error('The cloud project could not verify this account.');
+    const membershipResponse=await fetch(`${c.url}/rest/v1/memberships?select=role&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
+    if(!membershipResponse.ok)throw new Error('Unable to verify colony membership. Sign in again or contact the colony owner.');
+    const rows=await responseJSON(membershipResponse);
+    if(!Array.isArray(rows)||rows.length!==1||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not a member of the configured colony.');
+    // A local JWT decode only checks scope; the current project's Auth endpoint
+    // authenticates the token. Persist only after that and membership both pass.
+    saveSession({access_token:access,refresh_token:refresh,token_type:'bearer',expires_at:claims.exp,user,role:rows[0].role});
+    pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';
+    return getCloudStatus();
+  }catch(error){
+    saveSession(null);invalidate();
+    statusMessage=error instanceof TypeError?'The sign-in link could not be verified because the cloud is unreachable. Request a new link when connected.':error.message;
+    throw new Error(statusMessage);
+  }
+}
+export async function verifyEmailCode(email,token){
+  const address=emailAddress(email),code=typeof token==='string'?token.trim():'';
+  if(!/^\d{6,10}$/.test(code))throw new Error('Enter the numeric verification code from your email.');
+  const result=normalizeSession(await authRequest('verify',{email:address,token:code,type:'email'}));
+  saveSession(result);invalidate();
+  try{await membership();pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';}
+  catch(e){saveSession(null);invalidate();statusMessage=e.message;throw e;}
+  return getCloudStatus();
+}
+export async function signOut(){
+  const s=session();saveSession(null);pendingEmail=null;setMode('local');invalidate();statusMessage='Signed out. Local data is retained.';
+  if(s?.access_token)try{await authRequest('logout',null,s.access_token);}catch{/* Local credentials are already removed even if the server is unreachable. */}
+}
+async function allRecords(){
+  const c=configuration();const result=[];
+  // Archive chunks have much larger payloads than individual mice. Keep those
+  // responses bounded instead of putting hundreds of chunks on a 1,000-row page.
+  for(const [filter,limit] of [['neq.archive',1000],['eq.archive',3]]){
+    let offset=0;
+    while(true){
+      const page=await request(`entity_records?select=colony_id,entity_type,entity_id,payload,version,archived&colony_id=eq.${encodeURIComponent(c.colonyId)}&entity_type=${filter}&order=entity_type.asc,entity_id.asc&limit=${limit}&offset=${offset}`);
+      if(!Array.isArray(page))throw new Error('Cloud records were not returned as a list.');
+      result.push(...page);if(page.length<limit)break;offset+=page.length;
+    }
+  }
+  return result;
+}
+const recordKey=r=>`${r.entity_type}:${r.entity_id}`;
+async function entityRecords(dataset){
+  const data=normalizeDataset(dataset),records=[],seen=new Set();
+  for(const type of MANAGED)for(const value of data.tables[type]){
+    const id=value[ID_FIELDS[type]];
+    if(typeof id!=='string'||!id.trim())throw new Error(`Every ${type} record requires a text identifier.`);
+    const payload=clone(value);delete payload._version;
+    const r={entity_type:type,entity_id:id,payload,archived:Boolean(payload.app_archived_at)};
+    if(seen.has(recordKey(r)))throw new Error(`Duplicate cloud identifier: ${id}.`);seen.add(recordKey(r));records.push(r);
+  }
+  records.push(...await encodeArchive(data));
+  return records;
+}
+async function assemble(rows){
+  if(!rows.some(r=>r.entity_type==='archive'&&r.entity_id==='reconstruction'))throw new Error('Cloud import is incomplete: its reconstruction manifest is missing. Finish or retry the initial upload before pulling.');
+  const data=await decodeArchive(rows);
+  data.tables??={};for(const type of MANAGED)data.tables[type]=[];
+  const seen=new Set();
+  for(const r of rows){
+    if(!MANAGED.includes(r.entity_type))continue;
+    if(seen.has(recordKey(r)))throw new Error('Cloud response contains duplicate record IDs.');seen.add(recordKey(r));
+    if(r.payload?.[ID_FIELDS[r.entity_type]]!==r.entity_id)throw new Error(`Cloud payload identifier does not match record ${r.entity_id}.`);
+    if(Boolean(r.payload.app_archived_at)!==Boolean(r.archived))throw new Error(`Archive status differs from payload for ${r.entity_id}.`);
+    data.tables[r.entity_type].push(clone(r.payload));
+  }
+  return normalizeDataset(data);
+}
+function remember(rows){versions=new Map(rows.map(r=>[recordKey(r),r.version]));baseline=new Map(rows.map(r=>[recordKey(r),r]));synced=true;}
+export async function pullFromCloud(){
+  await membership();
+  const rows=await allRecords();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
+  const data=await assemble(rows);await local('put',data);remember(rows);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
+}
+async function writeAtomic(pending){
+  if(!pending.length)return [];
+  if(pending.length>500)throw new Error('A cloud edit may change at most 500 records. Split this edit into smaller operations.');
+  const c=configuration();
+  const body={p_colony_id:c.colonyId,p_changes:pending.map(([r,expected])=>({...r,expected_version:expected}))};
+  if(utf8Size(body)>MAX_RPC_BYTES)throw new Error('This atomic edit exceeds the 1MB cloud request limit. Split it into smaller operations.');
+  try{
+    const rows=await request('rpc/save_records',{method:'POST',body});
+    const expected=new Set(pending.map(([r])=>recordKey(r)));
+    if(!Array.isArray(rows)||rows.length!==pending.length||rows.some(r=>!expected.delete(recordKey(r))||!Number.isInteger(r.version))||expected.size)throw new Error('The cloud save did not return a verifiable version for every record.');
+    return rows;
+  }catch(e){invalidate();statusMessage=`${e.message} Cloud save was not confirmed; pull the latest data before retrying.`;throw new Error(statusMessage);}
+}
+async function requireEditor(){const role=await membership();if(role==='viewer')throw new Error('Your colony role is viewer; cloud changes require editor or owner access.');}
+export async function pushToCloud(dataset){
+  await requireEditor();
+  const incoming=await entityRecords(dataset),existing=await allRecords(),byId=new Map(existing.map(r=>[recordKey(r),r]));
+  for(const r of incoming){const old=byId.get(recordKey(r));if(old&&(stable(old.payload)!==stable(r.payload)||Boolean(old.archived)!==r.archived))throw new Error(`Cloud record ${r.entity_type}/${r.entity_id} already contains different data. Pull and review it; initial upload will not overwrite it.`);}
+  const pending=incoming.filter(r=>!byId.has(recordKey(r))).sort((a,b)=>(a.entity_id==='reconstruction'?1:0)-(b.entity_id==='reconstruction'?1:0));
+  statusMessage=`Uploading ${pending.length} new cloud records…`;
+  let completed=0;
+  try{for(const batch of partitionChanges(pending.map(r=>({...r,expected_version:0})))){await writeAtomic(batch.map(({expected_version,...r})=>[r,expected_version]));completed+=batch.length;statusMessage=`Uploaded ${completed} of ${pending.length} records.`;}}
+  catch(e){throw new Error(`${e.message} Initial upload confirmed ${completed} records before this batch. Retry upload to skip identical records; no local import was replaced.`);}
+  return pullFromCloud();
+}
+export async function saveDataset(dataset,{localOnly=false}={}){
+  const data=normalizeDataset(dataset);
+  if(localOnly||mode()==='local'){
+    await local('put',data);if(localOnly){setMode('local');invalidate();}statusMessage='Saved on this device.';return;
+  }
+  if(!synced||!baseline)throw new Error('Pull the latest cloud data before editing.');
+  await requireEditor();
+  const incoming=await entityRecords(data),map=new Map(incoming.map(r=>[recordKey(r),r]));
+  for(const [k,r] of baseline)if(!map.has(k)&&!isArchiveChunk(r))throw new Error(`Record ${r.entity_id} was removed. Archive records instead of deleting them.`);
+  const pending=incoming.filter(r=>{const old=baseline.get(recordKey(r));return !old||stable(old.payload)!==stable(r.payload)||old.archived!==r.archived;}).map(r=>[r,versions.get(recordKey(r))??0]);
+  const chunks=pending.filter(([r])=>isArchiveChunk(r)),atomic=pending.filter(([r])=>!isArchiveChunk(r));
+  if(atomic.length>500||utf8Size({p_colony_id:configuration().colonyId,p_changes:atomic.map(([r,expected_version])=>({...r,expected_version}))})>MAX_RPC_BYTES)throw new Error('This atomic edit is too large. Split it into smaller operations.');
+  // Immutable chunks can be staged before committing the manifest. A failed
+  // final transaction leaves old data authoritative and new chunks unreferenced.
+  const saved=[];
+  for(const batch of partitionChanges(chunks.map(([r,expected_version])=>({...r,expected_version}))))saved.push(...await writeAtomic(batch.map(({expected_version,...r})=>[r,expected_version])));
+  saved.push(...await writeAtomic(atomic));
+  try{await local('put',data);}catch(e){invalidate();throw new Error(`${e.message} Cloud writes completed; pull again to restore the local copy.`);}
+  for(const r of saved)versions.set(recordKey(r),r.version);
+  baseline=map;statusMessage='Saved to cloud and this device.';
+}
+export async function getAuditLog({limit=100,before=null}={}){
+  const c=configuration();await membership();
+  const n=Math.max(1,Math.min(500,Math.floor(Number(limit)||100)));
+  if(before!==null&&!/^\d+$/.test(String(before)))throw new Error('Invalid audit cursor.');
+  return request(`audit_log?select=audit_id,colony_id,entity_type,entity_id,operation,actor_id,occurred_at,before_record,after_record&colony_id=eq.${encodeURIComponent(c.colonyId)}&order=audit_id.desc&limit=${n}${before===null?'':`&audit_id=lt.${before}`}`);
+}
+
+const HISTORY_BUCKET='colony-history';
+function historyIndex(value){
+  if(!value||typeof value!=='object'||!Array.isArray(value.sources)||!Array.isArray(value.sheets)||!Array.isArray(value.cells))throw new Error('A history index must contain sources, sheets, and cells arrays.');
+  return value;
+}
+function historyPath(path){
+  const c=configuration();if(!c)throw new Error('Configure the cloud project first.');
+  const prefix=`${c.colonyId}/history/`,name=typeof path==='string'&&path.startsWith(prefix)?path.slice(prefix.length):'';
+  if(!/^[a-f0-9]{64}\.json$/.test(name))throw new Error('History path must identify a SHA-256 JSON archive in the configured colony.');
+  return name.slice(0,64);
+}
+async function sha256(text){
+  if(!globalThis.crypto?.subtle)throw new Error('Secure hashing is unavailable. Open the app over HTTPS or localhost.');
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function rememberHistory(path){const c=configuration();if(c)setStorage('localStorage',CONFIG_KEY,JSON.stringify({...c,historyPath:path}));}
+async function storageRequest(route,{method='GET',body}={}){
+  const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
+  const token=await accessToken();
+  // Private authenticated Storage route; never create a public or signed link.
+  return fetch(`${c.url}/storage/v1/${route}`,{method,cache:'no-store',redirect:'error',headers:{apikey:c.anonKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body});
+}
+export async function fetchHistoryArchive(path){
+  const expected=historyPath(path);await membership();
+  const response=await storageRequest(`object/authenticated/${HISTORY_BUCKET}/${path.split('/').map(encodeURIComponent).join('/')}`);
+  if(!response.ok)throw apiError(response,await responseJSON(response));
+  const text=await response.text();
+  if(await sha256(text)!==expected)throw new Error('History archive checksum does not match its filename. It was not loaded.');
+  let data;try{data=JSON.parse(text);}catch{throw new Error('The history archive is not valid JSON.');}
+  historyIndex(data);rememberHistory(path);return data;
+}
+export async function uploadHistoryIndex(index){
+  historyIndex(index);await requireEditor();
+  const text=JSON.stringify(index),digest=await sha256(text),path=`${configuration().colonyId}/history/${digest}.json`;
+  const response=await storageRequest(`object/${HISTORY_BUCKET}/${path}`,{method:'POST',body:text});
+  if(!response.ok){
+    const error=await responseJSON(response);
+    // Storage returns 400 or 409 for an existing immutable object. Verify the
+    // bytes before treating a repeated upload as successful.
+    if(response.status!==409&&!(response.status===400&&/duplicate|already exists/i.test(String(error?.message??error?.error??''))))throw apiError(response,error);
+  }
+  await fetchHistoryArchive(path);
+  return {bucket:HISTORY_BUCKET,path,sha256:digest,bytes:new TextEncoder().encode(text).length,cellCount:index.cells.length};
+}
+export async function downloadHistoryIndex(){
+  await membership();const c=configuration(),prefix=`${c.colonyId}/history`;
+  // Immutable versions can be discovered on a new device without local config.
+  let offset=0;
+  while(true){
+    const response=await storageRequest(`object/list/${HISTORY_BUCKET}`,{method:'POST',body:JSON.stringify({prefix,limit:100,offset,sortBy:{column:'created_at',order:'desc'}})});
+    const rows=await responseJSON(response);if(!response.ok)throw apiError(response,rows);
+    if(!Array.isArray(rows))throw new Error('The history archive list was not returned as a list.');
+    const first=rows.find(r=>/^[a-f0-9]{64}\.json$/.test(r.name??''));
+    if(first)return fetchHistoryArchive(`${prefix}/${first.name}`);
+    if(rows.length<100)throw new Error('No history archive has been uploaded for this colony.');
+    offset+=rows.length;
+  }
+}

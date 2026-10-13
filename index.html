@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#143e36"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default"><meta name="apple-mobile-web-app-title" content="Braintime Mouse Data">
+<meta name="description" content="A private, shared mouse colony workspace with source-aware breeding records.">
+<meta name="referrer" content="no-referrer"><title>Braintime Mouse Data</title>
+<link rel="manifest" href="./manifest.webmanifest"><link rel="icon" href="./icons/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="./icons/icon-192.png"><link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div class="app-shell">
+<aside class="sidebar"><a class="brand" href="#overview" aria-label="Braintime Mouse Data overview"><img src="./icons/icon.svg" alt="" width="38" height="38"><span>Braintime<small>Mouse Data</small></span></a><div class="sidebar-label">Workspace</div><nav id="navigation" aria-label="Main navigation"></nav><div class="sidebar-bottom"><div class="connection-dot" id="connection-indicator"></div><p id="connection-description">Loading browser workspace…</p><button class="text-button" data-action="settings">Connection & install</button></div></aside>
+<div class="main-shell"><header class="topbar"><div><span class="eyebrow" id="workspace-label">Mouse colony management</span><h1 id="page-title">Overview</h1></div><div class="top-actions"><span class="mode-badge" id="mode-badge">Loading</span><button class="button secondary" data-action="help" title="Help" aria-label="Help">?</button><button class="button secondary" data-action="import">Import</button><button class="button secondary" data-action="export" id="export-button">Backup</button><button class="button primary" data-action="add" id="add-button" hidden>New mouse</button></div></header><main id="main" tabindex="-1"></main><footer class="app-footer">Braintime Mouse Data · <button class="text-button" data-action="help">Help</button></footer></div>
+</div>
+<input id="import-file" type="file" accept=".json,application/json" hidden>
+<input id="history-file" type="file" accept=".json,application/json" hidden>
+<dialog id="record-dialog" aria-labelledby="record-dialog-title"><form id="record-form" novalidate><div class="dialog-heading"><div><span class="eyebrow" id="dialog-eyebrow">Record draft</span><h2 id="record-dialog-title">New record</h2></div><button class="icon-button" type="button" data-action="close-modal" aria-label="Close record editor">×</button></div><div class="dialog-content"><div id="form-errors" class="alert error" hidden role="alert"></div><div id="record-fields" class="form-grid"></div><details class="provenance-note"><summary>Source details</summary><p>Imported source references are read only. <button class="text-button" type="button" data-action="help">Help</button></p></details><div id="draft-preview" class="draft-preview" hidden></div></div><div class="dialog-actions"><button class="button secondary" type="button" data-action="close-modal">Cancel</button><button class="button secondary" type="button" id="review-draft">Review draft</button><button class="button primary" type="submit" id="save-record">Save record</button></div></form></dialog>
+<dialog id="confirm-dialog" aria-labelledby="confirm-title"><div class="dialog-heading"><h2 id="confirm-title">Confirm action</h2></div><div class="dialog-content" id="confirm-content"></div><div class="dialog-actions"><button class="button secondary" id="confirm-cancel">Cancel</button><button class="button primary" id="confirm-accept">Continue</button></div></dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
