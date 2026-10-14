@@ -152,6 +152,17 @@ await test('experiment timing exports preserve distinct clock and phase values, 
   assert.equal(malformed.experiment.decapitation_at,undefined);assert.equal(malformed.experiment.sampling_at,undefined);assert.deepEqual(malformed.experiment.entrainment,{});
 });
 
+await test('fee reports retain dated quantities and uncertainty without raw notes, and invoice updates do not refresh the history window',async()=>{
+  const line={group_key:'clean_room',quantity:300,quantity_unit:'cage_day',evidence_kind:'snapshot_projection',evidence_start:dates.today,evidence_end:dates.today,evidence_reference:'Dated source',quantity_basis:'source_formula',quantity_note:'Provisional formula count',snapshot_count:10,actual_amount:100,notes:'FEE SECRET',raw:{secret:'FEE SECRET'}};
+  await insert('husbandry_events','FEE-RECENT',{event_type:'lac_fee_month',event_date:dates.today,source_caveats:['FEE SECRET'],lac_fee_month:{schema_version:1,month:dates.today.slice(0,7),currency:'TWD',actual_total:100,actual_date:dates.today,invoice_reference:'Invoice A',revision:1,supersedes_event_id:'FEE SECRET',lines:[line],notes:'FEE SECRET'}});
+  await insert('husbandry_events','FEE-OLD',{event_type:'lac_fee_month',event_date:dates.old,app_modified_at:dates.today,lac_fee_month:{month:dates.old.slice(0,7),actual_date:dates.today,actual_total:100,lines:[line]}});
+  await insert('husbandry_events','FEE-OPTIONS',{event_type:'lac_fee_options',event_date:dates.today,lac_fee_options:{schema_version:1,effective_from:dates.today,currency:'TWD',target_percent:5,maximum_percent:10,excluded_room_ids:['ANIBEH'],groups:[{key:'spf_room',unit:'mouse',room_ids:['SPF'],rack_ids:[],rate:6.5,rate_period:'day',rate_reference:'Rate schedule',notes:'FEE SECRET'}],notes:'FEE SECRET'}});
+  const page=await as('low',()=>exportRows({types:['husbandry_events']})),p=page.rows.find(r=>r.entity_id==='FEE-RECENT').payload.lac_fee_month,o=page.rows.find(r=>r.entity_id==='FEE-OPTIONS').payload.lac_fee_options;
+  assert.equal(p.actual_total,100);assert.equal(p.lines[0].quantity,300);assert.equal(p.lines[0].quantity_basis,'source_formula');assert.equal(p.lines[0].quantity_note,'Provisional formula count');assert.equal(p.lines_count,1);assert.equal(p.lines_truncated,false);assert.deepEqual(o.excluded_room_ids,['ANIBEH']);assert.equal(o.groups[0].rate,6.5);assert(!JSON.stringify(page).includes('FEE SECRET'));assert(!page.rows.some(r=>r.entity_id==='FEE-OLD'));
+  const projected=(await db.query("select colony_private.export_payload('husbandry_events',$1::jsonb) payload",[JSON.stringify({event_type:'lac_fee_month',lac_fee_month:{actual_total:{secret:'FEE SECRET'},lines:[...Array.from({length:101},()=>line),null]}})])).rows[0].payload.lac_fee_month;
+  assert.equal(projected.actual_total,undefined);assert.equal(projected.lines_count,102);assert.equal(projected.lines.length,100);assert.equal(projected.lines_truncated,true);assert(!JSON.stringify(projected).includes('FEE SECRET'));
+});
+
 await test('supplemental experiment export migration replaces only the exact maintained projector and keeps private ACLs',async()=>{
   const supplemental=await readFile(new URL('../experiment-export.sql',import.meta.url),'utf8');
   const projector=source=>source.match(/create or replace function colony_private\.export_payload\(kind text,p jsonb\)[\s\S]*?revoke all on function colony_private\.export_payload\(text,jsonb\) from public,anon,authenticated;/)?.[0];

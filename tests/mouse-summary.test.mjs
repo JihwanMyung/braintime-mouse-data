@@ -9,22 +9,22 @@ test('alive totals use all current nonarchived Stock records and explicit sex',(
   const d=dataset([{sex:'Male'},{sex:'Female'},{sex:'Unknown'},{sex:'M'},{sex:'F'},{state:'Ended',sex:'Male'},{state:'Unknown'},{app_archived_at:'2026-10-14'},{archived:true},{archived:false}]);
   const s=summarizeMice(d);assert.equal(s.alive,6);assert.equal(s.male,2);assert.equal(s.female,2);assert.equal(s.unknownSex,2);
   d.tables.mice.push(d.tables.mice[0]);assert.equal(summarizeMice(d).alive,6);
-  assert.deepEqual(MOUSE_LINE_GROUPS.map(group=>group.key),['P','E','B','F','V']);
+  assert.deepEqual(MOUSE_LINE_GROUPS.map(group=>group.key),['P','E','B','F','V','AD']);
 });
 
 test('compact line tags overlap once per animal without counting sex suffixes or other genes',()=>{
   const s=summarizeMice(dataset([{physical_tag:"PB'-F001"},{physical_tag:"M2-PB'"},{physical_tag:"EB'-M002"},{physical_tag:"Vg'GtP'-F003"},{physical_tag:'WT-F004'},{physical_tag:'F-M005'},{physical_tag:'VIP experimental notes'}]));
-  assert.deepEqual(s.lines,{P:3,E:1,B:3,F:1,V:0});assert.deepEqual(s.uncertainLines,{P:0,E:0,B:0,F:0,V:0});
+  assert.deepEqual(s.lines,{P:3,E:1,B:3,F:1,V:0,AD:0});assert.deepEqual(s.uncertainLines,{P:0,E:0,B:0,F:0,V:0,AD:0});
 });
 
 test('bare F line codes are retained while explicit tag sex suffixes are excluded',()=>{
   const s=summarizeMice(dataset([{genotype:'F'},{genotype:'PF'},{physical_tag:'PF-M12'},{physical_tag:'F'},{physical_tag:'P-F'},{mouseline:'F'},{mouseline:'Vip-Cre'},{mouseline:'B6'}]));
-  assert.deepEqual(s.lines,{P:3,E:0,B:0,F:5,V:1});
+  assert.deepEqual(s.lines,{P:3,E:0,B:0,F:5,V:1,AD:0});
 });
 
 test('whole-line parentheses and question marks stay uncertain, primes do not establish absence',()=>{
   const s=summarizeMice(dataset([{physical_tag:"P(')B'"},{physical_tag:"(V('))(P('))B'-M001"},{physical_tag:"(E)B'-F002"},{physical_tag:"(AD)(F)(P)B'"},{physical_tag:'P?B-M003'},{physical_tag:"EB' or PB'"}]));
-  assert.deepEqual(s.lines,{P:1,E:0,B:6,F:0,V:0});assert.deepEqual(s.uncertainLines,{P:4,E:2,B:0,F:1,V:1});
+  assert.deepEqual(s.lines,{P:1,E:0,B:6,F:0,V:0,AD:0});assert.deepEqual(s.uncertainLines,{P:4,E:2,B:0,F:1,V:1,AD:1});
 });
 
 test('explicit source calls and names match exact lines, and negative calls override tags',()=>{
@@ -34,12 +34,12 @@ test('explicit source calls and names match exact lines, and negative calls over
     {genotype:'Bmal1-ELuc; Bmal1; PER2::LUC'},
     {genotype:'Bmal1-flox/flox'},
   ]));
-  assert.deepEqual(s.lines,{P:2,E:2,B:2,F:1,V:1});assert.equal(s.uncertainLines.B,1);
+  assert.deepEqual(s.lines,{P:2,E:2,B:2,F:1,V:1,AD:0});assert.equal(s.uncertainLines.B,1);
 });
 
 test('linked mouse genes are animal-specific and duplicated evidence counts only once',()=>{
   const s=summarizeMice(dataset([{mouse_sid:'SYN-A',genotype:'PER2::LUC',physical_tag:'PB-M001'},{mouse_sid:'SYN-B'}],[{mouse_sid:'SYN-A',gene_value:'PER2::LUC'},{mouse_sid:'SYN-A',gene_value:'Vip-Cre'},{mouse_sid:'OTHER',gene_value:'FoxJ1-Cre'}]));
-  assert.deepEqual(s.lines,{P:1,E:0,B:1,F:0,V:1});
+  assert.deepEqual(s.lines,{P:1,E:0,B:1,F:0,V:1,AD:0});
 });
 
 test('confirmed structured genotypes override imported text and unknown evidence blocks fallback',()=>{
@@ -50,7 +50,7 @@ test('confirmed structured genotypes override imported text and unknown evidence
     {genotype:'FoxJ1-Cre',genetic_profile:profile('FoxJ1-Cre',['FoxJ1-Cre','+'],'inferred')},
     {genetic_profile:profile('Bmal1-ELuc',['Bmal1-ELuc','+'])},
   ]));
-  assert.deepEqual(s.lines,{P:0,E:1,B:1,F:1,V:0});assert.equal(s.uncertainLines.V,1);
+  assert.deepEqual(s.lines,{P:0,E:1,B:1,F:1,V:0,AD:0});assert.equal(s.uncertainLines.V,1);
 });
 
 test('inferred profile calls cannot resolve conflicting explicit source evidence',()=>{
@@ -67,21 +67,21 @@ test('reusable assignments preserve the confirmed prime and parenthesis meanings
 test('contradictory explicit calls remain uncertain and arbitrary historical prose is ignored',()=>{
   const d=dataset([{genotype:'PER2::LUC(+/-); PER2::LUC(-/-)',physical_tag:'P-M001'},{comment:'Vip-Cre',sire_sids:['F001']},{genotype:'=IF(A1,"Vip-Cre","")'}]);
   d.tables.historical_observations=[{mouse_sids:['SYN-1'],raw_text:'FoxJ1-Cre(+/+)'}];
-  const s=summarizeMice(d);assert.deepEqual(s.lines,{P:0,E:0,B:0,F:0,V:0});assert.equal(s.uncertainLines.P,1);
+  const s=summarizeMice(d);assert.deepEqual(s.lines,{P:0,E:0,B:0,F:0,V:0,AD:0});assert.equal(s.uncertainLines.P,1);
 });
 
 test('summaries preserve source records and recalculate after edits',()=>{
   const d=dataset([{physical_tag:'PB-M001'}]),before=structuredClone(d);assert.equal(summarizeMice(d).lines.P,1);assert.deepEqual(d,before);
   d.tables.mice[0].state='Ended';assert.equal(summarizeMice(d).alive,0);assert.equal(summarizeMice(d).lines.P,0);
-  assert.deepEqual(summarizeMice(null),{alive:0,male:0,female:0,unknownSex:0,lines:{P:0,E:0,B:0,F:0,V:0},uncertainLines:{P:0,E:0,B:0,F:0,V:0}});
+  assert.deepEqual(summarizeMice(null),{alive:0,male:0,female:0,unknownSex:0,lines:{P:0,E:0,B:0,F:0,V:0,AD:0},uncertainLines:{P:0,E:0,B:0,F:0,V:0,AD:0}});
 });
 
-test('all eleven confirmed strain codes are reusable assignments while summary remains five lines',()=>{
+test('all eleven confirmed strain codes are reusable assignments while summary includes six lines',()=>{
   const mouse={physical_tag:"P'E'B'F'V'AD'A'32'Vg'Gt'96'-M12"};
   const codes=['P','E','B','F','V','AD','A','32','Vg','Gt','96'];
   assert.deepEqual(mouseLineAssignments(mouse),Object.fromEntries(codes.map(code=>[code,'recorded'])));
   const summary=summarizeMice(dataset([mouse]));
-  assert.deepEqual(summary.lines,{P:1,E:1,B:1,F:1,V:1});assert.deepEqual(Object.keys(summary.lines),['P','E','B','F','V']);
+  assert.deepEqual(summary.lines,{P:1,E:1,B:1,F:1,V:1,AD:1});assert.deepEqual(Object.keys(summary.lines),['P','E','B','F','V','AD']);
 });
 
 test('multi-letter codes and named floxed alleles preserve distinct line identities',()=>{
@@ -136,3 +136,8 @@ test('explicit unknown calls take precedence over simple compact line labels',()
 test('bare named evidence cannot resolve parenthesized additional strain codes',()=>{
   assert.deepEqual(mouseLineAssignments({physical_tag:'(AD)(A)(32)(Vg)(Gt)(96)-F001',genotype:'APP/PS1; Avp-Cre; Ai32; Vgat-flox; GAD67-tTA; Ai96'}),{AD:'uncertain',A:'uncertain','32':'uncertain',Vg:'uncertain',Gt:'uncertain','96':'uncertain'});
 });
+
+ test('AD summaries distinguish APP/PS1 evidence, negative results and undetermined tags',()=>{
+ const summary=summarizeMice(dataset([{physical_tag:'ADP-M1'},{genotype:'APP/PS1(+/-)'},{physical_tag:'(AD)-F2'},{physical_tag:'AD-M3',genotype:'APP/PS1(-/-)'},{genotype:'AD',state:'Ended'}]));
+ assert.equal(summary.lines.AD,2);assert.equal(summary.uncertainLines.AD,1);
+ });

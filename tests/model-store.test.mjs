@@ -582,6 +582,17 @@ test('experiment exports keep decapitation, sampling and assay timing separate w
   assert.equal(unknown.decapitation_at,null);assert.equal(unknown.sampling_at,null);assert.equal(unknown.decapitation_time_basis,'unknown');assert.equal(unknown.sampling_time_basis,'unknown');
 });
 
+test('fee report projection preserves quantities and certainty, excludes raw history and respects the recorded billing date',async()=>{
+  await fresh();const data=createSyntheticDataset(),line={group_key:'clean_room',quantity:300,quantity_unit:'cage_day',evidence_kind:'snapshot_projection',evidence_reference:'Source',quantity_basis:'source_formula',quantity_note:'Provisional',notes:'FEE PRIVATE'};
+  data.tables.husbandry_events=[
+    {event_id:'FEE-RECENT',event_type:'lac_fee_month',event_date:'2025-02-01',source_rows:['FEE PRIVATE'],lac_fee_month:{month:'2025-02',currency:'TWD',actual_total:100,actual_date:'2025-03-01',invoice_reference:'Invoice A',notes:'FEE PRIVATE',supersedes_event_id:'FEE PRIVATE',lines:Array.from({length:101},()=>line)}},
+    {event_id:'FEE-OLD',event_type:'lac_fee_month',event_date:'2001-01-01',app_modified_at:'2025-03-01',lac_fee_month:{actual_date:'2025-03-01'}},
+    {event_id:'FEE-OPTIONS',event_type:'lac_fee_options',event_date:'2025-02-01',lac_fee_options:{currency:'TWD',target_percent:5,maximum_percent:10,excluded_room_ids:['ANI'],groups:[{key:'spf_room',rate:6.5,room_ids:['SPF'],notes:'FEE PRIVATE'}]}}
+  ];
+  await store.saveDataset(data,{localOnly:true,localKind:'demo'});const rows=(await store.getExportRecords({scope:'history',fromDate:'2025-01-01',entityTypes:['husbandry_events']})).dataset.tables.husbandry_events,p=rows.find(r=>r.event_id==='FEE-RECENT').lac_fee_month;
+  assert.equal(p.actual_total,100);assert.equal(p.lines[0].quantity_basis,'source_formula');assert.equal(p.lines[0].quantity_note,'Provisional');assert.equal(p.lines_count,101);assert.equal(p.lines.length,100);assert.equal(p.lines_truncated,true);assert.equal(rows.find(r=>r.event_id==='FEE-OPTIONS').lac_fee_options.groups[0].rate,6.5);assert(!rows.some(r=>r.event_id==='FEE-OLD'));assert(!JSON.stringify(rows).includes('FEE PRIVATE'));
+});
+
 test('strain metadata uses versioned cloud records, rejects stale edits and respects read-only membership',async()=>{
   const d=await connected();
   const input={code:'E',insertion_type:'transgenic',stock_reference:'Synthetic stock',notes:'Synthetic strain note'};

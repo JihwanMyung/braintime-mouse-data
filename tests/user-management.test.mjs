@@ -153,3 +153,27 @@ test('invalid export levels are rejected and failed permission updates retain th
   container.onchange({target:{dataset:{userExportLevel:'EDITOR'},value:'max'}});await click(container,'save-access','EDITOR');assert.equal(calls.length,2);assert.match(container.innerHTML,/Permission update failed/);assert.match(row(container.innerHTML,'editor@example.invalid'),/<option value="max" selected>/);
   container.onchange({target:{dataset:{userExportLevel:'EDITOR'},value:'administrator'}});await click(container,'save-access','EDITOR');assert.equal(calls.at(-1).payload.export_level,'max','invalid control values do not replace a valid draft');
 });
+
+test('manager role exposes explicit capability switches and saves the full reviewed permission set',async()=>{
+ const {container,calls}=await mount();container.onchange({target:{dataset:{userRole:'EDITOR'},value:'manager'}});assert.match(row(container.innerHTML,'editor@example.invalid'),/Manager permissions/);assert.match(container.innerHTML,/Fees &amp; billing/);assert.match(container.innerHTML,/historical roster and permission settings remain owner-only/);
+ container.onchange({target:{dataset:{userPermission:'experiments',userId:'EDITOR'},checked:false}});container.onchange({target:{dataset:{userPermission:'archive',userId:'EDITOR'},checked:false}});container.onchange({target:{dataset:{userExportLevel:'EDITOR'},value:'max'}});assert.equal(calls.length,1);await click(container,'save-access','EDITOR');const p=calls[1].payload;assert.equal(p.role,'manager');assert.equal(p.export_level,'max');assert.equal(p.permissions.experiments,false);assert.equal(p.permissions.archive,false);assert.equal(p.permissions.fees,true);assert.equal(p.permissions.mice,true);assert.equal(Object.keys(p.permissions).length,9);assert.equal(Object.hasOwn(p.permissions,'users'),false);
+});
+
+test('existing manager capability-only edits require Save; activation toggles retain saved capabilities',async()=>{
+ const permissions={mice:true,breeding:true,housing:true,experiments:false,cryo:true,genetics:true,imports:false,archive:true,fees:false};const {container,calls}=await mount(async(action,payload,{users})=>{const manager=users.find(u=>u.user_id==='EDITOR');if(action==='list'){if(manager.role!=='manager')Object.assign(manager,{role:'manager',permissions});return {users}}if(action==='update_access'){Object.assign(manager,payload,{status:payload.active?'active':'disabled'});return {user:manager}}throw new Error('Unexpected action')});
+ container.onchange({target:{dataset:{userPermission:'fees',userId:'EDITOR'},checked:true}});assert.equal(calls.length,1);await click(container,'save-access','EDITOR');assert.equal(calls[1].payload.permissions.fees,true);assert.equal(calls[1].payload.permissions.experiments,false);
+ container.onchange({target:{dataset:{userPermission:'experiments',userId:'EDITOR'},checked:true}});await click(container,'deactivate','EDITOR');assert.equal(calls[3].payload.permissions.experiments,false,'unsaved permission changes are not applied by deactivation');assert.equal(calls[3].payload.permissions.fees,true);assert.equal(calls[3].payload.active,false);
+});
+
+test('manager invitations use explicit capability choices while owner controls and unknown flags cannot be granted',async()=>{
+ const {container,calls}=await mount();container.onchange({target:{id:'user-admin-invite-role',value:'manager'}});container.onchange({target:{dataset:{invitePermission:'imports'},checked:false}});container.onchange({target:{dataset:{invitePermission:'owner'},checked:true}});await invite(container,'manager@example.invalid','manager','high');const p=calls[1].payload;assert.equal(p.role,'manager');assert.equal(p.permissions.imports,false);assert.equal(p.permissions.fees,true);assert.equal(Object.hasOwn(p.permissions,'owner'),false);
+ container.onchange({target:{dataset:{userPermission:'mice',userId:'OWNER'},checked:false}});await click(container,'save-access','OWNER');assert.equal(calls.length,3);assert.doesNotMatch(row(container.innerHTML,'owner@example.invalid'),/data-user-permission/);
+});
+
+test('failed manager permission update retains reviewed capability choices',async()=>{
+ const {container,calls}=await mount(async(action,payload,{users})=>{if(action==='list')return {users};throw new Error('Update failed.');});container.onchange({target:{dataset:{userRole:'EDITOR'},value:'manager'}});container.onchange({target:{dataset:{userPermission:'mice',userId:'EDITOR'},checked:false}});await click(container,'save-access','EDITOR');assert.match(container.innerHTML,/Update failed/);assert.match(row(container.innerHTML,'editor@example.invalid'),/value="manager" selected/);assert.match(row(container.innerHTML,'editor@example.invalid'),/data-user-permission="mice" data-user-id="EDITOR">/);await click(container,'save-access','EDITOR');assert.equal(calls.at(-1).payload.permissions.mice,false);
+});
+
+test('denied refresh or mutation removes account controls and contacts',async()=>{
+ let lists=0;const {container,calls}=await mount(async(action,payload,{users})=>{if(action==='list'&&++lists===1)return {users};throw Object.assign(new Error('Owner access required'),{code:'42501'});});await click(container,'refresh');assert.doesNotMatch(container.innerHTML,/owner@example.invalid|data-user-invite|data-user-role/);await invite(container,'forged@example.invalid','manager');assert.equal(calls.length,2);
+});

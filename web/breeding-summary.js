@@ -1,5 +1,5 @@
-import { getBreedingOptions } from './breeding-options.js?v=21';
-import { mouseLineAssignments } from './mouse-summary.js?v=21';
+import { getBreedingOptions } from './breeding-options.js?v=22';
+import { mouseLineAssignments } from './mouse-summary.js?v=22';
 import { validateGeneticProfile } from './genotype-schema.js';
 
 const text=value=>typeof value==='string'?value:'';
@@ -18,6 +18,40 @@ const profileKey=value=>['P','E','B','F','V','AD','A','32','96','Vg','Gt'].inclu
 const genericKey=value=>`locus:${text(value).trim().toLowerCase()}`;
 const pairKey=alleles=>[...alleles].sort().join('/');
 const isRosa26=locus=>/^(?:Gt\(ROSA\)26Sor|rosa26)$/i.test(locus.name)||/^rosa26$/i.test(locus.id);
+const compactToken=/AD|Vg|Gt|WT|32|96|[PEBFVA]/y;
+
+// Clear lab shorthand is a recorded genotype for this count. An unprimed
+// token does not invent an allele pair or heterozygous transmission model.
+function compactResults(value,isTag=false) {
+  let input=text(value).trim().replace(/[‘’′]/g,"'");
+  if(!input||/^\d+$/.test(input)&&(isTag||!['32','96'].includes(input)))return null;
+  if(isTag)input=input.replace(/^[MF]\d+-/,'').replace(/(?:-[MF]\d*|[MF]\d+)$/,'');
+  input=input.replace(/\s+/g,'');
+  const entries=[];let at=0,valid=true;
+  function sequence(inGroup=false) {
+    while(at<input.length) {
+      if(/\s/.test(input[at])){at++;continue;}
+      if(input[at]===')'){if(!inGroup){valid=false;return;}at++;return;}
+      if(input[at]==='('){at++;const start=entries.length;sequence(true);if(entries.length===start){valid=false;return;}for(const entry of entries.slice(start))entry.uncertain=true;continue;}
+      compactToken.lastIndex=at;const match=compactToken.exec(input);
+      if(!match){valid=false;return;}at+=match[0].length;
+      let uncertain=false,prime=false;
+      const pending=input.slice(at).match(/^\(\s*'+\s*\)/);
+      if(pending){uncertain=true;at+=pending[0].length;}
+      else if(input[at]==="'"){prime=true;at++;}
+      if(input[at]==='?'){uncertain=true;at++;}
+      entries.push({key:match[0],uncertain,result:match[0]==='WT'?'wild/wild':prime?'variant/variant':'positive'});
+    }
+    if(inGroup)valid=false;
+  }
+  sequence();return valid&&entries.length&&at===input.length?entries:null;
+}
+
+function completeCalls(calls) {
+  if(!calls?.size)return false;
+  const pairs=[...calls].filter(call=>call!=='positive');
+  return pairs.length<=1&&!(calls.has('positive')&&calls.has('wild/wild'));
+}
 
 function localDate() {
   const now=new Date();
@@ -52,10 +86,20 @@ function sourceResults(values) {
     if(!entry||/^(?:none|n\/a|null)$/i.test(entry))continue;
     const match=entry.match(sourceLabel);
     if(!match) {
-      // Compact tags can identify targets but never supply an assay result.
-      if(/^(?:(?:AD|Vg|Gt|WT|32|96|[PEBFVA])|['′‘’\s()?])+$/.test(entry)) {
-        const keys=Object.keys(mouseLineAssignments({genotype:entry}));
-        if(keys.length){for(const key of keys)required.add(key);continue;}
+      const compact=compactResults(entry);
+      if(compact) {
+        for(const {key,uncertain,result} of compact) {
+          required.add(key);
+          if(uncertain){unresolved.add(key);continue;}
+          if(!calls.has(key))calls.set(key,new Set());calls.get(key).add(result);
+        }
+        continue;
+      }
+      const shortCall=entry.match(/^(AD|Vg|Gt|32|96|[PEBFVA])(?:\s*\(([^()]*)\)|\s+(.+))$/);
+      if(shortCall) {
+        const key=shortCall[1],result=sourcePair(key,shortCall[2]??shortCall[3]);required.add(key);
+        if(!result){unresolved.add(key);continue;}
+        if(!calls.has(key))calls.set(key,new Set());calls.get(key).add(result);continue;
       }
       const generic=entry.match(/^([A-Za-z][A-Za-z0-9_.:-]{1,60})(?:\s*\([^()]*\))?$/);
       if(generic){required.add(genericKey(generic[1]));continue;}
@@ -83,10 +127,11 @@ function profileKeys(locus) {
 
 /** Complete recorded genotyping, not independent verification of an assay.
  * A reviewed profile requires confirmed two-allele calls at every declared
- * locus. Otherwise only explicit, compatible current source calls qualify.
+ * locus. Otherwise explicit compatible current calls or clear lab shorthand
+ * qualify, with current genotype calls taking precedence over physical tags.
  * Every strain indicated by current tags/line labels must be covered, including
- * negative results. Names, primes, inferred parentage and archive prose do not
- * establish genotyping. A reviewed call supersedes older source text for that
+ * negative results. Broad strain names, inferred parentage and archive prose do
+ * not establish genotyping. A reviewed call supersedes older source text for that
  * target; it does not silently resolve additional untyped targets.
  */
 export function isMouseGenotyped(mouse,geneRows=[]) {
@@ -94,6 +139,15 @@ export function isMouseGenotyped(mouse,geneRows=[]) {
   const genes=rows(geneRows).filter(row=>row&&mouse.mouse_sid!==undefined&&String(row.mouse_sid)===String(mouse.mouse_sid)&&!archived(row));
   const values=[mouse.genotype,...genes.map(row=>row.gene_value)];
   const source=sourceResults(values),required=new Set(source.required),reviewed=new Set();let reviewedRosa26=false;
+  const tag=sourceResults([]);
+  for(const entry of compactResults(mouse.physical_tag,true)||[]) {
+    required.add(entry.key);
+    if(entry.uncertain){tag.unresolved.add(entry.key);continue;}
+    if(!tag.calls.has(entry.key))tag.calls.set(entry.key,new Set());tag.calls.get(entry.key).add(entry.result);
+  }
+  // A broad line label is not a genotype call, but explicit uncertainty in it
+  // must not be silently resolved by a clear physical tag alone.
+  for(const key of sourceResults([mouse.mouseline]).unresolved)tag.unresolved.add(key);
   // Inspect labels separately so a negative assay cannot erase an untyped
   // additional target from the required set.
   for(const field of ['physical_tag','mouseline'])for(const key of Object.keys(mouseLineAssignments({[field]:mouse[field]})))required.add(key);
@@ -124,7 +178,9 @@ export function isMouseGenotyped(mouse,geneRows=[]) {
   if(required.has('32')&&required.has('96')&&!reviewedRosa26)return false;
   for(const key of required) {
     if(reviewed.has(key))continue;
-    if(source.unresolved.has(key)||source.calls.get(key)?.size!==1)return false;
+    if(source.unresolved.has(key))return false;
+    if(source.calls.has(key)){if(!completeCalls(source.calls.get(key)))return false;continue;}
+    if(tag.unresolved.has(key)||!completeCalls(tag.calls.get(key)))return false;
   }
   return true;
 }

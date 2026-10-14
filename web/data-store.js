@@ -1,4 +1,6 @@
-import { normalizeDataset, ID_FIELDS } from './model.js?v=21';
+import { PUBLIC_CONFIG } from './config.js';
+import { validateManagerPermissions } from './permissions.js';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=22';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
@@ -65,7 +67,7 @@ export function configureCloud({url,anonKey,colonyId}){
 }
 export function getCloudStatus(){
   const c=configuration(),s=session();
-  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:mode()==='local'||synced,colonyId:c?.colonyId??null,role:s?.role??null,exportLevel:s?.role==='owner'?'max':s?.exportLevel??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
+  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:mode()==='local'||synced,colonyId:c?.colonyId??null,role:s?.role??null,permissions:s?.permissions??{},username:s?.username??null,setupRequired:s?.setupRequired===true,exportLevel:s?.role==='owner'?'max':s?.exportLevel??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
 }
 async function responseJSON(response){const text=await response.text();if(!text)return null;try{return JSON.parse(text);}catch{throw new Error('The cloud server returned an unreadable response.');}}
 function apiError(response,body){
@@ -90,7 +92,7 @@ function normalizeSession(s){if(!s?.access_token||!s?.refresh_token)throw new Er
 async function accessToken(){
   let s=session();if(!s?.access_token)throw new Error('Sign in before using cloud data.');
   if(s.expires_at<=Date.now()/1000+60){
-    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{const next={...normalizeSession(result),role:s.role,exportLevel:s.exportLevel};saveSession(next);return next;}).catch(e=>{saveSession(null);invalidate();throw e;}).finally(()=>{refreshPromise=null;});
+    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{const next={...normalizeSession(result),role:s.role,permissions:s.permissions,username:s.username,setupRequired:s.setupRequired,exportLevel:s.exportLevel};saveSession(next);return next;}).catch(e=>{saveSession(null);invalidate();throw e;}).finally(()=>{refreshPromise=null;});
     s=await refreshPromise;
   }
   return s.access_token;
@@ -104,15 +106,34 @@ async function request(route,{method='GET',body}={}){
 async function membership(){
   const c=configuration(),s=session();
   if(!s?.user?.id)throw new Error('The signed-in user is unavailable. Sign in again.');
-  const rows=await request(`memberships?select=role,active,export_level&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
-  if(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not an active member of the configured colony.');
-  saveSession({...session(),role:rows[0].role,exportLevel:rows[0].role==='owner'?'max':rows[0].export_level||'low'});return rows[0].role;
+  const rows=await request(`memberships?select=role,active,export_level,permissions&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
+  if(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','manager','editor','viewer'].includes(rows[0].role))throw new Error('This account is not an active member of the configured colony.');
+  if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==s.user.id)throw new Error('The cloud account or colony changed. Sign in again.');
+  saveSession({...session(),role:rows[0].role,permissions:rows[0].permissions||{},setupRequired:false,exportLevel:rows[0].role==='owner'?'max':rows[0].export_level||'low'});return rows[0].role;
+}
+async function establishMembershipOrSetup(){
+  const c=configuration(),s=session();
+  const rows=await request(`memberships?select=role,active,export_level,permissions&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
+  if(!Array.isArray(rows))throw new Error('Unable to verify colony access.');
+  if(rows.length){await membership();return;}
+  const profile=await request('rpc/get_my_lab_member',{method:'POST',body:{p_colony_id:c.colonyId}});
+  if(profile?.eligible!==true||profile.setup_required!==true||!profile.member)throw new Error('This account is not an active member of the configured colony.');
+  saveSession({...session(),role:'pending',setupRequired:true});
 }
 export async function signIn(email,password){
-  if(typeof email!=='string'||typeof password!=='string'||!email.trim()||!password)throw new Error('Enter your email and password.');
-  const s=normalizeSession(await authRequest('token?grant_type=password',{email:email.trim(),password}));
-  saveSession(s);invalidate();
-  try{await membership();statusMessage='Signed in. Pull existing cloud data or upload the local dataset.';}catch(e){statusMessage=e.message;throw e;}
+  if(typeof email!=='string'||typeof password!=='string'||!email.trim()||!password)throw new Error('Enter your email or username and password.');
+  let result;
+  if(email.includes('@'))result=await authRequest('token?grant_type=password',{email:email.trim(),password});
+  else {
+    const c=configuration();if(!c)throw new Error('Configure the cloud project first.');
+    const defaultGateway=c.url===PUBLIC_CONFIG.url&&c.colonyId===PUBLIC_CONFIG.colonyId?PUBLIC_CONFIG.usernameAnonKey:null;
+    const anonKey=publicKey(c.anonKey.startsWith('sb_publishable_')&&defaultGateway?defaultGateway:c.anonKey);
+    if(anonKey.startsWith('sb_publishable_'))throw new Error('Username sign-in requires the project’s public legacy anon key. Use your email to sign in, or ask the owner to update the app configuration.');
+    const response=await fetch(`${c.url}/functions/v1/username-sign-in`,{method:'POST',cache:'no-store',redirect:'error',headers:{apikey:anonKey,Authorization:`Bearer ${anonKey}`,'Content-Type':'application/json'},body:JSON.stringify({username:email.trim(),password})});
+    result=await responseJSON(response);if(!response.ok)throw new Error(result?.message||'Username sign-in was rejected.');
+  }
+  saveSession(normalizeSession(result));invalidate();
+  try{await establishMembershipOrSetup();statusMessage='Signed in.';}catch(e){saveSession(null);statusMessage=e.message;throw e;}
   return getCloudStatus();
 }
 function emailAddress(email){
@@ -126,12 +147,12 @@ export async function requestEmailCode(email){
   pendingEmail=address;statusMessage='Email code requested. Check your inbox and enter the code.';
   return {email:address,message:statusMessage};
 }
-export async function requestEmailLink(email,redirectTo){
+export async function requestEmailLink(email,redirectTo,{firstTime=false}={}){
   const address=emailAddress(email),app=globalThis.location;
   let redirect;try{redirect=new URL(redirectTo);}catch{throw new Error('A valid app return URL is required.');}
   const local=['localhost','127.0.0.1','[::1]'].includes(redirect.hostname);
   if(!app?.origin||redirect.origin!==app.origin||redirect.username||redirect.password||redirect.search||redirect.hash||(redirect.protocol!=='https:'&&!(local&&redirect.protocol==='http:')))throw new Error('The sign-in link must return to this app without query parameters or a fragment.');
-  await authRequest(`otp?redirect_to=${encodeURIComponent(redirect.href)}`,{email:address,create_user:false});
+  await authRequest(`otp?redirect_to=${encodeURIComponent(redirect.href)}`,{email:address,create_user:firstTime===true});
   pendingEmail=address;statusMessage='Sign-in link requested. Open the link from your email on the device you want to use.';
   return {email:address,message:statusMessage};
 }
@@ -157,15 +178,21 @@ export async function consumeAuthCallback(){
     if(!verified.ok)throw new Error('The cloud project rejected this sign-in link. Request a new link.');
     const user=await responseJSON(verified);
     if(user?.id!==claims.sub||user.is_anonymous)throw new Error('The cloud project could not verify this account.');
-    const membershipResponse=await fetch(`${c.url}/rest/v1/memberships?select=role,active,export_level&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
+    const membershipResponse=await fetch(`${c.url}/rest/v1/memberships?select=role,active,export_level,permissions&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
     if(!membershipResponse.ok)throw new Error('Unable to verify colony membership. Sign in again or contact the colony owner.');
     const rows=await responseJSON(membershipResponse);
-    if(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not an active member of the configured colony.');
+    let pendingSetup=false;
+    if(Array.isArray(rows)&&rows.length===0){
+      const profileResponse=await fetch(`${c.url}/rest/v1/rpc/get_my_lab_member`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({p_colony_id:c.colonyId})});
+      const profile=await responseJSON(profileResponse);pendingSetup=profileResponse.ok&&profile?.eligible===true&&profile.setup_required===true&&!!profile.member;
+    }
+    if(!pendingSetup&&(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','manager','editor','viewer'].includes(rows[0].role)))throw new Error('This account is not an active member of the configured colony.');
+    const member=rows[0]||{role:'pending',permissions:{},export_level:null};
     // A local JWT decode only checks scope; the current project's Auth endpoint
     // authenticates the token. Persist only after that and membership both pass.
-    saveSession({access_token:access,refresh_token:refresh,token_type:'bearer',expires_at:claims.exp,user,role:rows[0].role,exportLevel:rows[0].role==='owner'?'max':rows[0].export_level||'low'});
+    saveSession({access_token:access,refresh_token:refresh,token_type:'bearer',expires_at:claims.exp,user,role:member.role,permissions:member.permissions||{},setupRequired:pendingSetup,exportLevel:pendingSetup?null:member.role==='owner'?'max':member.export_level||'low'});
     pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';
-    return {...getCloudStatus(),needsPasswordSetup:type==='invite'||type==='recovery'};
+    return {...getCloudStatus(),needsPasswordSetup:pendingSetup||type==='invite'||type==='recovery'};
   }catch(error){
     saveSession(null);invalidate();
     statusMessage=error instanceof TypeError?'The sign-in link could not be verified because the cloud is unreachable. Request a new link when connected.':error.message;
@@ -177,7 +204,7 @@ export async function verifyEmailCode(email,token){
   if(!/^\d{6,10}$/.test(code))throw new Error('Enter the numeric verification code from your email.');
   const result=normalizeSession(await authRequest('verify',{email:address,token:code,type:'email'}));
   saveSession(result);invalidate();
-  try{await membership();pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';}
+  try{await establishMembershipOrSetup();pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';}
   catch(e){saveSession(null);invalidate();statusMessage=e.message;throw e;}
   return getCloudStatus();
 }
@@ -191,7 +218,7 @@ export async function updateAccountPassword(password) {
   if(!c)throw new Error('Configure the cloud project first.');
   if(!signedIn?.access_token||!signedIn.user?.id)throw new Error('Sign in before changing your account password.');
   if(typeof password!=='string'||password.length<12||password.length>128)throw new Error('Use an account password between 12 and 128 characters.');
-  await membership();
+  if(signedIn.role==='pending'){const mine=await getMyLabMember();if(!mine?.eligible||!mine.setup_required)throw new Error('Your account is not eligible for first-time setup.');}else await membership();
   const token=await accessToken(),current=configuration();
   if(current?.url!==c.url||current.colonyId!==c.colonyId||session()?.user?.id!==signedIn.user.id)throw new Error('The cloud account or colony changed. Sign in again before changing your password.');
   let response;
@@ -384,6 +411,12 @@ function experimentExportRows(value,keys){
   return {items,total:rows.length,truncated:items.length<rows.length};
 }
 function projectExperimentExport(row){
+  if(['lac_fee_options','lac_fee_month'].includes(row.event_type)){
+    const type=row.event_type,p=row[type]||{},result=experimentExportFields(row,['event_id','event_type','event_date']);
+    const keys=type==='lac_fee_options'?['schema_version','effective_from','currency','target_percent','maximum_percent','excluded_room_ids','revision']:['schema_version','month','currency','actual_total','actual_date','invoice_reference','revision'];
+    const field=type==='lac_fee_options'?'groups':'lines',rows=experimentExportRows(p[field],type==='lac_fee_options'?['key','label','unit','room_ids','rack_ids','rate','rate_period','rate_reference']:['group_key','quantity','quantity_unit','evidence_kind','evidence_start','evidence_end','evidence_reference','quantity_basis','quantity_note','snapshot_count','actual_amount']);
+    result[type]={...experimentExportFields(p,keys),[field]:rows.items,[field+'_count']:rows.total,[field+'_truncated']:rows.truncated};return result;
+  }
   if(!['experiment','experiment_sample','experiment_revision'].includes(row.event_type))return clone(row);
   const result=experimentExportFields(row,['event_id','event_type','event_date']);
   const entrainmentFields=['scheme','light_event_id','reference_at','reference_phase','phase_basis','phase_scale','period_hours','timezone','start_date','end_date','duration_days','duration_basis'];
@@ -483,14 +516,15 @@ export async function manageColonyUsers(action,payload={}) {
   if(!c)throw new Error('Configure the cloud project first.');
   if(!signedIn?.access_token||!signedIn.user?.id)throw new Error('Sign in before managing colony users.');
   if(signedIn.role!=='owner')throw new Error('Only an active colony owner can manage users.');
-  const allowed={list:[],invite:['email','role','export_level'],update_access:['user_id','role','active','export_level']};
+  const allowed={list:[],invite:['email','role','export_level','permissions'],update_access:['user_id','role','active','export_level','permissions']};
   if(!Object.hasOwn(allowed,action))throw new Error('Unsupported user-management action.');
   if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(k=>!allowed[action].includes(k)))throw new Error('Unexpected user-management fields. Colony and invitation return URLs are configured by the app and server.');
   const fields={};
   if(action==='invite')fields.email=emailAddress(payload.email);
   if(action==='invite'||action==='update_access') {
-    if(!['viewer','editor'].includes(payload.role))throw new Error('Choose viewer or editor access. Owner accounts cannot be changed here.');
+    if(!['viewer','editor','manager'].includes(payload.role))throw new Error('Choose viewer or editor access. Owner accounts cannot be changed here.');
     fields.role=payload.role;
+    if(payload.permissions!==undefined){const errors=validateManagerPermissions(payload.permissions);if(errors.length)throw new Error(errors.join(' '));fields.permissions=payload.permissions;}
     if(payload.export_level!==undefined){if(!['low','high','max'].includes(payload.export_level))throw new Error('Choose Low, High or Max export access.');fields.export_level=payload.export_level;}
   }
   if(action==='update_access') {
@@ -575,4 +609,50 @@ export async function downloadHistoryIndex(){
     if(rows.length<100)throw new Error('No history archive has been uploaded for this colony.');
     offset+=rows.length;
   }
+}
+
+
+// Private roster never enters the colony dataset, IndexedDB, backups or exports.
+export async function listLabMembers(){
+ if(await membership()!=='owner')throw new Error('Only the owner can view lab-member records.');
+ return request('rpc/list_lab_members',{method:'POST',body:{p_colony_id:configuration().colonyId}});
+}
+export async function saveLabMember(person){
+ if(await membership()!=='owner')throw new Error('Only the owner can edit lab-member records.');
+ return request('rpc/save_lab_member',{method:'POST',body:{p_colony_id:configuration().colonyId,p_person:person}});
+}
+export async function getMyLabMember(){
+ const c=configuration(),actor=session()?.user?.id;
+ if(!c||!actor)throw new Error('Sign in before loading your registered profile.');
+ const result=await request('rpc/get_my_lab_member',{method:'POST',body:{p_colony_id:c.colonyId}});
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Sign in again.');
+ const active=session();if(active)saveSession({...active,username:result?.member?.username||null,setupRequired:result?.eligible===true&&result.setup_required===true});
+ return result;
+}
+export async function getLabUserDirectory(){return request('rpc/get_lab_user_directory',{method:'POST',body:{p_colony_id:configuration().colonyId}});}
+export async function updateMyLabAcronym({acronym,version}={}){
+ const c=configuration(),actor=session()?.user?.id,code=typeof acronym==='string'?acronym.trim().toUpperCase():'';
+ if(!c||!actor)throw new Error('Sign in before changing your acronym.');
+ if(!/^[A-Z][A-Z0-9_-]{0,11}$/.test(code))throw new Error('Use 1–12 letters, numbers, underscores or hyphens, beginning with a letter.');
+ if(!Number.isSafeInteger(version)||version<1)throw new Error('Reload your current profile before changing your acronym.');
+ const result=await request('rpc/update_my_lab_acronym',{method:'POST',body:{p_colony_id:c.colonyId,p_acronym:code,p_expected_version:version}});
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Reload your current profile.');
+ if(result?.eligible!==true||result.member?.acronym!==code||!Number.isSafeInteger(result.member?.version)||result.member.version<version)throw new Error('Your acronym change was not confirmed. Reload your profile.');
+ return result;
+}
+export async function completeAccountSetup(username,password){
+ const id=typeof username==='string'?username.trim().toLowerCase():'';
+ if(!/^[a-z][a-z0-9_.-]{2,31}$/.test(id))throw new Error('Use 3–32 characters: start with a letter, then letters, numbers, dots, underscores or hyphens.');
+ const c=configuration(),actor=session()?.user?.id;
+ const mine=await getMyLabMember();if(!mine?.eligible)throw new Error('Ask the owner to register your verified email first.');
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Sign in again.');
+ if(password!==undefined)await updateAccountPassword(password);
+ else if(!mine.has_password)throw new Error('Set your own account password first.');
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Sign in again.');
+ let result;try{result=await request('rpc/complete_lab_member_setup',{method:'POST',body:{p_colony_id:c.colonyId,p_username:id}});}catch(error){throw new Error((password!==undefined?'Your password was saved. Username setup was not completed: ':'')+error.message);}
+ if(!result?.eligible||result.setup_required!==false||result.member?.username!==id)throw new Error('Account setup was not confirmed. Reload Settings.');
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Sign in again.');
+ await membership();
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Sign in again.');
+ saveSession({...session(),username:id,setupRequired:false});return result;
 }

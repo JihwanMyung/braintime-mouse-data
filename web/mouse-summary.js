@@ -7,10 +7,11 @@ export const MOUSE_LINE_GROUPS = Object.freeze([
   {key:'B',name:'Bmal1-flox'},
   {key:'F',name:'Foxj1-Cre'},
   {key:'V',name:'Vip-Cre'},
+  {key:'AD',name:'APP/PS1'},
 ].map(Object.freeze));
 
 const keys=MOUSE_LINE_GROUPS.map(group=>group.key);
-const assignmentKeys=[...keys,'AD','A','32','Vg','Gt','96'];
+const assignmentKeys=[...keys,'A','32','Vg','Gt','96'];
 const zero=()=>Object.fromEntries(keys.map(key=>[key,0]));
 const text=value=>typeof value==='string'?value:'';
 const patterns={P:/PER2\s*:{1,2}\s*LUC/gi,E:/Bmal1-ELuc/gi,B:/Bmal1(?:[-\s]+flox(?:ed)?)?/gi,F:/FoxJ1-Cre/gi,V:/Vip-Cre/gi,AD:/APP\s*\/\s*PS1/gi,A:/Avp-Cre/gi,'32':/Ai32/gi,Vg:/Vgat(?:[-\s]+flox(?:ed)?)?/gi,Gt:/GAD67-tTA(?:2)?/gi,'96':/Ai96/gi};

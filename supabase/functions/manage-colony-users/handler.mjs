@@ -1,6 +1,10 @@
 // Native-fetch handler. Admin credentials stay inside the Edge runtime.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EXPORT_LEVELS = ['low', 'high', 'max'];
+const PERMISSIONS = ['mice', 'breeding', 'housing', 'experiments', 'cryo', 'genetics', 'imports', 'archive', 'fees'];
+const validPermissions = value => value !== null && typeof value === 'object' && !Array.isArray(value) &&
+  Object.entries(value).every(([key, allowed]) => PERMISSIONS.includes(key) && typeof allowed === 'boolean');
+const normalizedPermissions = value => Object.fromEntries(PERMISSIONS.map(key => [key, Object.hasOwn(value || {}, key) ? value[key] === true : true]));
 const emailValue = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
 const validEmail = value => value.length <= 254 && /^[^\s<>\x00-\x1f@]+@[^\s<>\x00-\x1f@]+\.[^\s<>\x00-\x1f@]+$/.test(value);
 class Failure extends Error {
@@ -39,13 +43,14 @@ async function readBody(request) {
 }
 
 function validate(body, config) {
-  const fields = {list: [], invite: ['email', 'role', 'export_level'], update_access: ['user_id', 'role', 'active', 'export_level']};
+  const fields = {list: [], invite: ['email', 'role', 'export_level', 'permissions'], update_access: ['user_id', 'role', 'active', 'export_level', 'permissions']};
   if (!Object.hasOwn(fields, body.action)) fail(400, 'invalid_action', 'Choose list, invite, or update_access.');
   const allowed = new Set(['action', 'colony_id', ...fields[body.action]]);
   if (Object.keys(body).some(key => !allowed.has(key))) fail(400, 'invalid_request', 'The request contains unsupported fields.');
   if (body.colony_id !== config.colonyId) fail(403, 'wrong_colony', 'This endpoint manages only its configured colony.');
-  if (body.action !== 'list' && !['viewer', 'editor'].includes(body.role)) fail(400, 'invalid_role', 'Access must be viewer or editor.');
+  if (body.action !== 'list' && !['viewer', 'editor', 'manager'].includes(body.role)) fail(400, 'invalid_role', 'Access must be viewer, editor, or manager.');
   if (body.export_level !== undefined && !EXPORT_LEVELS.includes(body.export_level)) fail(400, 'invalid_export_level', 'Export permission must be low, high, or max.');
+  if (body.permissions !== undefined && !validPermissions(body.permissions)) fail(400, 'invalid_permissions', 'Manager permissions must contain only known boolean flags.');
   if (body.action === 'invite') {
     body.email = emailValue(body.email);
     if (!validEmail(body.email)) fail(400, 'invalid_email', 'Enter a valid email address.');
@@ -84,7 +89,7 @@ export function createHandler({env, fetchImpl = fetch}) {
       const identity = await call('/auth/v1/user');
       const actor = identity.data;
       if (!identity.ok || !UUID.test(actor?.id || '') || actor?.is_anonymous || !actor?.email_confirmed_at || emailValue(actor?.email) !== config.ownerEmail) fail(403, 'owner_required', 'Only the configured owner can manage colony users.');
-      const membershipPath = '/rest/v1/memberships?select=colony_id,user_id,role,active,export_level&colony_id=eq.' + config.colonyId;
+      const membershipPath = '/rest/v1/memberships?select=colony_id,user_id,role,active,export_level,permissions&colony_id=eq.' + config.colonyId;
       const assertOwner = async () => {
         const result = await call(membershipPath + '&user_id=eq.' + actor.id);
         if (!result.ok) fail(result.status === 401 ? 401 : 503, 'membership_check_failed', 'Owner access could not be verified. Sign in again and retry.');
@@ -107,13 +112,14 @@ export function createHandler({env, fetchImpl = fetch}) {
       const publicUser = (row, user) => ({user_id: row.user_id, email: user?.email || null,
         name: typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name.slice(0, 200) : null,
         role: row.role, active: row.active, export_level: row.role === 'owner' ? 'max' : EXPORT_LEVELS.includes(row.export_level) ? row.export_level : 'low',
+        permissions: normalizedPermissions(row.permissions),
         status: !user ? 'unavailable' : !row.active ? 'disabled' : !user.email_confirmed_at && user.invited_at ? 'invited' : 'active'});
       const protect = (id, row) => {
         if (id === actor.id || row?.role === 'owner') fail(403, 'owner_protected', 'Owner accounts are read-only in user management.');
       };
       const save = async (user, action, role, active, emailSent = false) => {
         let result; const exportLevel = body.export_level ?? (action === 'add' ? 'low' : null);
-        try { result = await call('/rest/v1/rpc/manage_colony_member', {method: 'POST', payload: {p_colony_id: config.colonyId, p_user_id: user.id, p_role: role, p_active: active, p_action: action, p_export_level: exportLevel}}); }
+        try { result = await call('/rest/v1/rpc/manage_colony_member', {method: 'POST', payload: {p_colony_id: config.colonyId, p_user_id: user.id, p_role: role, p_active: active, p_action: action, p_export_level: exportLevel, p_permissions: body.permissions ?? null}}); }
         catch (error) {
           if (emailSent) fail(502, 'membership_outcome_unknown', 'The invitation was sent, but access could not be confirmed. Reload the user list before trying again.', {invitation_sent: true});
           throw error;
@@ -127,6 +133,7 @@ export function createHandler({env, fetchImpl = fetch}) {
         }
         const row = result.data?.[0];
         if (!Array.isArray(result.data) || result.data.length !== 1 || row?.colony_id !== config.colonyId || row?.user_id !== user.id || row?.role !== role || row?.active !== active || !EXPORT_LEVELS.includes(row?.export_level) || exportLevel !== null && row.export_level !== exportLevel) fail(502, 'membership_outcome_unknown', 'Access could not be confirmed. Reload the user list before trying again.', {invitation_sent: emailSent});
+        if (role === 'manager' && (!validPermissions(row.permissions) || PERMISSIONS.some(key => !Object.hasOwn(row.permissions, key))) || body.permissions !== undefined && PERMISSIONS.some(key => row.permissions?.[key] !== normalizedPermissions(body.permissions)[key])) fail(502, 'membership_outcome_unknown', 'Manager permissions could not be confirmed. Reload the user list before trying again.', {invitation_sent: emailSent});
         return publicUser(row, user);
       };
 

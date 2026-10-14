@@ -109,12 +109,26 @@ test('experiment CSV exposes readable assay, animal, tissue and freezer columns;
     {event_id:'EXP-01',event_type:'experiment',event_date:'2026-10-01',experiment:{title:'=Example study',assays:['LumiCycle','IMG'],participants:[{mouse_sid:'0001',link_status:'confirmed'},{raw_identifier:'TAG-X',link_status:'unresolved',candidate_sids:['0002']}],sample_usages:[{sample_id:'SAMPLE-1',amount:2,unit:'µL'}],participants_truncated:true,participant_count:101}},
     {event_id:'SAMPLE-1',event_type:'experiment_sample',event_date:'2026-10-01',experiment_sample:{label:'SCN aliquot',tissue:'SCN',donors:[{mouse_sid:'0001',link_status:'confirmed'}],storage:{temperature_c:-70,freezer:'F1',box:'B2',position:'A3'}}}
   ];
-  await click(container,'preview');assert.match(container.innerHTML,/Experiments &amp; husbandry/);assert.match(container.innerHTML,/1 experiment or specimen records contain more/);
+  await click(container,'preview');assert.match(container.innerHTML,/Experiments, fees &amp; husbandry/);assert.match(container.innerHTML,/1 experiment or specimen records contain more/);
   await click(container,'export');const csv=await text(calls.downloads[0]);
   for(const column of ['experiment_title','experiment_assays','confirmed_mouse_sids','unresolved_animal_identifiers','experiment_sample_tissue','storage_temperature_c','storage_freezer','storage_position'])assert(csv.includes(column),column);
   assert.match(csv,/"'=Example study"/);assert.match(csv,/0001/);assert.match(csv,/TAG-X/);assert.match(csv,/"-70"/);
   change(container,'format','json');await click(container,'preview');await click(container,'export');
   const json=JSON.parse(await text(calls.downloads[1]));assert.equal(json.tables.husbandry_events[0].experiment.participants[0].mouse_sid,'0001');assert.equal(json.tables.husbandry_events[1].experiment_sample.storage.temperature_c,-70);
+});
+
+test('experiment and sample exports label users by acronym while JSON preserves the compatible operator field',async()=>{
+  const {container,calls,state}=await mount({scope:'records',format:'csv',entityTypes:['husbandry_events']});
+  state.fresh.tables.husbandry_events=[
+    {event_id:'EXP-USER',event_type:'experiment',event_date:'2026-10-01',experiment:{title:'User labels',operator:'JM'}},
+    {event_id:'SAMPLE-USER',event_type:'experiment_sample',event_date:'2026-10-01',experiment_sample:{label:'Sample user',operator:'AB'}}
+  ];
+  await click(container,'preview');await click(container,'export');const csv=await text(calls.downloads[0]);
+  assert(csv.includes('"experiment_user"'));assert(csv.includes('"sample_user"'));assert(csv.includes('"JM"'));assert(csv.includes('"AB"'));assert(!csv.includes('_operator'));
+  change(container,'format','xlsx');await click(container,'preview');await click(container,'export');const workbook=await text(calls.downloads[1]);
+  assert(workbook.includes('experiment_user'));assert(workbook.includes('sample_user'));assert(!workbook.includes('_operator'));
+  change(container,'format','json');await click(container,'preview');await click(container,'export');const json=JSON.parse(await text(calls.downloads[2]));
+  assert.equal(json.tables.husbandry_events[0].experiment.operator,'JM');assert.equal(json.tables.husbandry_events[1].experiment_sample.operator,'AB');assert.equal(json.tables.husbandry_events[0].experiment.user,undefined);
 });
 
 test('experiment and specimen CSV use explicit separate decapitation and sampling clock/circadian columns',async()=>{
@@ -131,6 +145,13 @@ test('experiment and specimen CSV use explicit separate decapitation and samplin
   for(const field of ['decapitation_circadian_time_source','sampling_circadian_time_source',...Object.keys(entrainment).map(key=>'entrainment_'+key)])assert(csv.includes('"'+field+'"'),field);
   assert(csv.includes('"LP1"'));assert(csv.includes('"30"'));assert(csv.includes('"date_difference"'));assert(csv.includes('"recorded"'));assert(csv.includes('"calculated"'));
   assert(!csv.includes('experiment_sample_collection_at'),'Specimen collection is explicitly named sampling in spreadsheet reports');
+});
+
+test('fee CSV exposes billing fields and evidence certainty and warns when a bounded list is truncated',async()=>{
+  const {container,calls,state}=await mount({scope:'records',format:'csv',entityTypes:['husbandry_events']});
+  state.fresh.tables.husbandry_events=[{event_id:'FEE',event_type:'lac_fee_month',event_date:'2026-10-01',lac_fee_month:{month:'2026-10',currency:'TWD',actual_total:1200,invoice_reference:'Invoice A',lines:[{quantity:100,quantity_unit:'cage_day',quantity_basis:'ambiguous',quantity_note:'Review source'}],lines_count:101,lines_truncated:true}}];
+  await click(container,'preview');assert.match(container.innerHTML,/more evidence lines or billing groups/);await click(container,'export');const csv=await text(calls.downloads[0]);
+  for(const column of ['fee_month','fee_currency','fee_actual_total','fee_invoice_reference','fee_lines','fee_lines_count','fee_lines_truncated'])assert(csv.includes('"'+column+'"'),column);assert(csv.includes('ambiguous'));assert(csv.includes('cage_day'));assert(csv.includes('Review source'));assert(calls.permissions>=3);
 });
 
 test('XLSX is a workbook for both scopes and scope changes invalidate previous previews',async()=>{

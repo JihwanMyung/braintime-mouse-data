@@ -72,20 +72,50 @@ test('complete explicit imported positive and negative genotypes count once per 
   assert.equal(isMouseGenotyped({physical_tag:'PB-M12',genotype:'PER2::LUC(-/-); Bmal1(fl/fl)'}),true);
 });
 
-test('names, tag primes, unknown dosage and parentage never imply genotyping',()=>{
-  for(const genotype of ['',null,'PER2::LUC','Bmal1','WT',"P'B'",'(P)',"P(')",'APP/PS1','PER2::LUC(?)','PER2::LUC unknown','PER2::LUC(+/-)?','PER2::LUC(+)','Bmal1(+/-)','Bmal1-ELuc(fl/fl)'])assert.equal(isMouseGenotyped({genotype}),false,String(genotype));
-  assert.equal(isMouseGenotyped({physical_tag:"P'B'-M12",sire_sids:['SYN-P'],dam_sids:['SYN-P']}),false);
+test('broad names, unresolved notation and parentage alone do not establish genotyping',()=>{
+  for(const genotype of ['',null,'PER2::LUC','Bmal1','WT','(P)',"P(')",'APP/PS1','PER2::LUC(?)','PER2::LUC unknown','PER2::LUC(+/-)?','PER2::LUC(+)','Bmal1(+/-)','Bmal1-ELuc(fl/fl)'])assert.equal(isMouseGenotyped({genotype}),false,String(genotype));
+  assert.equal(isMouseGenotyped({sire_sids:['SYN-P'],dam_sids:['SYN-P']}),false);
+  for(const mouseline of ['P',"PB'",'PER2::LUC','APP/PS1'])assert.equal(isMouseGenotyped({mouseline}),false,mouseline);
 });
 
-test('every current indicated target needs an explicit result; negative tests resolve uncertain labels',()=>{
-  assert.equal(isMouseGenotyped({physical_tag:'PB-M12',genotype:'PER2::LUC(+/-)'}),false);
+test('clear recorded shorthand counts without inventing a dosage or changing source data',()=>{
+  for(const genotype of ['P',"P'",'P′',"PB'","P'B'",'AD','P AD','Vg','Gt',"P E B' F V",'32']) {
+    const mouse={genotype},before=structuredClone(mouse);assert.equal(isMouseGenotyped(mouse),true,genotype);assert.deepEqual(mouse,before);
+  }
+  for(const physical_tag of ['P','P-M12',"P'B'-M12",'PB′-F7','M12-P','AD-M9','PF7'])assert.equal(isMouseGenotyped({physical_tag}),true,physical_tag);
+  for(const physical_tag of ['32','96','1234','M12','F7'])assert.equal(isMouseGenotyped({physical_tag}),false,physical_tag);
+  assert.equal(isMouseGenotyped({mouse_sid:'SYN-A'},[{mouse_sid:'SYN-A',gene_value:"PB'"}]),true);
+});
+
+test('every parenthesized or unknown shorthand component blocks completion until resolved',()=>{
+  for(const genotype of ['(P)',"P(')",'P(′)',"P (' )",'P(B)',"P'(B')",'(PB)',"(P)B'",'P?','PB?',"P; P(')",'P or B','P; unknown','P()',"P''",'P)'])assert.equal(isMouseGenotyped({genotype}),false,genotype);
+  for(const physical_tag of ['(P)-M12',"P(')-M12",'P(B)-F7','PB?-M12'])assert.equal(isMouseGenotyped({physical_tag}),false,physical_tag);
+  assert.equal(isMouseGenotyped({physical_tag:'(P)(B)-M12',genotype:"PB'"}),true);
+  assert.equal(isMouseGenotyped({physical_tag:'P-M12',genotype:'P(?)'}),false);
+  assert.equal(isMouseGenotyped({physical_tag:'PB-M12',genotype:'P; B unknown'}),false);
+  assert.equal(isMouseGenotyped({physical_tag:'PB-M12',mouseline:'P(B)'}),false);
+  assert.equal(isMouseGenotyped({physical_tag:'PB-M12',mouseline:'P(B)',genotype:"PB'"}),true);
+});
+
+test('explicit source and reviewed calls retain precedence over tag shorthand',()=>{
+  assert.equal(isMouseGenotyped({physical_tag:"P'B'-M12",genotype:'PER2::LUC(-/-); Bmal1(+/+)'}),true);
+  assert.equal(isMouseGenotyped({physical_tag:"P(')-M12",genotype:'P(-/-)'}),true);
+  assert.equal(isMouseGenotyped({genotype:'P negative; B(+/+)'}),true);
+  for(const genotype of ['P; PER2::LUC(-/-)',"P'; PER2::LUC(+/-)",'P; P(?)'])assert.equal(isMouseGenotyped({genotype}),false,genotype);
+  assert.equal(isMouseGenotyped({genotype:'P; PER2::LUC(+/-)'}),true);
+  assert.equal(isMouseGenotyped({genotype:"P(')",genetic_profile:pProfile()}),true);
+});
+
+test('every current indicated target needs a clear recorded result; negative tests resolve uncertain labels',()=>{
+  assert.equal(isMouseGenotyped({physical_tag:'P(B)-M12',genotype:'PER2::LUC(+/-)'}),false);
+  assert.equal(isMouseGenotyped({physical_tag:'PB-M12',genotype:'PER2::LUC(+/-)'}),true);
   assert.equal(isMouseGenotyped({physical_tag:'(P)(B)-M12',genotype:'PER2::LUC(-/-); Bmal1(+/+)'}),true);
   assert.equal(isMouseGenotyped({mouseline:'FoxJ1-Cre',genotype:'PER2::LUC(+/-)'}),false);
   assert.equal(isMouseGenotyped({genotype:'PER2::LUC(+/-), APP/PS1'}),false);
 });
 
 test('scoped linked genes can complete a mouse genotype; foreign or archived genes cannot',()=>{
-  const mouse={mouse_sid:'SYN-A',physical_tag:'PB-M12',genotype:'PER2::LUC(+/-)'};
+  const mouse={mouse_sid:'SYN-A',physical_tag:'P(B)-M12',genotype:'PER2::LUC(+/-)'};
   assert.equal(isMouseGenotyped(mouse,[{mouse_sid:'OTHER',gene_value:'Bmal1(fl/fl)'}]),false);
   assert.equal(isMouseGenotyped(mouse,[{mouse_sid:'SYN-A',gene_value:'Bmal1(fl/fl)',archived:true}]),false);
   assert.equal(isMouseGenotyped(mouse,[{mouse_sid:'SYN-A',gene_value:'Bmal1(fl/fl)'},{mouse_sid:'SYN-A',gene_value:'Bmal1(fl/fl)'}]),true);
@@ -112,8 +142,8 @@ test('reviewed profiles require valid complete confirmed calls, including wild-t
 });
 
 test('a partial reviewed profile cannot hide additional indicated strains or declared loci',()=>{
-  assert.equal(isMouseGenotyped({physical_tag:'PB-M12',genetic_profile:pProfile()}),false);
-  assert.equal(isMouseGenotyped({physical_tag:'PB-M12',genetic_profile:pProfile(),genotype:'Bmal1(fl/fl)'}),true);
+  assert.equal(isMouseGenotyped({physical_tag:'P(B)-M12',genetic_profile:pProfile()}),false);
+  assert.equal(isMouseGenotyped({physical_tag:'P(B)-M12',genetic_profile:pProfile(),genotype:'Bmal1(fl/fl)'}),true);
   const incomplete=pProfile();incomplete.loci.push(locus('bmal','Bmal1',['+','fl']));incomplete.calls.bmal=call([],'unknown');
   assert.equal(isMouseGenotyped({genetic_profile:incomplete}),false);
   assert.equal(isMouseGenotyped({mouseline:'Meis1',genetic_profile:pProfile()}),false);
@@ -122,7 +152,8 @@ test('a partial reviewed profile cannot hide additional indicated strains or dec
 test('reviewed profile names accept exact lab strain acronyms',()=>{
   const abbreviated=profile([locus('p','P')],{p:call(['P','+'])});
   assert.equal(isMouseGenotyped({physical_tag:'P-M12',genetic_profile:abbreviated}),true);
-  assert.equal(isMouseGenotyped({physical_tag:'PB-M12',genetic_profile:abbreviated}),false);
+  assert.equal(isMouseGenotyped({physical_tag:'P(B)-M12',genetic_profile:abbreviated}),false);
+  assert.equal(isMouseGenotyped({physical_tag:'PB-M12',genetic_profile:abbreviated}),true);
 });
 
 test('reviewed calls supersede stale source calls for only the reviewed targets',()=>{
@@ -155,4 +186,9 @@ test('duplicate named profile targets are rejected even when record IDs differ',
 test('genotyped numerator uses the same selected cohort as denominator and source is immutable',()=>{
   const data=dataset([{sex:'Male',genotype:'PER2::LUC(+/-)'},{sex:'Female',genotype:'PER2::LUC(-/-)'},{sex:'Female',genotype:'PER2::LUC'}],{matings:[{state:'Active',male_sids:['SYN-0'],female_sids:['SYN-2']}]});
   const before=structuredClone(data);assert.equal(summarize(data).genotyped,2);assert.equal(summarize(data,'active').genotyped,1);assert.equal(summarize(data,'active').total,2);assert.deepEqual(data,before);
+});
+
+test('shorthand numerator includes clear animals and excludes unresolved or ended animals in either scope',()=>{
+  const data=dataset([{genotype:'P'},{physical_tag:"PB'-F7"},{genotype:'P(B)'},{genotype:'AD',state:'Ended'}],{matings:[{state:'Active',male_sids:['SYN-0'],female_sids:['SYN-2']}]});
+  const before=structuredClone(data);assert.equal(summarize(data).genotyped,2);assert.equal(summarize(data).total,3);assert.equal(summarize(data,'active').genotyped,1);assert.equal(summarize(data,'active').total,2);assert.deepEqual(data,before);
 });

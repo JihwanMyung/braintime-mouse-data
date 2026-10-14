@@ -1,3 +1,6 @@
+import { renderLacFees, lacFeeHelpHTML } from '../web/lac-fees.js';
+import { userAcronymHelpHTML, setLabUserDirectory } from '../web/user-acronyms.js';
+import { normalizeManagerPermissions } from '../web/permissions.js';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
@@ -27,7 +30,7 @@ assert(!scheduleApplies({start_date:'2026-10-01',end_date:'2026-10-14',interval_
 let saved=model.createSyntheticDataset();saved.demo=true;
 const store={loadDataset:async()=>structuredClone(saved),saveDataset:async next=>{saved=structuredClone(next)},clearDataset:async()=>{saved=null},getCloudStatus:()=>({mode:'local',configured:false,signedIn:false})};
 const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
-const context={console,model,store,renderExperiments,experimentHelpHTML,experimentsForMouse,samplesForMouse,renderFamilyExplorer,familyHelpHTML,buildFamilyGenotypes,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeLitters,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
+const context={console,renderLacFees,lacFeeHelpHTML,userAcronymHelpHTML,setLabUserDirectory,normalizeManagerPermissions,renderLabMembers:async()=>{},renderAccountAcronym:async()=>{},renderAccountSetup:async()=>{},model,store,renderExperiments,experimentHelpHTML,experimentsForMouse,samplesForMouse,renderFamilyExplorer,familyHelpHTML,buildFamilyGenotypes,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeLitters,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
 vm.createContext(context);vm.runInContext(source,context);await new Promise(resolve=>setTimeout(resolve,10));
 vm.runInContext(`
 assert($('main').innerHTML.includes('Recently born'));
@@ -68,7 +71,7 @@ assert(!parentHTML(current).includes('recorded_single_parent'));
 route='mice';detail=null;query='';filters={};renderTable();assert(currentRows.length===dataset.tables.mice.length);
 const colonySummary=mouseSummaryHTML();
 assert($('main').innerHTML.indexOf('mouse-summary-heading')<$('main').innerHTML.indexOf('table-search'));
-for(const key of ['alive','male','female','P','E','B','F','V'])assert(colonySummary.includes('data-mouse-count="'+key+'"'));
+for(const key of ['alive','sex','P','E','B','F','V','AD'])assert(colonySummary.includes('data-mouse-count="'+key+'"'));
 filters={state:'Ended',archived:true};query='no matching animal';renderTable();assert(currentRows.length===0);assert($('main').innerHTML.includes(colonySummary),'colony totals stay independent of table filters');
 query='';filters={state:'Stock'};renderTable();assert(currentRows.every(r=>r.state==='Stock'));
 const priorState=dataset.tables.mice[0].state;dataset.tables.mice[0].state='Ended';renderTable();assert(!$('main').innerHTML.includes(colonySummary),'current totals update after records change');dataset.tables.mice[0].state=priorState;

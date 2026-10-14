@@ -1,10 +1,12 @@
-import { validateCageSummaryOptions } from './cage-summary-options.js?v=21';
-import { validateBreedingOptions } from './breeding-options.js?v=21';
-import { validateStrainDefinition } from './strain-registry.js?v=21';
-import { validateGeneticProfile } from './genotype-schema.js?v=21';
-import { validateScenario } from './genetics.js?v=21';
-import { validateExperimentRecord } from './experiment-model.js?v=21';
-import { validateCryoRecord } from './cryopreservation-model.js?v=21';
+import { validateLacFeeRecord } from './lac-fee-model.js?v=22';
+import { validateUserAcronym } from './user-acronyms.js';
+import { validateCageSummaryOptions } from './cage-summary-options.js?v=22';
+import { validateBreedingOptions } from './breeding-options.js?v=22';
+import { validateStrainDefinition } from './strain-registry.js?v=22';
+import { validateGeneticProfile } from './genotype-schema.js?v=22';
+import { validateScenario } from './genetics.js?v=22';
+import { validateExperimentRecord } from './experiment-model.js?v=22';
+import { validateCryoRecord } from './cryopreservation-model.js?v=22';
 export const ID_FIELDS = Object.freeze({mice:'mouse_sid',matings:'mating_sid',litters:'litter_sid',cages:'cage_sid',rooms:'room_id',racks:'rack_id',locations:'location_id',light_events:'event_id',husbandry_events:'event_id'});
 const copy = value => structuredClone(value);
 const ids = value => Array.isArray(value) ? value : (typeof value==='string' ? value.split(/[\n,]/).map(s=>s.trim()).filter(Boolean) : []);
@@ -293,7 +295,8 @@ export function validateRecord(type,draft,dataset,originalId=null) {
   }
   for(const name of ['sire_sids','dam_sids','male_sids','female_sids'])if(populated(draft[name])&&(!Array.isArray(draft[name])||draft[name].some(id=>typeof id!=='string'||!id.trim())))errors.push(`${name} must contain text identifiers.`);
   validateHousing(type,draft,old,base,errors);
-  if(type==='husbandry_events')errors.push(...validateStrainDefinition(draft,old),...validateBreedingOptions(draft,old),...validateCageSummaryOptions(draft,old));
+  if(type==='husbandry_events')errors.push(...validateStrainDefinition(draft,old),...validateBreedingOptions(draft,old),...validateCageSummaryOptions(draft,old),...validateUserAcronym(draft,old));
+  if(type==='husbandry_events'){const checked=validateLacFeeRecord(draft,base,old);errors.push(...checked.errors);warnings.push(...checked.warnings);}
   if(type==='husbandry_events'){const checked=validateExperimentRecord(draft,base,old);errors.push(...checked.errors);warnings.push(...checked.warnings);}
   if(type==='husbandry_events'){const checked=validateCryoRecord(draft,base,old);errors.push(...checked.errors);warnings.push(...checked.warnings);}
   if(type==='mice'&&key(draft.genetic_profile)!==key(old?.genetic_profile)) {

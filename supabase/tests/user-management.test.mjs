@@ -49,7 +49,7 @@ function fixture(options = {}) {
     if (path === '/rest/v1/rpc/manage_colony_member') {
       assert.equal(init.headers.apikey, values.SUPABASE_ANON_KEY);
       assert.equal(init.headers.Authorization, 'Bearer owner-token');
-      return json([membership(body.p_user_id, {role: body.p_role, active: body.p_active, export_level:body.p_export_level??members.find(row=>row.user_id===body.p_user_id)?.export_level??'low'})]);
+      return json([membership(body.p_user_id, {role: body.p_role, active: body.p_active, export_level:body.p_export_level??members.find(row=>row.user_id===body.p_user_id)?.export_level??'low', permissions:{...Object.fromEntries(['mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees'].map(key=>[key,true])),...(body.p_permissions??members.find(row=>row.user_id===body.p_user_id)?.permissions??{})}})]);
     }
     throw new Error('Unexpected route: ' + path);
   };
@@ -71,7 +71,7 @@ test('missing/invalid user credentials never reach admin APIs', async () => {
   const c = fixture(); assert.equal((await c.request({action: 'list'}, {Authorization: 'Bearer server-secret'})).response.status, 401); assert.equal(c.calls.length, 0);
 });
 test('editor, viewer, disabled owner, unknown owner email and unconfirmed account are rejected', async () => {
-  for (const row of [membership(owner, {role: 'editor'}), membership(owner, {role: 'viewer'}), membership(owner, {active: false})]) {
+  for (const row of [membership(owner, {role: 'editor'}), membership(owner, {role: 'manager'}), membership(owner, {role: 'viewer'}), membership(owner, {active: false})]) {
     const f = fixture({members: [row]}); assert.equal((await f.request({action: 'list'})).response.status, 403); assert.equal(adminCalls(f.calls).length, 0);
   }
   for (const identity of [user(owner, 'other@example.org'), user(owner, 'owner@example.org', {email_confirmed_at: null}), user(owner, 'owner@example.org', {is_anonymous: true})]) {
@@ -93,7 +93,7 @@ test('list returns only colony members and allowlisted profile fields with invit
   const f = fixture({members: [membership(owner), membership(target, {active: false}), membership(other)], accounts: [user(owner, 'owner@example.org'), user(target, 'member@example.org'), user(other, 'new@example.org', {email_confirmed_at: null, invited_at: '2026-01-02'}), user('44444444-4444-4444-8444-444444444444', 'foreign@example.org')]});
   const {response, data} = await f.request({action: 'list'});
   assert.equal(response.status, 200); assert.equal(data.users.length, 3); assert.equal(data.users[1].status, 'disabled'); assert.equal(data.users[2].status, 'invited');
-  assert.deepEqual(Object.keys(data.users[0]).sort(), ['active', 'email', 'export_level', 'name', 'role', 'status', 'user_id']);
+  assert.deepEqual(Object.keys(data.users[0]).sort(), ['active', 'email', 'export_level', 'name', 'permissions', 'role', 'status', 'user_id']);
   assert.ok(!JSON.stringify(data).includes('PRIVATE')); assert.ok(!JSON.stringify(data).includes('foreign@example.org'));
   assert.equal(response.headers.get('Cache-Control'), 'no-store'); assert.equal(response.headers.get('Access-Control-Allow-Origin'), 'https://example.org');
 });
@@ -113,7 +113,21 @@ test('all owner rows and self are protected; foreign target cannot gain membersh
 test('valid access update uses caller JWT, configured colony and atomic guarded RPC', async () => {
   const f = fixture(); const {data, response} = await f.request({action: 'update_access', user_id: target, role: 'editor', active: false});
   assert.equal(response.status, 200); assert.equal(data.user.role, 'editor'); assert.equal(data.user.active, false);
-  assert.deepEqual(mutations(f.calls)[0].body, {p_colony_id: colony, p_user_id: target, p_role: 'editor', p_active: false, p_action: 'update',p_export_level:null});
+  assert.deepEqual(mutations(f.calls)[0].body, {p_colony_id: colony, p_user_id: target, p_role: 'editor', p_active: false, p_action: 'update',p_export_level:null,p_permissions:null});
+});
+test('owner can assign manager flags and Max export independently, and the response verifies each flag', async () => {
+  const f = fixture();
+  const {data,response}=await f.request({action:'update_access',user_id:target,role:'manager',active:true,export_level:'max',permissions:{experiments:false,fees:false}});
+  assert.equal(response.status,200); assert.equal(data.user.role,'manager'); assert.equal(data.user.export_level,'max');
+  assert.equal(data.user.permissions.experiments,false); assert.equal(data.user.permissions.fees,false); assert.equal(data.user.permissions.mice,true);
+  assert.deepEqual(mutations(f.calls)[0].body.p_permissions,{experiments:false,fees:false});
+  const bad=fixture({intercept:({url})=>url.pathname==='/rest/v1/rpc/manage_colony_member'?json([membership(target,{role:'manager',permissions:{mice:true}})]):null});
+  assert.equal((await bad.request({action:'update_access',user_id:target,role:'manager',active:true})).response.status,502);
+});
+test('invalid or privileged manager flags are rejected before any external request',async()=>{
+  for(const permissions of [null,[],{owner:true},{accounts:true},{mice:'false'},{mice:null}]){
+    const f=fixture(); assert.equal((await f.request({action:'update_access',user_id:target,role:'manager',active:true,permissions})).response.status,400); assert.equal(f.calls.length,0);
+  }
 });
 test('existing Auth account is found beyond first page and added without another invitation email', async () => {
   const accounts = [...Array.from({length: 200}, (_, i) => user(target, `person${i}@example.org`)), user(other, 'new@example.org')];

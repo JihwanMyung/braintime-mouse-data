@@ -1,2 +1,7 @@
 [functions.sync-animal-sheet]
 verify_jwt = false
+
+# Clients send this project's public legacy anon JWT to the gateway. The handler
+# verifies account credentials through Auth and enforces server-only counters.
+[functions.username-sign-in]
+verify_jwt = true

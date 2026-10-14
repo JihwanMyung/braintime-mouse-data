@@ -22,7 +22,19 @@ begin
   if kind='locations' then
     result:=result||jsonb_build_object('record_origin',case when p->>'record_origin'='app_created' then 'app_created' else 'source_recorded' end);
   end if;
-  if kind='husbandry_events' and p->>'event_type'='cryopreservation_lot' then
+  if kind='husbandry_events' and p->>'event_type'='lac_fee_options' then
+    nested:=colony_private.export_fields(p->'lac_fee_options',array['schema_version','effective_from','currency','target_percent','maximum_percent','excluded_room_ids','revision']);
+    source_items:=case when jsonb_typeof(p#>'{lac_fee_options,groups}')='array' then p#>'{lac_fee_options,groups}' else '[]'::jsonb end;
+    select coalesce(jsonb_agg(colony_private.export_fields(value,array['key','label','unit','room_ids','rack_ids','rate','rate_period','rate_reference'])),'[]') into items
+      from (select value from jsonb_array_elements(source_items) where jsonb_typeof(value)='object' limit 100) a;
+    result:=result||jsonb_build_object('lac_fee_options',nested||jsonb_build_object('groups',items,'groups_count',jsonb_array_length(source_items),'groups_truncated',jsonb_array_length(items)<jsonb_array_length(source_items)));
+  elsif kind='husbandry_events' and p->>'event_type'='lac_fee_month' then
+    nested:=colony_private.export_fields(p->'lac_fee_month',array['schema_version','month','currency','actual_total','actual_date','invoice_reference','revision']);
+    source_items:=case when jsonb_typeof(p#>'{lac_fee_month,lines}')='array' then p#>'{lac_fee_month,lines}' else '[]'::jsonb end;
+    select coalesce(jsonb_agg(colony_private.export_fields(value,array['group_key','quantity','quantity_unit','evidence_kind','evidence_start','evidence_end','evidence_reference','quantity_basis','quantity_note','snapshot_count','actual_amount'])),'[]') into items
+      from (select value from jsonb_array_elements(source_items) where jsonb_typeof(value)='object' limit 100) a;
+    result:=result||jsonb_build_object('lac_fee_month',nested||jsonb_build_object('lines',items,'lines_count',jsonb_array_length(source_items),'lines_truncated',jsonb_array_length(items)<jsonb_array_length(source_items)));
+  elsif kind='husbandry_events' and p->>'event_type'='cryopreservation_lot' then
     nested:=colony_private.export_fields(p->'cryopreservation',array['schema_version','case_id','label','strain','background','modification_method','gene','zygosity','origin','batch_ids','frozen_date','material','status','manager','quantity','quantity_unit','quantity_as_of_date','donor_mouse_sids']);
     nested:=nested||jsonb_build_object('storage_location',colony_private.export_fields(p#>'{cryopreservation,storage_location}',array['facility','tank','canister','position']));
     result:=result||jsonb_build_object('cryopreservation',nested);
