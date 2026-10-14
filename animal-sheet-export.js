@@ -1,6 +1,8 @@
-import {mouseManager,cageManager} from './model.js?v=22';
-import {createWorkbookXlsx,columnName} from './workbook-export.js?v=22';
-export {createWorkbookXlsx} from './workbook-export.js?v=22';
+import {compareRooms} from './room-order.js?v=23';
+import { lightClock } from './husbandry.js?v=23';
+import {mouseManager,cageManager} from './model.js?v=23';
+import {createWorkbookXlsx,columnName} from './workbook-export.js?v=23';
+export {createWorkbookXlsx} from './workbook-export.js?v=23';
 
 const present=v=>v!==null&&v!==undefined&&v!=='';
 const id=v=>present(v)?String(v):'';
@@ -27,7 +29,7 @@ function applies(event,stamp) {
   return dateOnly(event.end_date)&&(/next phase start|exclusive/i.test(event.interval_semantics||'')?today<event.end_date:today<=event.end_date);
 }
 function lightText(e) {
-  return [e.protocol||'Protocol unknown',`on ${e.lights_on||'?'} / off ${e.lights_off||'?'}`,
+  return [e.protocol||'Protocol unknown',lightClock(e).label+(lightClock(e).defaulted?' (default LD)':''),
     present(e.cycle_hours)?`cycle ${e.cycle_hours} h`:null,present(e.light_hours)?`light ${e.light_hours} h`:null,
     present(e.intensity_lux)?`${e.intensity_lux} lux`:null,validZone(e.timezone)?e.timezone||'Asia/Taipei':`Invalid zone ${e.timezone}; date interpreted in Asia/Taipei`,
     /planned/i.test(e.evidence_status||'')?'Planned':e.actual_exposure_verified===true?'Exposure recorded as verified':'Exposure unverified'].filter(Boolean).join(' · ');
@@ -77,6 +79,7 @@ export function projectAnimalSheet(dataset,options={}) {
     if(cage&&!alive(cage))warnings.push('Stock mice reference an archived cage');
     if(cage&&mice.length&&/^(Ended|Inactive)$/i.test(cage.state||''))warnings.push(`Stock mice reference a ${cage.state.toLowerCase()} cage`);
     if(cage?._derived)warnings.push('Cage derived from current mouse references; no cage record in this export');
+    if(dataset.history_projection?.read_only===true&&cage?.history_occupancy_unknown===true)warnings.push('Historical cage assignment is recorded; animal occupancy is unknown.');
     const related=lights.filter(e=>(ref.locationId&&id(e.location_id)===ref.locationId)||(cage&&id(e.cage_sid)===id(cage.cage_sid))||(!e.location_id&&!e.cage_sid&&(e.rack_id?id(e.rack_id)===ref.rackId&&(!e.room_id||id(e.room_id)===ref.roomId):e.room_id&&id(e.room_id)===ref.roomId)));
     const applicableLights=related.filter(e=>applies(e,capturedAt)),undatedLights=related.filter(e=>!dateOnly(e.start_date)||(e.end_date&&!dateOnly(e.end_date)));
     if(applicableLights.length>1)warnings.push('Overlapping date-applicable light records');
@@ -85,7 +88,7 @@ export function projectAnimalSheet(dataset,options={}) {
     const row={...ref,kind,cage:cage||null,position:ref.position||null,cageId:id(cage?.cage_sid),cageTag:text(cage?.cage_tag),row:ref.position?.row??null,column:ref.position?.column??null,
       mice:[...mice].sort((a,b)=>compare(a.mouse_sid,b.mouse_sid)),totalStockCount:cage?(residents.get(id(cage.cage_sid))||[]).length:mice.length,
       manager:cageManager(cage,cage?(residents.get(id(cage.cage_sid))||[]):mice),applicableLights,undatedLights,warnings,
-      state:kind==='unassigned'?'Cage unassigned':cage?(!alive(cage)?'Archived cage':cage.state||'State unknown'):ref.position?.record_origin==='app_created'?'Empty position':'Unlinked source position'};
+      state:kind==='unassigned'?'Cage unassigned':cage?(!alive(cage)?'Archived cage':cage.state||'State unknown'):ref.position?.source_current===false?'Withdrawn source position':ref.position?.record_origin==='app_created'?'Empty position':'Unlinked source position'};
     rows.push(row);groupFor(ref).items.push(row);if(ref.locationId)usedPositions.add(ref.locationId);
   }
   for(const cage of allCages.values()){
@@ -94,13 +97,14 @@ export function projectAnimalSheet(dataset,options={}) {
     if(cageIds.size&&!cageIds.has(sid))continue;
     if(mouseIds.size&&!mice.length)continue;
     const hasCurrent=(residents.get(sid)||[]).length>0;
-    if(!hasCurrent&&(!alive(cage)||(!/^(Active|Occupied)$/i.test(cage.state||'')&&!(position&&alive(position)))))continue;
+    const historicalAssignment=dataset.history_projection?.read_only===true&&cage.history_read_only===true&&cage.history_evidence_kind==='last_recorded_assignment';
+    if(!hasCurrent&&(!alive(cage)||(!historicalAssignment&&!/^(Active|Occupied)$/i.test(cage.state||'')&&!(position&&alive(position)))))continue;
     add(cage,null,'cage',mice);
   }
   if(!cageIds.size&&!mouseIds.size)for(const position of get('locations').filter(alive))if(!usedPositions.has(id(position.location_id)))add(null,position,'position');
   if(!roomId&&!rackId&&!cageIds.size&&(selectedResidents.get('')||[]).length)add(null,null,'unassigned',selectedResidents.get(''));
   for(const positionId of usedPositions){const linked=rows.filter(r=>r.locationId===positionId&&r.cage);if(linked.length>1)for(const row of linked)row.warnings.push('Multiple cages share this position; occupancy requires review');}
-  const groups=[...groupMap.values()].sort((a,b)=>compare(a.roomName,b.roomName)||compare(a.rackName,b.rackName));
+  const groups=[...groupMap.values()].sort((a,b)=>compareRooms(a,b)||compare(a.rackName,b.rackName));
   for(const group of groups)group.items.sort((a,b)=>(coordinate(a.row)?a.row:Infinity)-(coordinate(b.row)?b.row:Infinity)||(coordinate(a.column)?a.column:Infinity)-(coordinate(b.column)?b.column:Infinity)||compare(a.cageId||a.locationId,b.cageId||b.locationId));
   const warnings=[...new Set(rows.flatMap(r=>r.warnings))];
   if(mouseIds.size)warnings.push('Selected-mouse export: other current residents are omitted; total resident counts remain shown.');
@@ -126,8 +130,8 @@ function cardLines(item) {
     [`${item.positionName}${item.cage?` · Cage ${item.cageTag||item.cageId} (SID ${item.cageId})`:''}`],
     [`${item.state} · ${selected} · Manager: ${managerText(item.manager)}`],
     [item.applicableLights.map(lightText).join('\n')||'No date-applicable light schedule recorded'],
-    ['Mouse SID','Physical tag','Sex','Born','Genotype','Manager'],
-    ...item.mice.map(m=>[id(m.mouse_sid),m.physical_tag,m.sex,m.date_of_birth,m.genotype,managerText(mouseManager(m))]),
+    ['Mouse SID','Tag / Ear marking','Sex','Born','Genotype','Manager'],
+    ...item.mice.map(m=>[id(m.mouse_sid),[m.physical_tag,m.ear_mark?`Ear: ${m.ear_mark}`:null].filter(Boolean).join('\n'),m.sex,m.date_of_birth,m.genotype,managerText(mouseManager(m))]),
     [item.warnings.join('; ')||(!item.cage&&item.kind==='position'&&item.position?.record_origin!=='app_created'?'Source-listed animals are historical evidence, not assigned residents.':'')]
   ];
 }
@@ -165,9 +169,9 @@ function mapSheet(projection) {
 }
 
 const columns={
-  mice:['mouse_sid','physical_tag','sex','date_of_birth','genotype','genotype_status','mouseline','strain','state','status','cage_sid','cage_tag','manager','manager_status','manager_basis','sire_sids','dam_sids','litter_sid','mating_sids','protocol','comment','source'],
+  mice:['mouse_sid','physical_tag','ear_mark','sex','date_of_birth','genotype','genotype_status','mouseline','strain','state','status','cage_sid','cage_tag','manager','manager_status','manager_basis','sire_sids','dam_sids','litter_sid','mating_sids','protocol','comment','source'],
   cages:['cage_sid','cage_tag','state','room_id','room','rack_id','rack','location_id','position','current_stock_count','selected_stock_count','manager','manager_status','manager_basis','derived','capacity','cage_type','comment','source'],
-  locations:['location_id','label','room_id','rack_id','locobox_id','row','column','record_origin','source_snapshot_date','source_observed_mouse_sids','source_candidate_mouse_sids','source_observed_tags','source_observed_cage_sids','source_candidate_cage_sids','evidence_status','notes','source'],
+  locations:['location_id','label','room_id','rack_id','locobox_id','row','column','record_origin','source_snapshot_date','source_current','source_last_seen_at','manager','manager_acronym','source_manager_name','source_manager_acronym','source_observed_mouse_sids','source_candidate_mouse_sids','source_observed_tags','source_observed_cage_sids','source_candidate_cage_sids','evidence_status','notes','source'],
   rooms:['room_id','name','label','notes','source'],racks:['rack_id','room_id','name','label','notes','source'],
   light_events:['event_id','room_id','rack_id','location_id','cage_sid','start_date','end_date','interval_semantics','protocol','cycle_hours','light_hours','lights_on','lights_off','transition_minutes','intensity_lux','timezone','evidence_status','actual_exposure_verified','notes','source'],
   husbandry_events:['event_id','event_type','event_date','mouse_sid','cage_sid','location_id','old_location_label','location_label','notes','source'],
@@ -191,7 +195,7 @@ function buildSheets(p,tables,selectedTypes) {
   const resolved={
     mice:mice.map(m=>{const manager=mouseManager(m);return {...m,manager:managerText(manager),manager_status:manager.status,manager_basis:manager.source};}),
     cages:cages.map(r=>({...r.cage,room_id:r.roomId,room:r.roomName,rack_id:r.rackId,rack:r.rackName,location_id:r.locationId,position:r.positionName,current_stock_count:r.totalStockCount,selected_stock_count:r.mice.length,manager:managerText(r.manager),manager_status:r.manager.status,manager_basis:r.manager.source,derived:!!r.cage._derived})),
-    locations:list(tables.locations).filter(r=>positionSet.has(id(r.location_id))),rooms:list(tables.rooms).filter(r=>roomSet.has(id(r.room_id))),racks:list(tables.racks).filter(r=>rackSet.has(id(r.rack_id))),
+    locations:list(tables.locations).filter(r=>positionSet.has(id(r.location_id))),rooms:list(tables.rooms).filter(r=>roomSet.has(id(r.room_id))).sort(compareRooms),racks:list(tables.racks).filter(r=>rackSet.has(id(r.rack_id))),
     light_events:list(tables.light_events).filter(e=>alive(e)&&scopedEvent(e)&&((from||to)||applies(e,p.capturedAt))),
     husbandry_events:list(tables.husbandry_events).filter(e=>alive(e)&&scopedEvent(e)),
     matings:list(tables.matings).filter(m=>alive(m)&&(matingSet.has(id(m.mating_sid))||cageSet.has(id(m.cage_sid)))),
@@ -210,7 +214,7 @@ function printCard(item) {
   if(!item)return '<article class="missing">No position record</article>';
   const mice=item.mice,parts=[];
   for(let start=0;start<Math.max(1,mice.length);start+=8){const part=mice.slice(start,start+8);
-    parts.push(`<article class="cage"><h4>${esc(item.positionName)}${item.cage?` · Cage ${esc(item.cageTag||item.cageId)} <small>SID ${esc(item.cageId)}</small>`:''}${start?' (continued)':''}</h4><p>${esc(item.state)} · ${mice.length!==item.totalStockCount?`${mice.length} selected / ${item.totalStockCount} total`:mice.length} Stock · <b>Manager:</b> ${esc(managerText(item.manager))}</p>${!start?`<p class="light">${item.applicableLights.length?item.applicableLights.map(e=>esc(lightText(e))).join('<br>'):'No date-applicable light schedule recorded'}</p>`:''}<table><thead><tr><th>SID / Tag</th><th>Sex / Born</th><th>Genotype</th><th>Manager</th></tr></thead><tbody>${part.length?part.map(m=>`<tr><td><b>${esc(m.mouse_sid)}</b><br>${esc(m.physical_tag)}</td><td>${esc(m.sex)}<br>${esc(m.date_of_birth)}</td><td>${esc(m.genotype||'Unknown')}</td><td>${esc(managerText(mouseManager(m)))}</td></tr>`).join(''):`<tr><td colspan="4">${item.kind==='position'&&item.position?.record_origin!=='app_created'?'Unlinked source position. Source-listed animals are not current assignments.':'No Stock mice assigned.'}</td></tr>`}</tbody></table>${item.warnings.length?`<p class="warning">${esc(item.warnings.join('; '))}</p>`:''}</article>`);
+    parts.push(`<article class="cage"><h4>${esc(item.positionName)}${item.cage?` · Cage ${esc(item.cageTag||item.cageId)} <small>SID ${esc(item.cageId)}</small>`:''}${start?' (continued)':''}</h4><p>${esc(item.state)} · ${mice.length!==item.totalStockCount?`${mice.length} selected / ${item.totalStockCount} total`:mice.length} Stock · <b>Manager:</b> ${esc(managerText(item.manager))}</p>${!start?`<p class="light">${item.applicableLights.length?item.applicableLights.map(e=>esc(lightText(e))).join('<br>'):'No date-applicable light schedule recorded'}</p>`:''}<table><thead><tr><th>SID / Tag</th><th>Sex / Born</th><th>Genotype</th><th>Manager</th></tr></thead><tbody>${part.length?part.map(m=>`<tr><td><b>${esc(m.mouse_sid)}</b><br>${esc(m.physical_tag)}${m.ear_mark?`<br>Ear: ${esc(m.ear_mark)}`:''}</td><td>${esc(m.sex)}<br>${esc(m.date_of_birth)}</td><td>${esc(m.genotype||'Unknown')}</td><td>${esc(managerText(mouseManager(m)))}</td></tr>`).join(''):`<tr><td colspan="4">${item.kind==='position'&&item.position?.record_origin!=='app_created'?'Unlinked source position. Source-listed animals are not current assignments.':'No Stock mice assigned.'}</td></tr>`}</tbody></table>${item.warnings.length?`<p class="warning">${esc(item.warnings.join('; '))}</p>`:''}</article>`);
   }
   return parts.join('');
 }

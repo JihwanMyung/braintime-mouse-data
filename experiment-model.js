@@ -1,7 +1,7 @@
 /* Experiments and specimens are versioned husbandry records. Linking a mouse,
  * completing an assay, or recording sample usage never changes animal state or
  * specimen stock. Imported source_* observations remain immutable. */
-import {blankEntrainment,validateEntrainment} from './experiment-timing.js?v=22';
+import {blankEntrainment,validateEntrainment} from './experiment-timing.js?v=23';
 export const EXPERIMENT_ASSAYS=Object.freeze(['LumiCycle','IMG','qPCR','WB','IF/IHC','CSF','tissue_storage','other']);
 export const EXPERIMENT_ASSAY_LABELS=Object.freeze({LumiCycle:'LumiCycle',IMG:'IMG (Imaging)',qPCR:'qPCR',WB:'WB', 'IF/IHC':'IF / IHC',CSF:'CSF sampling',tissue_storage:'Tissue collection / storage',other:'Other'});
 export const EXPERIMENT_STATUSES=Object.freeze(['unreviewed','planned','in_progress','completed','cancelled']);

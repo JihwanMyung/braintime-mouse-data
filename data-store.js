@@ -1,11 +1,20 @@
+import {clearHistoryIndex} from './history-index.js';
+import { projectLocoboxExport } from './locobox-export.js?v=23';
 import { PUBLIC_CONFIG } from './config.js';
 import { validateManagerPermissions } from './permissions.js';
-import { normalizeDataset, ID_FIELDS } from './model.js?v=22';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=23';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
+const CLOUD_CACHE_KEY='mouse-colony.cloud-cache-context.v1';
+const SOURCE_PROJECTION_VERSION=2;
+// Keep aligned with colony_private.managed_location_keys(). Raw Sheet blocks
+// can include financial cells and must never enter a restricted cache or save.
+const MANAGED_LOCATION_KEYS=new Set(['location_id','room_id','rack_id','label','row','column','capacity','locobox_id','active','state','manager','manager_acronym','notes','app_created_at','app_updated_at','app_archived_at','archived','record_origin','evidence_status','requires_review','source_current','source_last_seen_at','source_snapshot_date','source_label_conflict','source_manager_name','source_manager_acronym','source_manager_status','source_observed_mouse_sids','source_observed_cage_sids','source_candidate_mouse_sids','source_candidate_cage_sids','source_unresolved_explicit_mouse_sids','source_observed_tags']);
 const MANAGED=Object.keys(ID_FIELDS);
 const clone=value=>structuredClone(value);
+let feeVisibility=null,feeVisibilityContext=null;
+let authGeneration=0;
 let versions=new Map(),baseline=null,synced=false,refreshPromise=null,statusMessage='',pendingEmail=null;
 const memory=new Map();
 function getStorage(kind,key){try{return globalThis[kind]?.getItem(key)??null;}catch{return memory.get(`${kind}:${key}`)??null;}}
@@ -18,6 +27,7 @@ function setMode(value){setStorage('localStorage',MODE_KEY,value);}
 function invalidate(){synced=false;baseline=null;versions=new Map();}
 function saveSession(s){setStorage('sessionStorage',SESSION_KEY,s?JSON.stringify(s):null);}
 function stable(value){if(Array.isArray(value))return `[${value.map(stable).join(',')}]`;if(value&&typeof value==='object')return `{${Object.keys(value).sort().filter(k=>value[k]!==undefined).map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')}}`;return JSON.stringify(value);}
+function beginAuthAction(){const generation=++authGeneration,config=stable(configuration());const current=()=>generation===authGeneration&&stable(configuration())===config;return {current,check(){if(!current())throw new Error('The account or cloud configuration changed. Start sign-in again.');}};}
 
 let dbPromise;
 function database(){
@@ -43,8 +53,19 @@ async function local(action,value){
     tx.onabort=()=>reject(new Error('Local database transaction was cancelled.'));
   });
 }
-export async function loadDataset(){const d=await local('get');return d?normalizeDataset(d):null;}
-export async function clearDataset(){await local('delete');setStorage('localStorage',DEMO_KEY,null);setMode('local');invalidate();statusMessage='Local dataset cleared.';}
+export async function loadDataset(){
+ if(session()?.passwordRecovery)return null;
+ const d=await local('get');if(!d)return null;
+ if(mode()==='cloud'||readJSON('localStorage',CLOUD_CACHE_KEY)){
+  const c=configuration(),u=session()?.user?.id,previous=readJSON('localStorage',CLOUD_CACHE_KEY);
+  if(!u||!c||(previous&&(previous.url!==c.url||previous.colony!==c.colonyId||previous.user!==u))){await local('delete');return null;}
+  const policy=await refreshFeeVisibility({notify:false});
+  if(!policy.source_archive_allowed&&!currentRestrictedCache(d,previous,policy))return pullFromCloud();
+  if(policy.source_archive_allowed&&d.source_archive_restricted)return pullFromCloud();
+ }
+ return normalizeDataset(d);
+}
+export async function clearDataset(){await local('delete');setStorage('localStorage',CLOUD_CACHE_KEY,null);setStorage('localStorage',DEMO_KEY,null);setMode('local');invalidate();statusMessage='Local dataset cleared.';}
 
 function publicKey(key){
   if(typeof key!=='string'||!key.trim())throw new Error('A Supabase publishable or anon key is required.');
@@ -62,12 +83,12 @@ export function configureCloud({url,anonKey,colonyId}){
   if(u.protocol!=='https:'&&!(u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname)))throw new Error('Supabase URL must use HTTPS.');
   if(u.username||u.password||u.search||u.hash||u.pathname!=='/')throw new Error('Enter the Supabase project URL without credentials or a path.');
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(colonyId??''))throw new Error('A valid colony UUID is required.');
-  const config={url:u.origin,anonKey:publicKey(anonKey.trim()),colonyId};
+  const config={url:u.origin,anonKey:publicKey(anonKey.trim()),colonyId};authGeneration++;
   setStorage('localStorage',DEMO_KEY,null);setStorage('localStorage',CONFIG_KEY,JSON.stringify(config));saveSession(null);pendingEmail=null;setMode('local');invalidate();statusMessage='Cloud configured. Sign in to connect.';
 }
 export function getCloudStatus(){
   const c=configuration(),s=session();
-  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:mode()==='local'||synced,colonyId:c?.colonyId??null,role:s?.role??null,permissions:s?.permissions??{},username:s?.username??null,setupRequired:s?.setupRequired===true,exportLevel:s?.role==='owner'?'max':s?.exportLevel??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
+  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),passwordRecovery:s?.passwordRecovery===true,email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:s?.passwordRecovery!==true&&(mode()==='local'||synced),colonyId:c?.colonyId??null,role:s?.role??null,permissions:s?.permissions??{},username:s?.username??null,setupRequired:s?.setupRequired===true,exportLevel:s?.role==='owner'?'max':s?.exportLevel??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
 }
 async function responseJSON(response){const text=await response.text();if(!text)return null;try{return JSON.parse(text);}catch{throw new Error('The cloud server returned an unreadable response.');}}
 function apiError(response,body){
@@ -92,12 +113,14 @@ function normalizeSession(s){if(!s?.access_token||!s?.refresh_token)throw new Er
 async function accessToken(){
   let s=session();if(!s?.access_token)throw new Error('Sign in before using cloud data.');
   if(s.expires_at<=Date.now()/1000+60){
-    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{const next={...normalizeSession(result),role:s.role,permissions:s.permissions,username:s.username,setupRequired:s.setupRequired,exportLevel:s.exportLevel};saveSession(next);return next;}).catch(e=>{saveSession(null);invalidate();throw e;}).finally(()=>{refreshPromise=null;});
+    const generation=authGeneration,config=stable(configuration());const current=()=>generation===authGeneration&&config===stable(configuration())&&session()?.user?.id===s.user?.id;
+    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{if(!current())throw new Error('The account changed during session refresh.');const next={...normalizeSession(result),passwordRecovery:s.passwordRecovery===true,role:s.role,permissions:s.permissions,username:s.username,setupRequired:s.setupRequired,exportLevel:s.exportLevel};saveSession(next);return next;}).catch(e=>{if(current()){saveSession(null);invalidate();}throw e;}).finally(()=>{refreshPromise=null;});
     s=await refreshPromise;
   }
   return s.access_token;
 }
 async function request(route,{method='GET',body}={}){
+  if(session()?.passwordRecovery)throw new Error('Finish resetting your password before opening colony data.');
   const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
   const token=await accessToken();
   const response=await fetch(`${c.url}/rest/v1/${route}`,{method,headers:{apikey:c.anonKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json',...(method==='POST'?{Prefer:'return=representation'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
@@ -111,18 +134,18 @@ async function membership(){
   if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==s.user.id)throw new Error('The cloud account or colony changed. Sign in again.');
   saveSession({...session(),role:rows[0].role,permissions:rows[0].permissions||{},setupRequired:false,exportLevel:rows[0].role==='owner'?'max':rows[0].export_level||'low'});return rows[0].role;
 }
-async function establishMembershipOrSetup(){
+async function establishMembershipOrSetup(action){
   const c=configuration(),s=session();
   const rows=await request(`memberships?select=role,active,export_level,permissions&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
-  if(!Array.isArray(rows))throw new Error('Unable to verify colony access.');
+  action?.check();if(!Array.isArray(rows))throw new Error('Unable to verify colony access.');
   if(rows.length){await membership();return;}
   const profile=await request('rpc/get_my_lab_member',{method:'POST',body:{p_colony_id:c.colonyId}});
-  if(profile?.eligible!==true||profile.setup_required!==true||!profile.member)throw new Error('This account is not an active member of the configured colony.');
+  action?.check();if(profile?.eligible!==true||profile.setup_required!==true||!profile.member)throw new Error('This account is not an active member of the configured colony.');
   saveSession({...session(),role:'pending',setupRequired:true});
 }
 export async function signIn(email,password){
   if(typeof email!=='string'||typeof password!=='string'||!email.trim()||!password)throw new Error('Enter your email or username and password.');
-  let result;
+  const action=beginAuthAction();saveSession(null);invalidate();let result;
   if(email.includes('@'))result=await authRequest('token?grant_type=password',{email:email.trim(),password});
   else {
     const c=configuration();if(!c)throw new Error('Configure the cloud project first.');
@@ -132,8 +155,8 @@ export async function signIn(email,password){
     const response=await fetch(`${c.url}/functions/v1/username-sign-in`,{method:'POST',cache:'no-store',redirect:'error',headers:{apikey:anonKey,Authorization:`Bearer ${anonKey}`,'Content-Type':'application/json'},body:JSON.stringify({username:email.trim(),password})});
     result=await responseJSON(response);if(!response.ok)throw new Error(result?.message||'Username sign-in was rejected.');
   }
-  saveSession(normalizeSession(result));invalidate();
-  try{await establishMembershipOrSetup();statusMessage='Signed in.';}catch(e){saveSession(null);statusMessage=e.message;throw e;}
+  action.check();saveSession(normalizeSession(result));invalidate();
+  try{await establishMembershipOrSetup(action);action.check();statusMessage='Signed in.';}catch(e){if(action.current()){saveSession(null);statusMessage=e.message;}throw e;}
   return getCloudStatus();
 }
 function emailAddress(email){
@@ -141,9 +164,9 @@ function emailAddress(email){
   return email.trim();
 }
 export async function requestEmailCode(email){
-  const address=emailAddress(email);
+  const address=emailAddress(email),action=beginAuthAction();
   // Supabase's email template must include {{ .Token }} for the code entry flow.
-  await authRequest('otp',{email:address,create_user:false});
+  await authRequest('otp',{email:address,create_user:false});action.check();
   pendingEmail=address;statusMessage='Email code requested. Check your inbox and enter the code.';
   return {email:address,message:statusMessage};
 }
@@ -152,13 +175,14 @@ export async function requestEmailLink(email,redirectTo,{firstTime=false}={}){
   let redirect;try{redirect=new URL(redirectTo);}catch{throw new Error('A valid app return URL is required.');}
   const local=['localhost','127.0.0.1','[::1]'].includes(redirect.hostname);
   if(!app?.origin||redirect.origin!==app.origin||redirect.username||redirect.password||redirect.search||redirect.hash||(redirect.protocol!=='https:'&&!(local&&redirect.protocol==='http:')))throw new Error('The sign-in link must return to this app without query parameters or a fragment.');
-  await authRequest(`otp?redirect_to=${encodeURIComponent(redirect.href)}`,{email:address,create_user:firstTime===true});
+  const action=beginAuthAction();await authRequest(`otp?redirect_to=${encodeURIComponent(redirect.href)}`,{email:address,create_user:firstTime===true});action.check();
   pendingEmail=address;statusMessage='Sign-in link requested. Open the link from your email on the device you want to use.';
   return {email:address,message:statusMessage};
 }
 export async function consumeAuthCallback(){
   const location=globalThis.location,fragment=new URLSearchParams((location?.hash??'').replace(/^#/,''));
   if(!['access_token','refresh_token','error','error_description','error_code'].some(key=>fragment.has(key)))return null;
+  const action=beginAuthAction();
   // Remove credentials from the address and history before doing any asynchronous
   // work. Never place callback tokens in logs, DOM text, or persistent storage.
   try{globalThis.history.replaceState(globalThis.history.state,'',`${location.pathname}${location.search}`);}
@@ -175,25 +199,28 @@ export async function consumeAuthCallback(){
     if(claims.iss!==`${c.url}/auth/v1`||claims.role!=='authenticated'||!(Array.isArray(claims.aud)?claims.aud:[claims.aud]).includes('authenticated')||typeof claims.sub!=='string'||!Number.isFinite(claims.exp)||claims.exp<=Date.now()/1000)throw new Error('This sign-in link is expired or belongs to a different cloud project.');
     const headers={apikey:c.anonKey,Authorization:`Bearer ${access}`};
     const verified=await fetch(`${c.url}/auth/v1/user`,{headers,cache:'no-store'});
-    if(!verified.ok)throw new Error('The cloud project rejected this sign-in link. Request a new link.');
-    const user=await responseJSON(verified);
+    action.check();if(!verified.ok)throw new Error('The cloud project rejected this sign-in link. Request a new link.');
+    const user=await responseJSON(verified);action.check();
     if(user?.id!==claims.sub||user.is_anonymous)throw new Error('The cloud project could not verify this account.');
     const membershipResponse=await fetch(`${c.url}/rest/v1/memberships?select=role,active,export_level,permissions&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
-    if(!membershipResponse.ok)throw new Error('Unable to verify colony membership. Sign in again or contact the colony owner.');
-    const rows=await responseJSON(membershipResponse);
+    action.check();if(!membershipResponse.ok)throw new Error('Unable to verify colony membership. Sign in again or contact the colony owner.');
+    const rows=await responseJSON(membershipResponse);action.check();
     let pendingSetup=false;
     if(Array.isArray(rows)&&rows.length===0){
       const profileResponse=await fetch(`${c.url}/rest/v1/rpc/get_my_lab_member`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({p_colony_id:c.colonyId})});
-      const profile=await responseJSON(profileResponse);pendingSetup=profileResponse.ok&&profile?.eligible===true&&profile.setup_required===true&&!!profile.member;
+      const profile=await responseJSON(profileResponse);action.check();pendingSetup=profileResponse.ok&&profile?.eligible===true&&profile.setup_required===true&&!!profile.member;
     }
     if(!pendingSetup&&(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','manager','editor','viewer'].includes(rows[0].role)))throw new Error('This account is not an active member of the configured colony.');
     const member=rows[0]||{role:'pending',permissions:{},export_level:null};
+    action.check();
+    if(type==='recovery'){await local('delete');await clearHistoryIndex();action.check();setStorage('localStorage',CLOUD_CACHE_KEY,null);}
     // A local JWT decode only checks scope; the current project's Auth endpoint
     // authenticates the token. Persist only after that and membership both pass.
-    saveSession({access_token:access,refresh_token:refresh,token_type:'bearer',expires_at:claims.exp,user,role:member.role,permissions:member.permissions||{},setupRequired:pendingSetup,exportLevel:pendingSetup?null:member.role==='owner'?'max':member.export_level||'low'});
-    pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';
+    saveSession({access_token:access,refresh_token:refresh,token_type:'bearer',expires_at:claims.exp,user,role:member.role,passwordRecovery:type==='recovery',permissions:type==='recovery'?{}:member.permissions||{},setupRequired:pendingSetup,exportLevel:pendingSetup?null:member.role==='owner'?'max':member.export_level||'low'});
+    pendingEmail=null;statusMessage=type==='recovery'?'Set a new password to finish account recovery.':'Signed in. Pull the shared colony to continue.';
     return {...getCloudStatus(),needsPasswordSetup:pendingSetup||type==='invite'||type==='recovery'};
   }catch(error){
+    if(!action.current())throw new Error('The account or cloud configuration changed. Start sign-in again.');
     saveSession(null);invalidate();
     statusMessage=error instanceof TypeError?'The sign-in link could not be verified because the cloud is unreachable. Request a new link when connected.':error.message;
     throw new Error(statusMessage);
@@ -202,14 +229,14 @@ export async function consumeAuthCallback(){
 export async function verifyEmailCode(email,token){
   const address=emailAddress(email),code=typeof token==='string'?token.trim():'';
   if(!/^\d{6,10}$/.test(code))throw new Error('Enter the numeric verification code from your email.');
-  const result=normalizeSession(await authRequest('verify',{email:address,token:code,type:'email'}));
-  saveSession(result);invalidate();
-  try{await establishMembershipOrSetup();pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';}
-  catch(e){saveSession(null);invalidate();statusMessage=e.message;throw e;}
+  const action=beginAuthAction();saveSession(null);invalidate();const result=normalizeSession(await authRequest('verify',{email:address,token:code,type:'email'}));
+  action.check();saveSession(result);invalidate();
+  try{await establishMembershipOrSetup(action);action.check();pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';}
+  catch(e){if(action.current()){saveSession(null);invalidate();statusMessage=e.message;}throw e;}
   return getCloudStatus();
 }
 export async function signOut(){
-  const s=session();saveSession(null);pendingEmail=null;setMode('local');invalidate();statusMessage='Signed out. Local data is retained.';
+  authGeneration++;const s=session(),wasCloud=mode()==='cloud'||Boolean(readJSON('localStorage',CLOUD_CACHE_KEY));saveSession(null);pendingEmail=null;setMode('local');invalidate();feeVisibility=null;feeVisibilityContext=null;if(wasCloud){await local('delete');setStorage('localStorage',CLOUD_CACHE_KEY,null);await clearHistoryIndex();}statusMessage=wasCloud?'Signed out. Shared data cleared from this device.':'Signed out. Local data is retained.';
   if(s?.access_token)try{await authRequest('logout',null,s.access_token);}catch{/* Local credentials are already removed even if the server is unreachable. */}
 }
 
@@ -218,6 +245,7 @@ export async function updateAccountPassword(password) {
   if(!c)throw new Error('Configure the cloud project first.');
   if(!signedIn?.access_token||!signedIn.user?.id)throw new Error('Sign in before changing your account password.');
   if(typeof password!=='string'||password.length<12||password.length>128)throw new Error('Use an account password between 12 and 128 characters.');
+  if(signedIn.passwordRecovery)throw new Error('Use the password recovery form to finish resetting your password.');
   if(signedIn.role==='pending'){const mine=await getMyLabMember();if(!mine?.eligible||!mine.setup_required)throw new Error('Your account is not eligible for first-time setup.');}else await membership();
   const token=await accessToken(),current=configuration();
   if(current?.url!==c.url||current.colonyId!==c.colonyId||session()?.user?.id!==signedIn.user.id)throw new Error('The cloud account or colony changed. Sign in again before changing your password.');
@@ -258,19 +286,75 @@ export async function updateAccountProfile(name) {
   saveSession({...activeSession,user:result});
   return {user_id:result.id,name:fullName,message:'Account profile updated.'};
 }
+const feeRecord=r=>r?.entity_type==='husbandry_events'&&(/^(lac_fee|fee|fees|billing)_/.test(r.payload?.event_type||'')||['animal_sheet_cage_snapshot','animal_sheet_source_change'].includes(r.payload?.event_type)||['source_cage_snapshot','animal_sheet_change','lac_fee_options','lac_fee_month','fee_options','fee_month','fee_actual','fees','billing','billing_options','billing_month'].some(k=>Object.hasOwn(r.payload||{},k)));
+function checkedFeeVisibility(value){
+ if(!value||!Number.isInteger(value.version)||value.version<0||typeof value.owner!=='boolean'||typeof value.estimate!=='boolean'||typeof value.actual!=='boolean'||value.source_archive_allowed!==(value.estimate&&value.actual))throw new Error('Fee visibility could not be verified. Reconnect before loading financial data.');
+ return value;
+}
+function managedLocationPayload(payload){return payload&&typeof payload==='object'&&!Array.isArray(payload)&&Object.keys(payload).every(key=>MANAGED_LOCATION_KEYS.has(key));}
+function currentRestrictedCache(data,mark,policy){
+ return data?.source_archive_restricted===true&&data.source_projection_version===SOURCE_PROJECTION_VERSION&&mark?.source_projection_version===SOURCE_PROJECTION_VERSION&&mark.estimate===policy.estimate&&mark.actual===policy.actual&&(data.tables?.locations||[]).every(managedLocationPayload);
+}
+function sameFeeVisibility(a,b){return a.version===b.version&&a.estimate===b.estimate&&a.actual===b.actual&&a.source_archive_allowed===b.source_archive_allowed;}
+function checkedManagedLocation(row,colonyId){
+ if(row?.entity_type!=='locations'||row.colony_id!==colonyId||typeof row.entity_id!=='string'||!row.entity_id||!Number.isInteger(row.version)||row.version<1||typeof row.archived!=='boolean'||!managedLocationPayload(row.payload)||row.payload.location_id!==row.entity_id||Boolean(row.payload.app_archived_at)!==row.archived)throw new Error('Invalid projected location record. Pull the latest cloud data.');
+ return row;
+}
+async function refreshFeeVisibility({notify=true}={}){
+ const context=exportContext(),c=configuration();if(!c||!session()?.access_token)throw new Error('Sign in before loading shared fee visibility.');
+ const value=checkedFeeVisibility(await request('rpc/get_lac_fee_visibility',{method:'POST',body:{p_colony_id:c.colonyId}}));checkExportContext(context);
+ const previousPolicy=feeVisibility,changed=feeVisibilityContext!==context||!feeVisibility||feeVisibility.estimate!==value.estimate||feeVisibility.actual!==value.actual;
+ feeVisibility=value;feeVisibilityContext=context;
+ // A projected baseline cannot become a full replacement when access expands.
+ // Reload the previously withheld fields before allowing another cloud edit.
+ if(previousPolicy?.source_archive_allowed===false&&value.source_archive_allowed)invalidate();
+ if(!value.source_archive_allowed){
+  const cached=await local('get'),mark=readJSON('localStorage',CLOUD_CACHE_KEY),validCache=currentRestrictedCache(cached,mark,value)&&mark.url===c.url&&mark.colony===c.colonyId&&mark.user===session()?.user?.id;
+  if(changed||!validCache){
+  invalidate();if(!validCache)await local('delete');
+  await clearHistoryIndex();checkExportContext(context);
+  if(notify&&globalThis.dispatchEvent&&globalThis.CustomEvent)globalThis.dispatchEvent(new CustomEvent('lac-fee-visibility-changed',{detail:{estimate:value.estimate,actual:value.actual,source_archive_allowed:false}}));
+  }
+ }
+ return clone(value);
+}
+export async function getLacFeeVisibility(){
+ if(mode()==='local'&&(!configuration()||getStorage('localStorage',DEMO_KEY)==='true'))return {version:0,owner:false,estimate:true,actual:true,source_archive_allowed:true,local:true};
+ await membership();return refreshFeeVisibility();
+}
+export async function saveLacFeeVisibility({version,levels}){
+ await membership();const context=exportContext(),c=configuration();
+ if(session()?.role!=='owner')throw new Error('Only the owner can change fee visibility.');
+ const value=checkedFeeVisibility(await request('rpc/save_lac_fee_visibility',{method:'POST',body:{p_colony_id:c.colonyId,p_version:version,p_levels:levels}}));checkExportContext(context);feeVisibility=value;feeVisibilityContext=context;return clone(value);
+}
 async function allRecords(){
-  const c=configuration();const result=[];
+  const context=exportContext(),c=configuration(),policy=await refreshFeeVisibility({notify:false});const result=[];
+  try{
   // Archive chunks have much larger payloads than individual mice. Keep those
   // responses bounded instead of putting hundreds of chunks on a 1,000-row page.
-  for(const [filter,limit] of [['neq.archive',1000],['eq.archive',3]]){
+  for(const [filter,limit] of (policy.source_archive_allowed?[['neq.archive',1000],['eq.archive',3]]:[['neq.archive',1000]])){
     let offset=0;
     while(true){
       const page=await request(`entity_records?select=colony_id,entity_type,entity_id,payload,version,archived&colony_id=eq.${encodeURIComponent(c.colonyId)}&entity_type=${filter}&order=entity_type.asc,entity_id.asc&limit=${limit}&offset=${offset}`);
       if(!Array.isArray(page))throw new Error('Cloud records were not returned as a list.');
-      result.push(...page);if(page.length<limit)break;offset+=page.length;
+      result.push(...(policy.source_archive_allowed?page:page.filter(r=>r.entity_type!=='locations'&&!feeRecord(r))));if(page.length<limit)break;offset+=page.length;
     }
   }
-  return result;
+  if(!policy.source_archive_allowed){
+   let offset=0;while(true){const page=await request('rpc/get_lac_fee_records',{method:'POST',body:{p_colony_id:c.colonyId,p_offset:offset,p_limit:250}});
+    const nextPolicy=checkedFeeVisibility(page?.visibility);if(nextPolicy.version!==policy.version||nextPolicy.estimate!==policy.estimate||nextPolicy.actual!==policy.actual||!Array.isArray(page.rows))throw new Error('Fee visibility changed while loading. Pull again.');
+    if(page.rows.some(r=>!feeRecord(r)||r.colony_id!==c.colonyId))throw new Error('Invalid projected fee records.');result.push(...page.rows);
+    if(page.next_offset===null)break;if(!Number.isInteger(page.next_offset)||page.next_offset<=offset)throw new Error('Invalid fee page cursor.');offset=page.next_offset;
+   }
+   offset=0;while(true){const page=await request('rpc/get_managed_locations',{method:'POST',body:{p_colony_id:c.colonyId,p_offset:offset,p_limit:250}});checkExportContext(context);
+    const nextPolicy=checkedFeeVisibility(page?.visibility);if(!sameFeeVisibility(nextPolicy,policy)||!Array.isArray(page.rows))throw new Error('Fee visibility changed while loading locations. Pull again.');
+    for(const row of page.rows)result.push(checkedManagedLocation(row,c.colonyId));
+    if(page.next_offset===null)break;if(!Number.isInteger(page.next_offset)||page.next_offset<=offset)throw new Error('Invalid location page cursor.');offset=page.next_offset;
+   }
+  }
+  checkExportContext(context);const finalPolicy=await refreshFeeVisibility({notify:false});if(!sameFeeVisibility(finalPolicy,policy))throw new Error('Fee visibility changed while loading. Pull again.');
+  result.fee_visibility=policy;return result;
+  }catch(error){invalidate();if(!policy.source_archive_allowed)await local('delete');throw error;}
 }
 const recordKey=r=>`${r.entity_type}:${r.entity_id}`;
 async function entityRecords(dataset){
@@ -282,12 +366,13 @@ async function entityRecords(dataset){
     const r={entity_type:type,entity_id:id,payload,archived:Boolean(payload.app_archived_at)};
     if(seen.has(recordKey(r)))throw new Error(`Duplicate cloud identifier: ${id}.`);seen.add(recordKey(r));records.push(r);
   }
-  records.push(...await encodeArchive(data));
+  if(!data.source_archive_restricted){const archiveData={...data};delete archiveData._cloud_read_context;delete archiveData.fee_visibility;delete archiveData.source_archive_restricted;records.push(...await encodeArchive(archiveData));}
   return records;
 }
 async function assemble(rows){
-  if(!rows.some(r=>r.entity_type==='archive'&&r.entity_id==='reconstruction'))throw new Error('Cloud import is incomplete: its reconstruction manifest is missing. Finish or retry the initial upload before pulling.');
-  const data=await decodeArchive(rows);
+  const partial=rows.fee_visibility?.source_archive_allowed===false;
+  if(!partial&&!rows.some(r=>r.entity_type==='archive'&&r.entity_id==='reconstruction'))throw new Error('Cloud import is incomplete: its reconstruction manifest is missing. Finish or retry the initial upload before pulling.');
+  const data=partial?{tables:{},source_archive_restricted:true,source_projection_version:SOURCE_PROJECTION_VERSION}:await decodeArchive(rows);
   data.tables??={};for(const type of MANAGED)data.tables[type]=[];
   const seen=new Set();
   for(const r of rows){
@@ -297,13 +382,14 @@ async function assemble(rows){
     if(Boolean(r.payload.app_archived_at)!==Boolean(r.archived))throw new Error(`Archive status differs from payload for ${r.entity_id}.`);
     data.tables[r.entity_type].push(clone(r.payload));
   }
-  return normalizeDataset(data);
+  if(partial)data.fee_visibility=rows.fee_visibility;return normalizeDataset(data);
 }
+function rememberCloudCache(){const c=configuration();setStorage('localStorage',CLOUD_CACHE_KEY,JSON.stringify({url:c.url,colony:c.colonyId,user:session()?.user?.id,estimate:feeVisibility?.estimate,actual:feeVisibility?.actual,source_projection_version:SOURCE_PROJECTION_VERSION}));}
 function remember(rows){versions=new Map(rows.map(r=>[recordKey(r),r.version]));baseline=new Map(rows.map(r=>[recordKey(r),r]));synced=true;}
 export async function pullFromCloud(){
   await membership();
   const rows=await allRecords();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
-  const data=await assemble(rows);await local('put',data);remember(rows);setStorage('localStorage',DEMO_KEY,null);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
+  const data=await assemble(rows);await local('put',data);rememberCloudCache();remember(rows);setStorage('localStorage',DEMO_KEY,null);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
 }
 async function writeAtomic(pending){
   if(!pending.length)return [];
@@ -320,7 +406,7 @@ async function writeAtomic(pending){
 }
 async function requireEditor(){const role=await membership();if(role==='viewer')throw new Error('Your colony role is viewer; cloud changes require editor or owner access.');}
 export async function pushToCloud(dataset){
-  await requireEditor();
+  await requireEditor();if(!(await refreshFeeVisibility()).source_archive_allowed||dataset.source_archive_restricted)throw new Error('Full financial visibility and an unredacted dataset are required for an initial upload.');
   const incoming=await entityRecords(dataset),existing=await allRecords(),byId=new Map(existing.map(r=>[recordKey(r),r]));
   for(const r of incoming){const old=byId.get(recordKey(r));if(old&&(stable(old.payload)!==stable(r.payload)||Boolean(old.archived)!==r.archived))throw new Error(`Cloud record ${r.entity_type}/${r.entity_id} already contains different data. Pull and review it; initial upload will not overwrite it.`);}
   const pending=incoming.filter(r=>!byId.has(recordKey(r))).sort((a,b)=>(a.entity_id==='reconstruction'?1:0)-(b.entity_id==='reconstruction'?1:0));
@@ -333,13 +419,15 @@ export async function pushToCloud(dataset){
 export async function saveDataset(dataset,{localOnly=false,localKind=null}={}){
   const data=normalizeDataset(dataset);
   if(localOnly||mode()==='local'){
-    await local('put',data);if(localOnly){setStorage('localStorage',DEMO_KEY,localKind==='demo'?'true':null);setMode('local');invalidate();}statusMessage='Saved on this device.';return;
+    await local('put',data);setStorage('localStorage',CLOUD_CACHE_KEY,null);if(localOnly){setStorage('localStorage',DEMO_KEY,localKind==='demo'?'true':null);setMode('local');invalidate();}statusMessage='Saved on this device.';return;
   }
   if(!synced||!baseline)throw new Error('Pull the latest cloud data before editing.');
-  await requireEditor();
+  const context=exportContext();await requireEditor();const policy=await refreshFeeVisibility();if(!synced||!baseline)throw new Error('Visibility changed. Pull the latest cloud data before editing.');
+  if(!policy.source_archive_allowed&&(data.source_archive_restricted!==true||data.source_projection_version!==SOURCE_PROJECTION_VERSION||!data.tables.locations.every(managedLocationPayload)))throw new Error('Source location fields require full financial visibility. Pull the latest cloud data before editing.');
   const incoming=await entityRecords(data),map=new Map(incoming.map(r=>[recordKey(r),r]));
   for(const [k,r] of baseline)if(!map.has(k)&&!isArchiveChunk(r))throw new Error(`Record ${r.entity_id} was removed. Archive records instead of deleting them.`);
   const pending=incoming.filter(r=>{const old=baseline.get(recordKey(r));return !old||stable(old.payload)!==stable(r.payload)||old.archived!==r.archived;}).map(r=>[r,versions.get(recordKey(r))??0]);
+  if(!policy.source_archive_allowed&&pending.some(([r])=>r.entity_type==='archive'||feeRecord(r)))throw new Error('Both estimate and actual visibility are required to edit fees or source archives.');
   const chunks=pending.filter(([r])=>isArchiveChunk(r)),atomic=pending.filter(([r])=>!isArchiveChunk(r));
   if(atomic.length>500||utf8Size({p_colony_id:configuration().colonyId,p_changes:atomic.map(([r,expected_version])=>({...r,expected_version}))})>MAX_RPC_BYTES)throw new Error('This atomic edit is too large. Split it into smaller operations.');
   // Immutable chunks can be staged before committing the manifest. A failed
@@ -347,7 +435,18 @@ export async function saveDataset(dataset,{localOnly=false,localKind=null}={}){
   const saved=[];
   for(const batch of partitionChanges(chunks.map(([r,expected_version])=>({...r,expected_version}))))saved.push(...await writeAtomic(batch.map(({expected_version,...r})=>[r,expected_version])));
   saved.push(...await writeAtomic(atomic));
-  try{await local('put',data);}catch(e){invalidate();throw new Error(`${e.message} Cloud writes completed; pull again to restore the local copy.`);}
+  try{
+   checkExportContext(context);const finalPolicy=await refreshFeeVisibility();
+   if(!sameFeeVisibility(finalPolicy,policy)||!synced)throw new Error('Fee visibility changed during save. Pull the latest cloud data.');
+   for(const row of saved){
+    if(!policy.source_archive_allowed&&row.entity_type==='locations')checkedManagedLocation(row,configuration().colonyId);
+    // Server projections, including returned versions, are authoritative. Never
+    // retain an earlier full-access location payload after a restricted save.
+    map.set(recordKey(row),row);
+    if(row.entity_type==='locations'){const index=data.tables.locations.findIndex(location=>location.location_id===row.entity_id);if(index>=0)data.tables.locations[index]=clone(row.payload);}
+   }
+  }catch(error){invalidate();if(!policy.source_archive_allowed)await local('delete');throw new Error(`${error.message} Cloud writes may have completed; pull again before editing.`);}
+  try{await local('put',data);rememberCloudCache();}catch(e){invalidate();throw new Error(`${e.message} Cloud writes completed; pull again to restore the local copy.`);}
   for(const r of saved)versions.set(recordKey(r),r.version);
   baseline=map;statusMessage='Saved to cloud and this device.';
 }
@@ -410,10 +509,26 @@ function experimentExportRows(value,keys){
   if(keys.includes('candidate_sids'))for(const [i,item] of rows.filter(item=>item&&typeof item==='object'&&!Array.isArray(item)).slice(0,100).entries()){const candidates=Array.isArray(item.candidate_sids)?item.candidate_sids:[];items[i].candidate_count=candidates.length;items[i].candidates_truncated=(items[i].candidate_sids||[]).length<candidates.length;}
   return {items,total:rows.length,truncated:items.length<rows.length};
 }
+const IACUC_EXPORT_FIELDS={"inputs":["design","variance","mean1","mean2","effect","sd","sd1","sd2","sdDifference","correlation","alpha","power","allocationRatio","experimentalUnit","animalsPerUnit","technicalReplicates","attrition","maxUnitsPerGroup","n1","n2","target","genotypeProbability","sexProbability","survivalProbability","confidence","maxOffspring","litterSize","littersPerPair"],"results":["status","method","approximate","n1","n2","achieved_power","previous_power","df","critical","noncentrality","standard_error","alpha","target_power","effect","sd_difference","power","sidedness","usable_probability","expected_offspring","expected_offspring_rounded","confidence_offspring","achieved_probability","previous_probability","expected_litters","confidence_litters","expected_pairs","confidence_pairs","expected_unusable_at_confidence_count","breeder_animals","errors","warnings","assumptions"],"cluster":["animalsPerCage","icc","cages_per_group","approximate","power_recomputed","attrition_basis","whole_cage_loss_modeled"],"allocation":["rule","requested_ratio","actual_ratio"],"adjustment":["analyzed_units_per_group","independent_equivalent_units_per_group","experimental_unit","recruited_units_per_group","animals_per_group","total_animals","animals_per_unit","technical_replicates","measurement_count","attrition","attrition_basis","design_effect"],"maximum_checked":["n1","n2","power","offspring","probability"],"protocol":["schema_version","protocol_id","number","aliases","title","title_en","pi","status","start_date","end_date","approved_animals"],"assignment":["schema_version","protocol_id","entity_type","entity_id","purpose","valid_from","valid_to","evidence_status"],"usage":["schema_version","protocol_id","category","mouse_sids","unregistered_count","event_date","experiment_id","litter_sid","evidence_status"],"design":["schema_version","protocol_id","label","title","method","calculated_at"],"allocations":["id","species","strain","approved","portal_used","portal_pending","portal_remaining"]};
+function iacucNumericArrays(value,keys){const result={};for(const key of keys)if(Array.isArray(value?.[key]))result[key]=value[key].filter(v=>typeof v==='number'&&Number.isFinite(v)).slice(0,100);return result;}
+function iacucDesignPart(value,part){const result=experimentExportFields(value,IACUC_EXPORT_FIELDS[part]);if(!value||typeof value!=='object')return result;
+ if(part==='inputs'){if(value.cluster&&typeof value.cluster==='object'&&!Array.isArray(value.cluster))result.cluster=experimentExportFields(value.cluster,IACUC_EXPORT_FIELDS.cluster);}
+ else{for(const key of ['allocation','maximum_checked'])if(value[key]&&typeof value[key]==='object'&&!Array.isArray(value[key]))result[key]=experimentExportFields(value[key],IACUC_EXPORT_FIELDS[key]);
+  if(value.adjustment&&typeof value.adjustment==='object'&&!Array.isArray(value.adjustment)){result.adjustment={...experimentExportFields(value.adjustment,IACUC_EXPORT_FIELDS.adjustment),...iacucNumericArrays(value.adjustment,['analyzed_units_per_group','independent_equivalent_units_per_group','recruited_units_per_group','animals_per_group','cages_per_group'])};if(value.adjustment.cluster&&typeof value.adjustment.cluster==='object'&&!Array.isArray(value.adjustment.cluster))result.adjustment.cluster={...experimentExportFields(value.adjustment.cluster,IACUC_EXPORT_FIELDS.cluster),...iacucNumericArrays(value.adjustment.cluster,['cages_per_group'])};}
+ }return result;
+}
+function projectIacucExport(row){const type=row.event_type,key=type.slice(6),p=row[type]||{},result=experimentExportFields(row,['event_id','event_type','event_date']),nested=experimentExportFields(p,IACUC_EXPORT_FIELDS[key]||[]);result[type]=nested;
+ if(key==='protocol'){const rows=experimentExportRows(p.allocations,IACUC_EXPORT_FIELDS.allocations);Object.assign(nested,{allocations:rows.items,allocation_count:rows.total,allocations_truncated:rows.truncated});}
+ if(key==='usage'){nested.mouse_count=Array.isArray(p.mouse_sids)?p.mouse_sids.length:0;nested.mouse_sids_truncated=nested.mouse_count>(nested.mouse_sids||[]).length;}
+ if(key==='design')for(const [target,part]of [['breeding_inputs','inputs'],['breeding_results','results']])if(p[target]&&typeof p[target]==='object'&&!Array.isArray(p[target]))nested[target]=iacucDesignPart(p[target],part);
+ if(key==='design')for(const part of ['inputs','results']){nested[part]=iacucDesignPart(p[part],part);for(const section of ['sample_size','breeding'])if(p[part]?.[section]&&typeof p[part][section]==='object'&&!Array.isArray(p[part][section]))nested[part][section]=iacucDesignPart(p[part][section],part);}
+ return result;
+}
 function projectExperimentExport(row){
+  if(['iacuc_protocol','iacuc_assignment','iacuc_usage','iacuc_design'].includes(row.event_type))return projectIacucExport(row);
   if(['lac_fee_options','lac_fee_month'].includes(row.event_type)){
     const type=row.event_type,p=row[type]||{},result=experimentExportFields(row,['event_id','event_type','event_date']);
-    const keys=type==='lac_fee_options'?['schema_version','effective_from','currency','target_percent','maximum_percent','excluded_room_ids','revision']:['schema_version','month','currency','actual_total','actual_date','invoice_reference','revision'];
+    const keys=type==='lac_fee_options'?['schema_version','effective_from','currency','target_percent','maximum_percent','excluded_room_ids','revision']:['schema_version','month','currency','actual_total','actual_date','actual_basis','paid_date','invoice_reference','revision'];
     const field=type==='lac_fee_options'?'groups':'lines',rows=experimentExportRows(p[field],type==='lac_fee_options'?['key','label','unit','room_ids','rack_ids','rate','rate_period','rate_reference']:['group_key','quantity','quantity_unit','evidence_kind','evidence_start','evidence_end','evidence_reference','quantity_basis','quantity_note','snapshot_count','actual_amount']);
     result[type]={...experimentExportFields(p,keys),[field]:rows.items,[field+'_count']:rows.total,[field+'_truncated']:rows.truncated};return result;
   }
@@ -457,10 +572,13 @@ export async function getExportRecords({scope='current_housing',fromDate=null,to
     if(!localData)throw new Error('The workspace changed. Reopen Export.');
     const data=normalizeDataset({tables:{}});let excluded=0;
     for(const type of MANAGED){data.tables[type]=(entityTypes&&!entityTypes.includes(type)?[]:localData.tables[type]||[]).filter(row=>{
-      if(scope!=='history')return currentExportRecord(type,row,localData);const date=exportRecordDate(type,row);
+      if(scope!=='history')return currentExportRecord(type,row,localData);
+      if(type==='husbandry_events'&&row.event_type==='locobox_revision')return false;
+      if(type==='husbandry_events'&&row.event_type==='locobox_protocol')return Boolean(projectLocoboxExport(row,{fromDate:start,toDate:end,includeUndated:!start}));
+      const date=exportRecordDate(type,row);
       if(!date){if(start){excluded++;return false}return true}
       return (!start||date>=start)&&date<=end;
-    }).map(row=>type==='husbandry_events'?projectExperimentExport(row):clone(row));}
+    }).map(row=>type==='husbandry_events'?(row.event_type==='locobox_protocol'?projectLocoboxExport(row,{fromDate:start,toDate:end,includeUndated:!start}):projectExperimentExport(row)):clone(row));}
     return {dataset:data,metadata:{...permission,export_level:permission.level,scope,from_date:scope==='history'?start:null,to_date:scope==='history'?end:null,excluded_undated:excluded,snapshot_revision:'local',captured_at:new Date().toISOString()}};
   }
   const c=configuration(),rows=[],seen=new Set();let offset=0,metadata=null;
@@ -468,6 +586,7 @@ export async function getExportRecords({scope='current_housing',fromDate=null,to
     const page=await request('rpc/export_records',{method:'POST',body:{p_colony_id:c.colonyId,p_scope:scope,p_from_date:scope==='history'?start:null,p_to_date:scope==='history'?end:null,p_entity_types:entityTypes,p_offset:offset,p_limit:250}});
     if(!page||!Array.isArray(page.rows)||page.rows.length>250||!['low','high','max'].includes(page.export_level)||!exportDate(page.as_of_date)||typeof page.snapshot_revision!=='string')throw new Error('The server returned an unverifiable export page.');
     if(page.export_level!==permission.level||page.cutoff_date!==permission.cutoff_date||page.as_of_date!==permission.as_of_date)throw new Error('Your export permission changed. Reopen Export and try again.');
+    if(page.fee_visibility){checkedFeeVisibility(page.fee_visibility);if(metadata?.fee_visibility&&stable(page.fee_visibility)!==stable(metadata.fee_visibility))throw new Error('Fee visibility changed while exporting. Reopen Export.');}
     if(metadata&&page.snapshot_revision!==metadata.snapshot_revision)throw new Error('Colony data changed while exporting. Try again for a consistent snapshot.');
     checkExportContext(context);
     metadata??={...page,rows:undefined,local:false,scope};
@@ -482,6 +601,7 @@ export async function getExportRecords({scope='current_housing',fromDate=null,to
   }
   const final=await getExportPermission();checkExportContext(context);
   if(final.local||final.level!==permission.level||final.cutoff_date!==permission.cutoff_date||final.as_of_date!==permission.as_of_date)throw new Error('Your export permission changed. Reopen Export and try again.');
+  if(metadata?.fee_visibility){const finalFee=await refreshFeeVisibility();checkExportContext(context);if(stable(finalFee)!==stable(metadata.fee_visibility))throw new Error('Fee visibility changed while exporting. Reopen Export.');}
   const data=normalizeDataset({tables:{}});for(const row of rows)data.tables[row.entity_type].push({...clone(row.payload),export_record_date:row.record_date??null});
   return {dataset:data,metadata:{...metadata,row_count:rows.length}};
 }
@@ -584,7 +704,7 @@ export async function fetchHistoryArchive(path){
   historyIndex(data);rememberHistory(path);return data;
 }
 export async function uploadHistoryIndex(index){
-  historyIndex(index);await requireEditor();
+  historyIndex(index);await requireEditor();if(!(await refreshFeeVisibility()).source_archive_allowed)throw new Error('Full financial visibility is required to upload a source archive.');
   const text=JSON.stringify(index),digest=await sha256(text),path=`${configuration().colonyId}/history/${digest}.json`;
   const response=await storageRequest(`object/${HISTORY_BUCKET}/${path}`,{method:'POST',body:text});
   if(!response.ok){
@@ -655,4 +775,69 @@ export async function completeAccountSetup(username,password){
  await membership();
  if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Sign in again.');
  saveSession({...session(),username:id,setupRequired:false});return result;
+}
+
+/** Inbound Animal Sheet refresh is queued server-side, never with a browser secret. */
+export async function startAnimalSheetImport(){
+ const c=configuration(),actor=session()?.user?.id;if(!c||!actor)throw new Error('Sign in before refreshing from Animal Sheet.');
+ await membership();const current=session();
+ if(current.role==='viewer'||current.role==='manager'&&(current.permissions?.imports===false||current.permissions?.housing===false))throw new Error('Import and housing permissions are required.');
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Reopen Settings.');
+ const result=await request('rpc/request_animal_sheet_import',{method:'POST',body:{p_colony_id:c.colonyId}});
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Reopen Settings to check the refresh status.');
+ return result;
+}
+export async function getAnimalSheetImportStatus(){
+ const c=configuration(),actor=session()?.user?.id;if(!c||!actor)throw new Error('Sign in to view Animal Sheet refresh status.');
+ const result=await request('rpc/get_animal_sheet_import_status',{method:'POST',body:{p_colony_id:c.colonyId}});
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Reopen Settings.');return result;
+}
+export async function getAnimalSheetImportConflicts({offset=0,limit=100}={}){
+ if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>200)throw new Error('Choose a valid conflict page.');
+ const c=configuration(),actor=session()?.user?.id;if(!c||!actor)throw new Error('Sign in to review Animal Sheet differences.');
+ const result=await request('rpc/get_animal_sheet_import_conflicts',{method:'POST',body:{p_colony_id:c.colonyId,p_offset:offset,p_limit:limit}});
+ if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==actor)throw new Error('The account changed. Reopen Settings.');return result;
+}
+
+
+// Brainbot owner controls are transient and never enter shared colony backups.
+async function brainbotRequest(name,body={}){
+ const context=exportContext(),c=configuration();
+ if(!c||!session()?.user?.id)throw new Error('Sign in before opening Brainbot.');
+ if(await membership()!=='owner')throw new Error('Only the owner can manage Brainbot.');
+ checkExportContext(context);
+ const result=await request('rpc/'+name,{method:'POST',body:{p_colony_id:c.colonyId,...body}});
+ checkExportContext(context);
+ if(!result||!Number.isSafeInteger(result.settings?.version)||result.settings.version<0||!Array.isArray(result.runs)||!Array.isArray(result.issues)||result.principal?.role!=='manager')throw new Error('Brainbot status was not confirmed. Reload the monitoring page.');
+ return result;
+}
+export function getBrainbotStatus(){return brainbotRequest('get_brainbot_status');}
+export function saveBrainbotSettings(settings){return brainbotRequest('save_brainbot_settings',{p_settings:settings});}
+export async function runBrainbot(){const result=await brainbotRequest('run_brainbot');if(result.last_run?.fixed_count>0)invalidate();return result;}
+export function reviewBrainbotIssue({issue_id,version,status,note=null}){return brainbotRequest('review_brainbot_issue',{p_issue_id:issue_id,p_version:version,p_status:status,p_note:note});}
+
+
+export async function requestPasswordReset(identifier){
+ const c=configuration();if(!c)throw new Error('Configure the cloud project first.');
+ const value=typeof identifier==='string'?identifier.trim():'';
+ if(value.length>254||!(/^[a-z][a-z0-9_.-]{2,31}$/i.test(value)||/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)))throw new Error('Enter a valid username or email.');
+ const action=beginAuthAction(),gateway=c.url===PUBLIC_CONFIG.url&&c.colonyId===PUBLIC_CONFIG.colonyId?PUBLIC_CONFIG.usernameAnonKey:null;
+ const anonKey=publicKey(c.anonKey.startsWith('sb_publishable_')&&gateway?gateway:c.anonKey);
+ if(anonKey.startsWith('sb_publishable_'))throw new Error('Password recovery requires this project’s public legacy anon gateway key. Ask the owner to update the app configuration.');
+ const response=await fetch(`${c.url}/functions/v1/username-sign-in`,{method:'POST',cache:'no-store',redirect:'error',headers:{apikey:anonKey,Authorization:`Bearer ${anonKey}`,'Content-Type':'application/json'},body:JSON.stringify({action:'recover',identifier:value})});
+ const result=await responseJSON(response);action.check();
+ if(!response.ok)throw new Error(response.status===429?'Too many recovery requests. Wait one hour before trying again.':'Password recovery is temporarily unavailable. Try again later or contact the owner.');
+ if(result?.accepted!==true)throw new Error('The recovery request was not confirmed. Try again later.');
+ return {accepted:true,message:'If this account is eligible, check its registered email and spam folder for a password reset link.'};
+}
+export async function completePasswordRecovery(password){
+ const c=configuration(),signedIn=session();if(!c||!signedIn?.passwordRecovery||!signedIn.user?.id)throw new Error('Open a valid password reset link first.');
+ if(typeof password!=='string'||password.length<12||password.length>128)throw new Error('Use a password between 12 and 128 characters.');
+ const generation=authGeneration,context=exportContext(),token=await accessToken();
+ if(generation!==authGeneration)throw new Error('The account changed. Open the reset link again.');checkExportContext(context);
+ let response;try{response=await fetch(`${c.url}/auth/v1/user`,{method:'PUT',cache:'no-store',redirect:'error',headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({password})});}catch{throw new Error('The password update was not confirmed. Check your connection before trying again.');}
+ const result=await responseJSON(response);if(generation!==authGeneration)throw new Error('The account changed. Sign in with your new password to verify the result.');checkExportContext(context);
+ if(!response.ok||result?.id!==signedIn.user.id)throw new Error('The password update was not confirmed. Use a different password or request a new reset link.');
+ await signOut();statusMessage='Password updated. Sign in with your ID and new password.';
+ return {updated:true,message:statusMessage};
 }
