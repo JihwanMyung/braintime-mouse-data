@@ -46,6 +46,36 @@ class ExperimentSourceTests(unittest.TestCase):
         self.assertEqual([o['tissue'] for _, o in parsed], ['SCN', 'CP'])
         self.assertNotEqual(module.digest(parsed[0][1]), module.digest(parsed[1][1]))
 
+    def test_later_imaging_blocks_keep_decap_preparation_and_donor_distinct(self):
+        rows = [['IMG'], ['N','Date (prep)','Label','Imaging 1','Imaging 2','Comments'],
+            [1,'2021-06-04','Magnification','4x','20x','Maternal experiment'],
+            [None,None,'Tissue','SCN','CP'],
+            [None,None,'Animal (gender)','P-M1','P-M2'],
+            [None,None,'Decap at','12:12','12:51'],
+            [None,None,'Prep at','14:55','16:44'],
+            [2,'2021-06-05','Effective magnification','4x','20x'],
+            [None,None,'Tissue',None,None],
+            [None,None,'Animal (gender)',None,None],
+            [None,None,'Dish number','heart E14','IMG2'],
+            [None,None,'Decap at','11:25',None],
+            [None,None,'Prep at','12:08',None]]
+        parsed = list(module.parse_luc_imaging_blocks(' Luc Imaging', rows, rows))
+        self.assertEqual(len(parsed),3)
+        first = parsed[0][1]
+        self.assertEqual(first['raw_identifiers'], ['P-M1'])
+        self.assertEqual(first['raw_values']['sample']['Decap at'],'12:12')
+        self.assertEqual(first['raw_values']['sample']['Prep at'],'14:55')
+        self.assertEqual(first['raw_values']['sample']['Animal (gender)'],'P-M1')
+        self.assertEqual(parsed[0][0],'D3:D7')
+        self.assertEqual(parsed[2][1]['identifier_kind'],'sample_label')
+        self.assertEqual(parsed[2][1]['raw_identifiers'],['heart E14'])
+        self.assertNotIn('mouse_sid', first)
+
+    def test_imaging_setup_without_specimen_is_not_an_observation(self):
+        rows = [['Date (prep)','Label','Imaging 1'],['2021-06-04','Effective magnification','4x'],
+                [None,'Animal (gender)',None],[None,'Tissue',None],[None,'Camera','Camera name']]
+        self.assertEqual(list(module.parse_luc_imaging_blocks('Luc Imaging',rows,rows)),[])
+
     def test_blank_checkbox_and_serial_number_rows_are_not_qpcr_runs(self):
         rows = [['qPCR'], ['No.', 'qPCR date', 'Tissue Sample', 'User'], [1, None, None, False],
                 [2, '2021-06-04', 'SCN sample 7', 'JM']]

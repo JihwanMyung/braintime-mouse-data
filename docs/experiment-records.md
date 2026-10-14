@@ -24,6 +24,16 @@ Only actual merged cells supply missing contextual values. Unmerged blank dates 
 
 Identical observation content across workbook copies is coalesced while every source reference is retained. Changed observations remain separate. Repeated identical observations within a sheet are retained separately. This is evidence deduplication, not a determination that two tissue samples or procedures are the same biological event.
 
+Later Luc Imaging blocks begin with “Magnification” or “Effective magnification” and keep “Animal (gender)” inside the block. The parser treats those as sample blocks, preserves separate “Decap at” and “Prep at” fields, and excludes equipment-only channels. An additive repair script, `scripts/append-imaging-source-observations.py`, can recover these blocks from the complete raw-row archive without replacing an already staged bundle. It preserves the original observation prefix, source catalog indexes and context prefix, then appends new observations and contexts. The first such addendum added 1,992 observations, bringing the review collection to 39,282.
+
+## Timing and entrainment evidence
+
+Source timing details display the original label and value without filling managed event fields. Decapitation, preparation, tissue sampling, CSF collection, brain removal and recording start can denote different events. A “Date (decap hour)” cell containing a date formatted at midnight does not establish a midnight decapitation. Clock ranges and multi-time schedules remain literal. ZT, CT, “Actual ZT (CSF ZT)”, “Brain out (ZT)” and converted phase columns remain distinct; no clock-to-phase conversion or modulo operation is inferred.
+
+Some historical notes explicitly redefine a decapitation label as maternal decapitation or removal from LumiCycle. Co-culture timing can concern another donor. Corrections and contextual notes must be reviewed before assigning an animal event. The source-evidence helper exposes these qualifications beside the original timing fields.
+
+Entrainment notes such as a stated number of days in a cycle or an explicit start date are preserved as written. A generic preparation “Dur. (days)” column is not assumed to be entrainment duration. Parenthesized numbers can also represent experimental groups or animal counts, so duration is not parsed automatically from a source notation without an established definition.
+
 ## Private archive format
 
 The complete extraction contains `sources`, `observations`, `coverage` and `caveats`. An observation includes its stable `source_id`, raw identifiers, assay labels, date or unknown date, tissue, storage, raw values and source provenance. It never supplies a confirmed mouse SID.

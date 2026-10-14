@@ -1,10 +1,10 @@
-import { validateCageSummaryOptions } from './cage-summary-options.js?v=20';
-import { validateBreedingOptions } from './breeding-options.js?v=20';
-import { validateStrainDefinition } from './strain-registry.js?v=20';
-import { validateGeneticProfile } from './genotype-schema.js?v=20';
-import { validateScenario } from './genetics.js?v=20';
-import { validateExperimentRecord } from './experiment-model.js?v=20';
-import { validateCryoRecord } from './cryopreservation-model.js?v=20';
+import { validateCageSummaryOptions } from './cage-summary-options.js?v=21';
+import { validateBreedingOptions } from './breeding-options.js?v=21';
+import { validateStrainDefinition } from './strain-registry.js?v=21';
+import { validateGeneticProfile } from './genotype-schema.js?v=21';
+import { validateScenario } from './genetics.js?v=21';
+import { validateExperimentRecord } from './experiment-model.js?v=21';
+import { validateCryoRecord } from './cryopreservation-model.js?v=21';
 export const ID_FIELDS = Object.freeze({mice:'mouse_sid',matings:'mating_sid',litters:'litter_sid',cages:'cage_sid',rooms:'room_id',racks:'rack_id',locations:'location_id',light_events:'event_id',husbandry_events:'event_id'});
 const copy = value => structuredClone(value);
 const ids = value => Array.isArray(value) ? value : (typeof value==='string' ? value.split(/[\n,]/).map(s=>s.trim()).filter(Boolean) : []);

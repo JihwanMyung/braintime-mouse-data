@@ -16,7 +16,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import openpyxl
-from openpyxl.utils import get_column_letter, range_boundaries
+from openpyxl.utils import get_column_letter, column_index_from_string, range_boundaries
 
 NS = {'x': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 REL = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'
@@ -140,6 +140,65 @@ def common_obs(kind, assays, raw_id, date, tissue='', storage='', raw=None, **ex
                 animal_link_status='unresolved', review_status='unreviewed', **extra)
 
 
+def parse_luc_imaging_blocks(title, rows, resolved):
+    """Read later IMG layouts without treating magnification as an animal ID."""
+    if 'imaging' not in title.lower():
+        return
+    header_i = next((i for i, r in enumerate(rows[:12]) if any(normalized(v) == 'date (prep)' for v in r)), None)
+    if header_i is None:
+        return
+    headers = rows[header_i]
+    starts_by_col = collections.defaultdict(list)
+    start_labels = {'magnification', 'effective magnification', 'animal id', 'gender / #'}
+    for i in range(header_i + 1, len(rows)):
+        for j, value in enumerate(rows[i]):
+            if normalized(value) in start_labels:
+                starts_by_col[j].append(i)
+    channels = [j for j, h in enumerate(headers) if re.search(r'^imaging\s*\d', normalized(h))]
+    if not channels:
+        return
+    dateidx = field_index(headers, r'^date \(prep\)')
+    for label_col, starts in starts_by_col.items():
+        if label_col >= min(channels):
+            continue
+        for start, stop in zip(starts, starts[1:] + [len(rows)]):
+            if normalized(at(rows[start], label_col)) not in ('magnification', 'effective magnification'):
+                continue
+            # Named animal/tissue rows distinguish sample blocks from instrument setup.
+            labels = [normalized(at(rows[r], label_col)) for r in range(start, stop)]
+            if not any(label in ('animal (gender)', 'animal id', 'tissue') for label in labels):
+                continue
+            main = resolved[start]
+            preparation = {k: v for k, v in row_fields(headers, main).items()
+                           if k.split(' · ')[0] not in {get_column_letter(j + 1) for j in channels}}
+            # Retain notes below the first metadata row without filling missing cells.
+            for r in range(start + 1, stop):
+                for col, value in enumerate(rows[r]):
+                    if col != label_col and col not in channels and meaningful(value):
+                        key = f'{get_column_letter(col + 1)} · {text(at(headers, col)) or "Column " + get_column_letter(col + 1)} (block row {r - start + 1})'
+                        preparation[key] = js(value)
+            for col in channels:
+                channel = {}
+                for r in range(start, stop):
+                    label, value = text(at(rows[r], label_col)), at(resolved[r], col)
+                    if not label or not meaningful(value):
+                        continue
+                    key = label if label not in channel else f'{label} (block row {r - start + 1})'
+                    channel[key] = js(value)
+                animal = next((v for k, v in channel.items() if normalized(k) in ('animal (gender)', 'animal id')), '')
+                tissue = next((v for k, v in channel.items() if normalized(k) == 'tissue'), '')
+                dish = next((v for k, v in channel.items() if normalized(k) == 'dish number'), '')
+                sample_dish = meaningful(dish) and not re.fullmatch(r'(?:img|imaging)\s*\d+', text(dish), re.I)
+                if not meaningful(animal) and not meaningful(tissue) and not sample_dish:
+                    continue
+                extra = {'identifier_kind': 'sample_label'} if not meaningful(animal) and sample_dish else {}
+                yield f'{get_column_letter(col + 1)}{start + 1}:{get_column_letter(col + 1)}{stop}', common_obs(
+                    'instrument_channel', ['IMG'], animal or (dish if sample_dish else ''), at(main, dateidx), tissue,
+                    raw={'channel': text(at(headers, col)), 'sample': channel, 'preparation': preparation},
+                    channel=text(at(headers, col)), operator=text(at(main, field_index(headers, r'^user$'))),
+                    project=text(at(main, field_index(headers, r'^project$'))), **extra)
+
+
 def parse_sheet(title, rows, resolved, workbook_title=''):
     """Yield (range, observation). Data selection is conservative and layout-specific."""
     low = title.strip().lower()
@@ -153,6 +212,7 @@ def parse_sheet(title, rows, resolved, workbook_title=''):
     header_i = next((i for i, r in enumerate(rows[:12]) if any('date (prep)' in normalized(v) for v in r)), None)
     # Instrument rows consist of one preparation block and per-channel vertical fields.
     if header_i is not None and ('lumicycle' in low or 'imaging' in low or 'kronos' in low):
+        yield from parse_luc_imaging_blocks(title, rows, resolved)
         headers = rows[header_i]
         label_col = next((j for r in rows[header_i + 1:header_i + 10] for j, v in enumerate(r)
                           if normalized(v) in ('animal id', 'gender / #')), None)
@@ -160,9 +220,11 @@ def parse_sheet(title, rows, resolved, workbook_title=''):
             channels = [j for j, h in enumerate(headers) if re.search(r'^\d+\s*\(\d+[a-z]\)|^imaging\s*\d|^kronos', normalized(h))]
             if not channels:
                 channels = list(range(label_col + 1, min(len(headers), label_col + 5)))
-            starts = [i for i in range(header_i + 1, len(rows)) if normalized(at(rows[i], label_col)) in ('animal id', 'gender / #')]
+            starts = [i for i in range(header_i + 1, len(rows)) if normalized(at(rows[i], label_col)) in ('animal id', 'gender / #', 'magnification', 'effective magnification')]
             starts.append(len(rows))
             for start, stop in zip(starts, starts[1:]):
+                if normalized(at(rows[start], label_col)) not in ('animal id', 'gender / #'):
+                    continue
                 main = resolved[start]
                 dateidx = field_index(headers, r'^date \(prep\)')
                 for col in channels:

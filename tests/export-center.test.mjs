@@ -117,6 +117,22 @@ test('experiment CSV exposes readable assay, animal, tissue and freezer columns;
   const json=JSON.parse(await text(calls.downloads[1]));assert.equal(json.tables.husbandry_events[0].experiment.participants[0].mouse_sid,'0001');assert.equal(json.tables.husbandry_events[1].experiment_sample.storage.temperature_c,-70);
 });
 
+test('experiment and specimen CSV use explicit separate decapitation and sampling clock/circadian columns',async()=>{
+  const {container,calls,state}=await mount({scope:'records',format:'csv',entityTypes:['husbandry_events']});
+  const entrainment={scheme:'LP1',light_event_id:'LIGHT-1',reference_at:'2026-10-01T08:00:00+08:00',reference_phase:0,phase_basis:'ZT',phase_scale:'normalized_24',period_hours:24,timezone:'Asia/Taipei',start_date:'2026-09-01',end_date:'2026-10-01',duration_days:30,duration_basis:'date_difference'};
+  state.fresh.tables.husbandry_events=[
+    {event_id:'EXP-TIME',event_type:'experiment',event_date:'2026-10-01',experiment:{title:'Timing',started_at:'2026-10-02T17:00:00+08:00',circadian_time:'9',time_basis:'ZT',timezone:'Asia/Taipei',decapitation_at:'2026-10-01T10:03:00+08:00',decapitation_circadian_time:'2.05',decapitation_time_basis:'ZT',sampling_at:'2026-10-01T10:07:30+08:00',sampling_circadian_time:'14.125',sampling_time_basis:'CT'}},
+    {event_id:'SAMPLE-TIME',event_type:'experiment_sample',event_date:'2026-10-01',experiment_sample:{label:'Aliquot',collection_at:'2026-10-01T10:08:00+08:00',circadian_time:'14.1333',time_basis:'CT',timezone:'Asia/Taipei',decapitation_at:'2026-10-01T10:03:00+08:00',decapitation_circadian_time:'2.05',decapitation_time_basis:'ZT'}}
+  ];
+  for(const row of state.fresh.tables.husbandry_events){const p=row[row.event_type];p.entrainment=entrainment;p.decapitation_circadian_time_source='recorded';p[row.event_type==='experiment'?'sampling_circadian_time_source':'circadian_time_source']='calculated';}
+  await click(container,'preview');await click(container,'export');const csv=await text(calls.downloads[0]);
+  for(const field of ['decapitation_clock_time','decapitation_circadian_time','decapitation_time_basis','sampling_clock_time','sampling_circadian_time','sampling_time_basis','timing_timezone','experiment_started_at','experiment_circadian_time','experiment_time_basis'])assert(csv.includes('"'+field+'"'),field);
+  for(const value of ['2026-10-01T10:03:00+08:00','2026-10-01T10:07:30+08:00','2026-10-01T10:08:00+08:00','2.05','14.125','14.1333','2026-10-02T17:00:00+08:00'])assert(csv.includes(value),value);
+  for(const field of ['decapitation_circadian_time_source','sampling_circadian_time_source',...Object.keys(entrainment).map(key=>'entrainment_'+key)])assert(csv.includes('"'+field+'"'),field);
+  assert(csv.includes('"LP1"'));assert(csv.includes('"30"'));assert(csv.includes('"date_difference"'));assert(csv.includes('"recorded"'));assert(csv.includes('"calculated"'));
+  assert(!csv.includes('experiment_sample_collection_at'),'Specimen collection is explicitly named sampling in spreadsheet reports');
+});
+
 test('XLSX is a workbook for both scopes and scope changes invalidate previous previews',async()=>{
   const {container,calls}=await mount({scope:'animal-sheet',format:'xlsx'});
   await click(container,'preview');await click(container,'export');

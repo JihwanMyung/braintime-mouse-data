@@ -1,4 +1,4 @@
-import { projectAnimalSheet, createAnimalSheetXlsx, createWorkbookXlsx, animalSheetPrintHTML } from './animal-sheet-export.js?v=20';
+import { projectAnimalSheet, createAnimalSheetXlsx, createWorkbookXlsx, animalSheetPrintHTML } from './animal-sheet-export.js?v=21';
 
 const mounts=new WeakMap();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -24,8 +24,11 @@ function experimentColumns(record) {
   const type=record.event_type;
   if(!['experiment','experiment_sample'].includes(type)||!object(record[type]))return record;
   const {[type]:payload,...result}=record;
+  const timingColumns={decapitation_at:'decapitation_clock_time',decapitation_circadian_time:'decapitation_circadian_time',decapitation_time_basis:'decapitation_time_basis',sampling_at:'sampling_clock_time',sampling_circadian_time:'sampling_circadian_time',sampling_time_basis:'sampling_time_basis',decapitation_circadian_time_source:'decapitation_circadian_time_source',sampling_circadian_time_source:'sampling_circadian_time_source',timezone:'timing_timezone',...(type==='experiment_sample'?{collection_at:'sampling_clock_time',circadian_time:'sampling_circadian_time',time_basis:'sampling_time_basis',circadian_time_source:'sampling_circadian_time_source'}:{})};
   for(const [key,value] of Object.entries(payload)) {
-    if(key==='storage'&&object(value))for(const [field,item] of Object.entries(value))result['storage_'+field]=item;
+    if(Object.hasOwn(timingColumns,key))result[timingColumns[key]]=value;
+    else if(key==='entrainment'&&object(value))for(const [field,item] of Object.entries(value))result['entrainment_'+field]=item;
+    else if(key==='storage'&&object(value))for(const [field,item] of Object.entries(value))result['storage_'+field]=item;
     else result[type+'_'+key]=value;
   }
   const references=type==='experiment'?payload.participants:payload.donors;

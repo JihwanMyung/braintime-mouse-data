@@ -2,10 +2,10 @@
  * confirmed; source notation and tag primes never establish assay verification.
  * Omitted loci are unrecorded, never wild type. No archive prose is attributed
  * to a mouse. Ai32/Ai96 retain their shared Rosa26 locus. */
-import {mouseLineAssignments} from './mouse-summary.js?v=20';
-import {getStrainRegistry} from './strain-registry.js?v=20';
-import {discoverGenotypes,sourceProfile} from './genotype-catalog.js?v=20';
-import {validateGeneticProfile} from './genotype-schema.js?v=20';
+import {mouseLineAssignments} from './mouse-summary.js?v=21';
+import {getStrainRegistry} from './strain-registry.js?v=21';
+import {discoverGenotypes,sourceProfile} from './genotype-catalog.js?v=21';
+import {validateGeneticProfile} from './genotype-schema.js?v=21';
 const str=value=>typeof value==='string'?value:'';
 const archived=row=>Boolean(row?.app_archived_at)||row?.archived===true;
 const unique=values=>[...new Set(values)];

@@ -189,3 +189,28 @@ test('central record validation enforces experiment biology and accepts an atomi
   assert.deepEqual(validateRecord('husbandry_events',changed.revision,revisionBase,null).errors,[]);
   assert(validateRecord('husbandry_events',changed.record,first.dataset,first.record.event_id).errors.some(x=>/one transaction/.test(x)));
 });
+
+test('decapitation and exact sampling preserve separate clock and circadian times from the later assay',()=>{
+  const built=experiment(fixture(),{decapitation_at:'2026-10-14T09:10:00+08:00',decapitation_circadian_time:'2.1667',decapitation_time_basis:'ZT',sampling_at:'2026-10-14T09:15:00+08:00',sampling_circadian_time:'2.25',sampling_time_basis:'ZT',started_at:'2026-10-14T11:00:00+08:00',circadian_time:'4',time_basis:'ZT'});
+  assert.equal(built.record.experiment.decapitation_circadian_time,'2.1667');assert.equal(built.record.experiment.sampling_circadian_time,'2.25');assert.equal(built.record.experiment.circadian_time,'4');assert.equal(built.dataset.tables.mice[0].state,'Stock');
+  const specimen=sample(fixture(),{decapitation_at:'2026-10-14T09:10:00+08:00',decapitation_circadian_time:'2.1667',decapitation_time_basis:'ZT',collection_at:'2026-10-14T09:15:00+08:00',circadian_time:'2.25',time_basis:'ZT'});
+  assert.equal(specimen.record.experiment_sample.collection_at,'2026-10-14T09:15:00+08:00');assert.equal(specimen.record.experiment_sample.circadian_time,'2.25');
+});
+
+test('procedure clocks validate offsets and true chronology while nonterminal collection has no decapitation',()=>{
+  assert.throws(()=>experiment(fixture(),{decapitation_at:'2026-10-14T09:10:00',sampling_at:'2026-10-14T09:15:00+08:00'}),/UTC offset/);
+  assert.throws(()=>sample(fixture(),{decapitation_at:'2026-10-14T09:10:00+08:00',collection_at:'2026-10-14T01:09:00Z'}),/precede decapitation/);
+  assert.doesNotThrow(()=>sample(fixture(),{decapitation_at:'2026-10-14T09:10:00+08:00',collection_at:'2026-10-14T01:10:00Z'}));
+  assert.equal(sample(fixture(),{collection_at:'2026-10-14T09:10:00+08:00'}).record.experiment_sample.decapitation_at,null);
+  assert.throws(()=>experiment(fixture(),{sampling_circadian_time:'6'}),/basis for sampling/);
+  assert.throws(()=>sample(fixture(),{decapitation_circadian_time:'6'}),/basis for decapitation/);
+});
+
+test('legacy procedure fields remain optional and timing changes keep before and after revisions',()=>{
+  const first=experiment(),legacy=clone(first.record);for(const key of Object.keys(legacy.experiment))if(/^(decapitation_|sampling_)/.test(key)||key==='entrainment')delete legacy.experiment[key];
+  const d=clone(first.dataset);d.tables.husbandry_events=[legacy];assert.deepEqual(validateExperimentRecord(legacy,d).errors,[]);
+  const edited=buildExperiment({decapitation_at:'2026-10-14T09:00:00+08:00',sampling_at:'2026-10-14T09:03:00+08:00',entrainment:{scheme:'LP1',duration_days:30,duration_basis:'recorded'}},d,legacy);
+  assert.equal(edited.revision.experiment_revision.before.payload.decapitation_at,undefined);assert.equal(edited.revision.experiment_revision.after.payload.sampling_at,'2026-10-14T09:03:00+08:00');assert.equal(edited.revision.experiment_revision.after.payload.entrainment.duration_days,30);
+  assert.throws(()=>experiment(fixture(),{entrainment:{scheme:'LP1',duration_days:-1}}),/nonnegative/);
+  assert.throws(()=>sample(fixture(),{decapitation_circadian_time_source:'inferred'}),/recorded or calculated/);
+});

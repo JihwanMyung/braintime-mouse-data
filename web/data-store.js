@@ -1,4 +1,4 @@
-import { normalizeDataset, ID_FIELDS } from './model.js?v=20';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=21';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
@@ -386,14 +386,15 @@ function experimentExportRows(value,keys){
 function projectExperimentExport(row){
   if(!['experiment','experiment_sample','experiment_revision'].includes(row.event_type))return clone(row);
   const result=experimentExportFields(row,['event_id','event_type','event_date']);
+  const entrainmentFields=['scheme','light_event_id','reference_at','reference_phase','phase_basis','phase_scale','period_hours','timezone','start_date','end_date','duration_days','duration_basis'];
   const referenceFields=['mouse_sid','raw_identifier','link_status','candidate_sids','role'];
   if(row.event_type==='experiment'){
     const p=row.experiment||{},participants=experimentExportRows(p.participants,referenceFields),usages=experimentExportRows(p.sample_usages,['sample_id','purpose','amount','unit','disposition']);
-    result.experiment={...experimentExportFields(p,['schema_version','title','assays','status','project','operator','protocol','started_at','ended_at','timezone','circadian_time','time_basis','result_urls']),participants:participants.items,participant_count:participants.total,participants_truncated:participants.truncated,sample_usages:usages.items,sample_usage_count:usages.total,sample_usages_truncated:usages.truncated};
+    result.experiment={...experimentExportFields(p,['schema_version','title','assays','status','project','operator','protocol','started_at','ended_at','timezone','circadian_time','time_basis','circadian_time_source','decapitation_at','decapitation_circadian_time','decapitation_time_basis','decapitation_circadian_time_source','sampling_at','sampling_circadian_time','sampling_time_basis','sampling_circadian_time_source','result_urls']),entrainment:experimentExportFields(p.entrainment,entrainmentFields),participants:participants.items,participant_count:participants.total,participants_truncated:participants.truncated,sample_usages:usages.items,sample_usage_count:usages.total,sample_usages_truncated:usages.truncated};
     result.experiment.result_urls=(Array.isArray(p.result_urls)?p.result_urls:[]).filter(url=>typeof url==='string').slice(0,30).map(url=>[...url].slice(0,2048).join(''));
   }else if(row.event_type==='experiment_sample'){
     const p=row.experiment_sample||{},donors=experimentExportRows(p.donors,referenceFields);
-    result.experiment_sample={...experimentExportFields(p,['schema_version','label','experiment_id','parent_sample_ids','pooled','tissue','material','collection_at','timezone','circadian_time','time_basis','status','quantity','quantity_unit','quantity_as_of_date','operator','project','protocol']),donors:donors.items,donor_count:donors.total,donors_truncated:donors.truncated,parent_sample_count:Array.isArray(p.parent_sample_ids)?p.parent_sample_ids.length:0,parent_samples_truncated:Array.isArray(p.parent_sample_ids)&&p.parent_sample_ids.length>(experimentExportFields(p,['parent_sample_ids']).parent_sample_ids||[]).length,storage:experimentExportFields(p.storage,['temperature_c','facility','freezer','rack','box','position'])};
+    result.experiment_sample={...experimentExportFields(p,['schema_version','label','experiment_id','parent_sample_ids','pooled','tissue','material','collection_at','timezone','circadian_time','time_basis','circadian_time_source','decapitation_at','decapitation_circadian_time','decapitation_time_basis','decapitation_circadian_time_source','status','quantity','quantity_unit','quantity_as_of_date','operator','project','protocol']),entrainment:experimentExportFields(p.entrainment,entrainmentFields),donors:donors.items,donor_count:donors.total,donors_truncated:donors.truncated,parent_sample_count:Array.isArray(p.parent_sample_ids)?p.parent_sample_ids.length:0,parent_samples_truncated:Array.isArray(p.parent_sample_ids)&&p.parent_sample_ids.length>(experimentExportFields(p,['parent_sample_ids']).parent_sample_ids||[]).length,storage:experimentExportFields(p.storage,['temperature_c','facility','freezer','rack','box','position'])};
   }
   return result;
 }

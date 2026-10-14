@@ -563,6 +563,25 @@ test('experiment collection dates control exports; bounded link lists declare om
   const all=await store.getExportRecords({scope:'history',entityTypes:['husbandry_events']});assert(all.dataset.tables.husbandry_events.some(r=>r.event_id==='UNDATED-EXPERIMENT'));
 });
 
+test('experiment exports keep decapitation, sampling and assay timing separate with explicit ZT or CT',async()=>{
+  await fresh();const data=createSyntheticDataset(),decapitation='2025-02-01T10:03:00+08:00',sampling='2025-02-01T10:07:30+08:00';
+  const timing={decapitation_at:decapitation,decapitation_circadian_time:'2.05',decapitation_time_basis:'ZT',decapitation_circadian_time_source:'recorded',sampling_at:sampling,sampling_circadian_time:'14.125',sampling_time_basis:'CT',sampling_circadian_time_source:'calculated'};
+  const entrainment={scheme:'LP1',light_event_id:'LIGHT-1',reference_at:'2025-02-01T08:00:00+08:00',reference_phase:0,phase_basis:'ZT',phase_scale:'normalized_24',period_hours:24,timezone:'Asia/Taipei',start_date:'2025-01-01',end_date:'2025-01-31',duration_days:30,duration_basis:'date_difference'};
+  data.tables.husbandry_events=[
+    {event_id:'TIMED-EXP',event_type:'experiment',event_date:'2025-02-01',experiment:{title:'Distinct recorded times',started_at:'2025-02-02T17:00:00+08:00',circadian_time:'9',time_basis:'ZT',circadian_time_source:'recorded',timezone:'Asia/Taipei',...timing,entrainment:{...entrainment,notes:'EXCLUDED TIMING NOTES',raw:{notes:'EXCLUDED TIMING NOTES'}}}},
+    {event_id:'TIMED-SAMPLE',event_type:'experiment_sample',event_date:'2025-02-01',experiment_sample:{label:'Sample',collection_at:sampling,circadian_time:'14.125',time_basis:'CT',circadian_time_source:'calculated',timezone:'Asia/Taipei',decapitation_at:decapitation,decapitation_circadian_time:'2.05',decapitation_time_basis:'ZT',decapitation_circadian_time_source:'recorded',entrainment}},
+    {event_id:'UNKNOWN-TIMING',event_type:'experiment',event_date:'2025-02-01',experiment:{title:'Unknown times',decapitation_at:null,sampling_at:null,decapitation_time_basis:'unknown',sampling_time_basis:'unknown',started_at:'2025-02-01T12:00:00+08:00'}}
+  ];
+  await store.saveDataset(data,{localOnly:true,localKind:'demo'});const result=await store.getExportRecords({scope:'history',fromDate:'2025-01-01',entityTypes:['husbandry_events']}),rows=result.dataset.tables.husbandry_events;
+  const experiment=rows.find(row=>row.event_id==='TIMED-EXP').experiment,sample=rows.find(row=>row.event_id==='TIMED-SAMPLE').experiment_sample,unknown=rows.find(row=>row.event_id==='UNKNOWN-TIMING').experiment;
+  for(const [key,value]of Object.entries(timing))assert.equal(experiment[key],value,key);
+  assert.equal(experiment.started_at,'2025-02-02T17:00:00+08:00');assert.equal(experiment.circadian_time,'9');assert.equal(experiment.time_basis,'ZT');
+  assert.equal(sample.decapitation_at,decapitation);assert.equal(sample.decapitation_circadian_time,'2.05');assert.equal(sample.decapitation_time_basis,'ZT');assert.equal(sample.collection_at,sampling);assert.equal(sample.circadian_time,'14.125');assert.equal(sample.time_basis,'CT');
+  assert.equal(experiment.circadian_time_source,'recorded');assert.equal(sample.circadian_time_source,'calculated');assert.equal(sample.decapitation_circadian_time_source,'recorded');
+  assert.deepEqual(experiment.entrainment,entrainment);assert.deepEqual(sample.entrainment,entrainment);assert(!JSON.stringify(rows).includes('EXCLUDED TIMING NOTES'));
+  assert.equal(unknown.decapitation_at,null);assert.equal(unknown.sampling_at,null);assert.equal(unknown.decapitation_time_basis,'unknown');assert.equal(unknown.sampling_time_basis,'unknown');
+});
+
 test('strain metadata uses versioned cloud records, rejects stale edits and respects read-only membership',async()=>{
   const d=await connected();
   const input={code:'E',insertion_type:'transgenic',stock_reference:'Synthetic stock',notes:'Synthetic strain note'};

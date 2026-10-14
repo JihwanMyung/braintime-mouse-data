@@ -1,6 +1,7 @@
 /* Experiments and specimens are versioned husbandry records. Linking a mouse,
  * completing an assay, or recording sample usage never changes animal state or
  * specimen stock. Imported source_* observations remain immutable. */
+import {blankEntrainment,validateEntrainment} from './experiment-timing.js?v=21';
 export const EXPERIMENT_ASSAYS=Object.freeze(['LumiCycle','IMG','qPCR','WB','IF/IHC','CSF','tissue_storage','other']);
 export const EXPERIMENT_ASSAY_LABELS=Object.freeze({LumiCycle:'LumiCycle',IMG:'IMG (Imaging)',qPCR:'qPCR',WB:'WB', 'IF/IHC':'IF / IHC',CSF:'CSF sampling',tissue_storage:'Tissue collection / storage',other:'Other'});
 export const EXPERIMENT_STATUSES=Object.freeze(['unreviewed','planned','in_progress','completed','cancelled']);
@@ -16,7 +17,7 @@ const rows=d=>Array.isArray(d?.tables?.husbandry_events)?d.tables.husbandry_even
 const clone=structuredClone;
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const date=x=>typeof x==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(x)&&Number.isFinite(Date.parse(x))&&new Date(x+'T00:00:00Z').toISOString().slice(0,10)===x;
-const timestamp=x=>typeof x==='string'&&/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d{1,3})?)?(Z|[+-](0\d|1[0-4]):[0-5]\d)$/.test(x)&&date(x.slice(0,10))&&Number.isFinite(Date.parse(x));
+const timestamp=x=>typeof x==='string'&&/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d{1,3})?)?(Z|[+-](?:(?:0\d|1[0-3]):[0-5]\d|14:00))$/.test(x)&&date(x.slice(0,10))&&Number.isFinite(Date.parse(x));
 const quantity=x=>typeof x==='number'&&Number.isFinite(x)&&x>=0;
 const unique=x=>[...new Set(x)];
 const mouseIndex=d=>new Map((d?.tables?.mice??[]).map(m=>[m.mouse_sid,m]));
@@ -89,6 +90,15 @@ function timingErrors(p,fields,errors) {
   optionalText(p,'circadian_time',100,errors,'Circadian time');
   if(text(p.circadian_time)&&p.time_basis==='unknown')errors.push('Specify the time basis for a circadian time.');
 }
+function procedureTimingErrors(p,samplingField,errors) {
+  for(const prefix of ['decapitation',...(samplingField==='sampling_at'?['sampling']:[])]) {
+    const key=prefix+'_circadian_time',basis=p[prefix+'_time_basis']??'unknown',label=prefix==='decapitation'?'Decapitation':'Sampling';
+    optionalText(p,key,100,errors,`${label} circadian time`);
+    if(!EXPERIMENT_TIME_BASES.includes(basis))errors.push(`${label} time basis must be clock, ZT, CT, other, or unknown.`);
+    if(text(p[key])&&basis==='unknown')errors.push(`Specify the time basis for ${prefix} circadian time.`);
+  }
+  if(timestamp(p.decapitation_at)&&timestamp(p[samplingField])&&Date.parse(p[samplingField])<Date.parse(p.decapitation_at))errors.push('Exact sampling time cannot precede decapitation time.');
+}
 function referenceErrors(value,dataset,label,errors) {
   if(!Array.isArray(value)||value.length>1000){errors.push(`${label} must be an array of at most 1,000 animal links.`);return;}
   const mice=mouseIndex(dataset),seen=new Set();
@@ -116,13 +126,15 @@ function commonErrors(p,draft,errors) {
   if(!blank(draft.event_date)&&!date(draft.event_date))errors.push('Effective date must be YYYY-MM-DD or blank.');
   if(!Number.isSafeInteger(p.revision??0)||(p.revision??0)<0)errors.push('Record revision must be a nonnegative integer.');
   if((p.revision??0)===0&&!blank(p.last_revision_id)||(p.revision??0)>0&&!text(p.last_revision_id))errors.push('Record revision and latest revision identifier must agree.');
+  if(p.entrainment!=null)errors.push(...validateEntrainment(p.entrainment));
+  for(const key of ['circadian_time_source','decapitation_circadian_time_source','sampling_circadian_time_source'])if(p[key]!=null&&!['recorded','calculated'].includes(p[key]))errors.push('Circadian time source must be recorded or calculated.');
 }
 function experimentErrors(p,draft,dataset,errors,warnings) {
   if(!obj(p)||p.schema_version!==1){errors.push('Experiment must use schema version 1.');return;}
   if(!text(p.title)||p.title.length>200)errors.push('Enter an experiment title of 1–200 characters.');
   if(!Array.isArray(p.assays)||!p.assays.length||p.assays.some(a=>!EXPERIMENT_ASSAYS.includes(a))||unique(p.assays).length!==p.assays.length)errors.push('Choose one or more distinct supported assays.');
   if(!EXPERIMENT_STATUSES.includes(p.status))errors.push('Select a valid experiment status.');
-  commonErrors(p,draft,errors);timingErrors(p,['started_at','ended_at'],errors);
+  commonErrors(p,draft,errors);timingErrors(p,['started_at','ended_at','decapitation_at','sampling_at'],errors);procedureTimingErrors(p,'sampling_at',errors);
   if(timestamp(p.started_at)&&timestamp(p.ended_at)&&Date.parse(p.ended_at)<Date.parse(p.started_at))errors.push('Experiment end cannot precede its start.');
   if(timestamp(p.started_at)&&date(draft.event_date)&&localDay(p.started_at,p.timezone)!==draft.event_date)errors.push('Experiment effective date must match its start date in the recorded timezone.');
   referenceErrors(p.participants,dataset,'Participants',errors);
@@ -152,7 +164,7 @@ function experimentErrors(p,draft,dataset,errors,warnings) {
 function sampleErrors(p,draft,dataset,errors,warnings) {
   if(!obj(p)||p.schema_version!==1){errors.push('Specimen must use schema version 1.');return;}
   if(!text(p.label)||p.label.length>200)errors.push('Enter a specimen label of 1–200 characters.');
-  commonErrors(p,draft,errors);timingErrors(p,['collection_at'],errors);
+  commonErrors(p,draft,errors);timingErrors(p,['collection_at','decapitation_at'],errors);procedureTimingErrors(p,'collection_at',errors);
   if(timestamp(p.collection_at)&&date(draft.event_date)&&localDay(p.collection_at,p.timezone)!==draft.event_date)errors.push('Specimen effective date must match its collection date in the recorded timezone.');
   for(const k of ['tissue','material'])optionalText(p,k,300,errors);
   if(!SAMPLE_STATUSES.includes(p.status))errors.push('Select a valid specimen status.');
@@ -237,10 +249,10 @@ function revisionSnapshot(record) {
 }
 
 export function blankExperiment() {
-  return {schema_version:1,title:'',assays:[],status:'planned',project:null,operator:null,protocol:null,started_at:null,ended_at:null,timezone:'Asia/Taipei',circadian_time:null,time_basis:'unknown',participants:[],sample_usages:[],result_urls:[],notes:null,revision:0,last_revision_id:null};
+  return {schema_version:1,title:'',assays:[],status:'planned',project:null,operator:null,protocol:null,started_at:null,ended_at:null,timezone:'Asia/Taipei',circadian_time:null,time_basis:'unknown',decapitation_at:null,decapitation_circadian_time:null,decapitation_time_basis:'unknown',decapitation_circadian_time_source:'recorded',sampling_at:null,sampling_circadian_time:null,sampling_time_basis:'unknown',sampling_circadian_time_source:'recorded',entrainment:blankEntrainment(),participants:[],sample_usages:[],result_urls:[],notes:null,revision:0,last_revision_id:null};
 }
 export function blankExperimentSample() {
-  return {schema_version:1,label:'',experiment_id:null,donors:[],parent_sample_ids:[],pooled:false,tissue:null,material:null,collection_at:null,timezone:'Asia/Taipei',circadian_time:null,time_basis:'unknown',status:'unreviewed',quantity:null,quantity_unit:null,quantity_as_of_date:null,storage:{temperature_c:null,facility:null,freezer:null,rack:null,box:null,position:null},operator:null,project:null,protocol:null,notes:null,revision:0,last_revision_id:null};
+  return {schema_version:1,label:'',experiment_id:null,donors:[],parent_sample_ids:[],pooled:false,tissue:null,material:null,collection_at:null,timezone:'Asia/Taipei',circadian_time:null,time_basis:'unknown',circadian_time_source:'recorded',decapitation_at:null,decapitation_circadian_time:null,decapitation_time_basis:'unknown',decapitation_circadian_time_source:'recorded',entrainment:blankEntrainment(),status:'unreviewed',quantity:null,quantity_unit:null,quantity_as_of_date:null,storage:{temperature_c:null,facility:null,freezer:null,rack:null,box:null,position:null},operator:null,project:null,protocol:null,notes:null,revision:0,last_revision_id:null};
 }
 function build(type,input,dataset,old,options={}) {
   if(!obj(input))throw new Error('Record fields are required.');

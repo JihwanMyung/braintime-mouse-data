@@ -109,11 +109,16 @@ tests/family-targets.test.mjs
 web/experiment-model.js
 web/experiment-sources.js
 web/experiments.js
+web/experiment-timing.js
+web/experiment-source-timing.js
 tests/experiment-model.test.mjs
+tests/experiment-timing.test.mjs
+tests/experiment-source-timing.test.mjs
 supabase/experiment-export.sql
 tests/experiments.test.mjs
 tests/experiment-sources.test.mjs
 scripts/import-experiment-sources.py
+scripts/append-imaging-source-observations.py
 tests/test_import_experiment_sources.py
 scripts/prepare-experiment-import.mjs
 docs/experiment-records.md
