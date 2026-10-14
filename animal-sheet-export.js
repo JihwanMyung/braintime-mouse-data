@@ -1,6 +1,6 @@
-import {mouseManager,cageManager} from './model.js?v=18';
-import {createWorkbookXlsx,columnName} from './workbook-export.js?v=18';
-export {createWorkbookXlsx} from './workbook-export.js?v=18';
+import {mouseManager,cageManager} from './model.js?v=19';
+import {createWorkbookXlsx,columnName} from './workbook-export.js?v=19';
+export {createWorkbookXlsx} from './workbook-export.js?v=19';
 
 const present=v=>v!==null&&v!==undefined&&v!=='';
 const id=v=>present(v)?String(v):'';
