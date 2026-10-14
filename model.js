@@ -1,3 +1,5 @@
+import { validateGeneticProfile } from './genotype-schema.js?v=10';
+import { validateScenario } from './genetics.js?v=10';
 export const ID_FIELDS = Object.freeze({mice:'mouse_sid',matings:'mating_sid',litters:'litter_sid',cages:'cage_sid',rooms:'room_id',racks:'rack_id',locations:'location_id',light_events:'event_id',husbandry_events:'event_id'});
 const copy = value => structuredClone(value);
 const ids = value => Array.isArray(value) ? value : (typeof value==='string' ? value.split(/[\n,]/).map(s=>s.trim()).filter(Boolean) : []);
@@ -285,6 +287,18 @@ export function validateRecord(type,draft,dataset,originalId=null) {
   }
   for(const name of ['sire_sids','dam_sids','male_sids','female_sids'])if(populated(draft[name])&&(!Array.isArray(draft[name])||draft[name].some(id=>typeof id!=='string'||!id.trim())))errors.push(`${name} must contain text identifiers.`);
   validateHousing(type,draft,old,base,errors);
+  if(type==='mice'&&key(draft.genetic_profile)!==key(old?.genetic_profile)) {
+    errors.push(...validateGeneticProfile(draft.genetic_profile));
+    if(draft.genetic_profile?.calls&&Object.values(draft.genetic_profile.calls).some(call=>call?.evidence!=='confirmed'))warnings.push('Unconfirmed allele calls remain provisional and are excluded from confirmed-parent ranking.');
+  }
+  if(type==='husbandry_events'&&(draft.event_type==='breeding_plan'||draft.breeding_plan||old?.breeding_plan)) {
+    if(draft.event_type!=='breeding_plan')errors.push('A saved breeding plan must retain its breeding_plan event type.');
+    if(!old||old.event_type!=='breeding_plan'||key(draft.breeding_plan)!==key(old?.breeding_plan)) {
+      const plan=draft.breeding_plan;
+      if(!plan||plan.schema_version!==1||typeof plan.name!=='string'||!plan.name.trim()||plan.name.length>160)errors.push('A breeding plan needs a name and schema version 1.');
+      else {const check=validateScenario(plan.scenario);errors.push(...check.errors);warnings.push(...check.warnings);}
+    }
+  }
   const candidate=copy(base);
   candidate.tables[type]=base.tables[type].filter(r=>r[field]!==originalId);
   candidate.tables[type].push(copy(draft));
