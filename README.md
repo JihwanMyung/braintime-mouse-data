@@ -51,3 +51,7 @@ No real colony records or login secrets are included in this source package. Dep
 Mouse and cage records show an editable manager, using the imported SoftMouse owner until an assignment is changed. Original owner fields are preserved. Printed animal and cage cards include managers in a compact two-column layout.
 
 Signed-in members can set their app password and display name in Settings. The configured database owner can list users, invite new accounts, assign Read only or Read & write access, and deactivate access. See `supabase/functions/manage-colony-users/README.md` for the server setup and email-delivery requirements. Passwords and administrative keys are never included in the public app package.
+
+## Rooms and racks
+
+Housing & light supports adding rooms, racks and named positions as the laboratory grows. Empty structures remain visible, and contextual actions preselect their parent. Cage editors use named, dependent room/rack/position selectors. Changing a cage's location saves its effective date and the old/new location names alongside the cage update; imported source text remains intact. Referenced structures are retained for history rather than reparented silently. Parent archival checks active children and current cage use. These checks are application validation; existing Supabase role, audit and version controls continue to govern shared saves.

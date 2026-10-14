@@ -59,6 +59,42 @@ managedCage.location='Recorded room / rack';assert(cageHousing(managedCage).hous
 cloud={mode:'local'};
 `,context);
 
+await vm.runInContext(`(async()=>{
+const cage=dataset.tables.cages[0];cage.location_id='POS-DEMO';delete cage.room_id;delete cage.rack_id;
+dataset.tables.rooms.push({room_id:'ROOM-NEW',name:'New housing room'});
+dataset.tables.racks.push({rack_id:'RACK-NEW',room_id:'ROOM-NEW',name:'New rack'});
+dataset.tables.locations.push({location_id:'POS-NEW',room_id:'ROOM-NEW',rack_id:'RACK-NEW',label:'B2'});
+openEditor('cages',cage.cage_sid);
+assert($('record-fields').innerHTML.includes('<select id="field-room_id"'));
+assert($('record-fields').innerHTML.includes('Demo room / Demo rack'));
+assert($('record-fields').innerHTML.includes('cage-change-date'));
+assert(!cageLocationOptions('racks',cageLocationRefs(cage)).includes('New rack'));
+assert(columnValue(cage,'_housing').includes('Demo room / Demo rack / A1'));
+const Original=FormData;let formValues={...cage,...cageLocationRefs(cage),manager:'Cage keeper'};
+FormData=class{get(k){return formValues[k]??''}};
+const unchanged=collectDraft();assert(!Object.hasOwn(unchanged,'room_id'));assert(!Object.hasOwn(unchanged,'rack_id'));assert(unchanged.location_id==='POS-DEMO');
+$('field-room_id').value='ROOM-NEW';$('field-rack_id').value='RACK-DEMO';$('field-location_id').value='POS-DEMO';$('field-room_id').onchange();
+assert($('field-rack_id').value==='');assert($('field-location_id').value==='');assert(!$('field-rack_id').innerHTML.includes('Demo rack'));
+formValues={...formValues,room_id:'ROOM-NEW',rack_id:'RACK-NEW',location_id:'POS-NEW'};$('cage-change-date').value='2026-10-14';
+const before=dataset.tables.husbandry_events.length;
+await saveDraft({preventDefault(){}});
+assert(!editor,'successful save closes editor');assert(dataset.tables.husbandry_events.length===before+1);
+const move=dataset.tables.husbandry_events.at(-1);assert(move.event_type==='cage_location_assignment');assert(move.old_location_id==='POS-DEMO');assert(move.location_id==='POS-NEW');assert(move.event_date==='2026-10-14');
+assert(move.old_location_label.includes('Demo rack'));assert(move.location_label.includes('New rack'));
+assert(dataset.tables.cages[0].location==='Recorded room / rack','original text retained');
+openEditor('cages',cage.cage_sid);formValues={...dataset.tables.cages[0],location:'Corrected source location',manager:'Cage keeper'};$('cage-change-date').value='2026-10-14';
+await saveDraft({preventDefault(){}});assert(!editor);assert(dataset.tables.husbandry_events.length===before+2,'legacy location edits also create dated evidence');
+FormData=Original;
+const confirmOriginal=confirmAction;confirmAction=async()=>true;
+const destination=dataset.tables.cages[1];destination.location_id='POS-DEMO';destination.manager='Test caretaker';
+dataset.tables.rooms.find(r=>r.room_id==='ROOM-DEMO').app_archived_at='2026-10-14T00:00:00Z';
+selectedMice.clear();selectedMice.add(dataset.tables.mice[0].mouse_sid);$('bulk-cage-id').value=destination.cage_sid;$('bulk-move-date').value='2026-10-14';$('bulk-move-notes').value='';
+await assert.rejects(()=>bulkCage(),/archived/i);assert(dataset.tables.mice[0].cage_sid===cage.cage_sid,'invalid bulk move leaves dataset unchanged');selectedMice.clear();
+destination.app_archived_at='2026-10-14T00:00:00Z';detail={type:'cages',id:destination.cage_sid};
+await assert.rejects(()=>archiveRecord(),/archived/i);assert(destination.app_archived_at,'invalid restore leaves record archived');
+confirmAction=confirmOriginal;
+})()`,context);
+
 const shell=fs.readFileSync(new URL('../web/sw.js',import.meta.url),'utf8');
 assert(shell.includes('!allowed.has(event.request.url)'),'service worker exact shell allowlist');
 assert(!shell.includes('supabase.co'),'no cloud API route cached');

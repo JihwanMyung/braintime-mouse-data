@@ -55,3 +55,5 @@ supabase/functions/manage-colony-users/membership.sql
 supabase/functions/manage-colony-users/README.md
 supabase/functions/manage-colony-users/prepare-bundle.mjs
 supabase/tests/user-management.test.mjs
+tests/housing-model.test.mjs
+tests/housing-structure.test.mjs
