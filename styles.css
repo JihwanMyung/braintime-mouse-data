@@ -43,3 +43,6 @@
 .cage-manager{margin:12px 0;font-size:12px}.cage-manager-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}.cage-card-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.cage-card-actions .button{font-size:10px;padding:6px 9px}.card-heading strong{overflow-wrap:anywhere;min-width:0}
 
 .user-management th{padding:12px 15px}.user-management td{vertical-align:middle}.user-management td select{font:inherit;color:var(--ink);padding:8px;border:1px solid var(--control-line);border-radius:6px;background:var(--surface);min-width:115px}.user-management td .settings-actions{margin:0;gap:6px}.user-management td .button{font-size:10px;padding:7px 9px}
+/* Room and rack management stays usable on narrow screens. */
+.housing-group .panel-head{align-items:flex-start;flex-wrap:wrap}.housing-group-actions{margin:0;flex-wrap:wrap;justify-content:flex-end}.housing-empty{padding:28px 22px}.housing-group h2{overflow-wrap:anywhere}.housing-group .panel-head>div:first-child{min-width:0}.housing-group-actions .button{white-space:normal}
+@media(max-width:620px){.housing-group-actions{width:100%;justify-content:flex-start}.housing-group .panel-head{gap:12px}}

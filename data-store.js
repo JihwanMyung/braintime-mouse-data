@@ -1,4 +1,4 @@
-import { normalizeDataset, ID_FIELDS } from './model.js?v=7';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=9';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1';

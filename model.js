@@ -39,6 +39,122 @@ export function cageManager(cage,mice=[]) {
   return managerResult(candidates[0],'residents','assigned',candidates);
 }
 
+const archived = record => Boolean(record?.app_archived_at) || record?.archived===true;
+const reference = value => populated(value) ? value : null;
+const housingLabel = record => [record?.name,record?.label].find(value=>typeof value==='string'&&value.trim())?.trim()||null;
+const housingText = value => typeof value==='string'&&value.trim()?value.trim():null;
+
+// Resolve only recorded links. A position supplies omitted ancestors, never an inferred cage match.
+function housingReferences(record,dataset,type='cages') {
+  const tables=dataset.tables??{},find=(table,field,id)=>(tables[table]??[]).find(row=>populated(id)&&row[field]===id);
+  const position=type==='locations'?record:find('locations','location_id',record?.location_id);
+  const location_id=reference(record?.location_id);
+  const rack_id=reference(record?.rack_id)??reference(position?.rack_id);
+  const rack=type==='racks'?record:find('racks','rack_id',rack_id);
+  const room_id=reference(record?.room_id)??reference(position?.room_id)??reference(rack?.room_id);
+  const room=type==='rooms'?record:find('rooms','room_id',room_id);
+  return {room_id,rack_id,location_id,room,rack,position};
+}
+
+function housingSnapshot(record,dataset) {
+  const refs=housingReferences(record,dataset);
+  const room_label=housingLabel(refs.room)??refs.room_id??housingText(record?.room);
+  const rack_label=housingLabel(refs.rack)??refs.rack_id??housingText(record?.rack);
+  const position_label=housingLabel(refs.position)??refs.location_id??housingText(record?.location);
+  return {room_id:refs.room_id,rack_id:refs.rack_id,location_id:refs.location_id,room_label,rack_label,position_label,
+    location_label:[room_label,rack_label,position_label].filter(populated).join(' / ')||null};
+}
+
+/** Save human-readable housing at the time of a dated cage assignment, including its previous path. */
+export function buildCageLocationEvent(cage,old,date,dataset,notes='') {
+  if(typeof cage?.cage_sid!=='string'||!cage.cage_sid.trim())throw new Error('A cage SID is required for assignment history.');
+  if(!validDate(date))throw new Error('Choose a valid effective housing change date (YYYY-MM-DD).');
+  const current=housingSnapshot(cage,dataset),previous=housingSnapshot(old,dataset),stamp=new Date().toISOString();
+  return {event_id:`LOC-${crypto.randomUUID()}`,record_origin:'app_created',event_type:'cage_location_assignment',
+    cage_sid:cage.cage_sid,cage_tag:cage.cage_tag??old?.cage_tag??null,event_date:date,...current,
+    ...Object.fromEntries(Object.entries(previous).map(([field,value])=>[`old_${field}`,value])),
+    notes:typeof notes==='string'&&notes.trim()?notes.trim():null,app_created_at:stamp,app_modified_at:stamp};
+}
+
+function housingMatches(type,id,record,dataset,recordType='cages') {
+  const refs=housingReferences(record,dataset,recordType);
+  return refs[ID_FIELDS[type]]===id;
+}
+
+function datedEventReferences(type,record,event,dataset) {
+  if(!['event_date','start_date','end_date'].some(field=>populated(event[field])))return false;
+  const target=housingReferences(record,dataset,type);
+  for(const prefix of ['','old_']) {
+    const scoped=Object.fromEntries(['room_id','rack_id','location_id'].map(field=>[field,event[prefix+field]]));
+    const cageSid=event[prefix+'cage_sid'];
+    const cage=(dataset.tables.cages??[]).find(row=>populated(cageSid)&&row.cage_sid===cageSid);
+    if(cage&&housingMatches(type,record[ID_FIELDS[type]],cage,dataset))return true;
+    const refs=housingReferences(scoped,dataset);
+    if(type==='racks'&&refs.rack_id===record.rack_id)return true;
+    if(type==='locations'&&refs.location_id===record.location_id)return true;
+    // Room-wide and rack-wide events also describe their descendant positions.
+    // A different specific cage or position must not become a room-wide reference.
+    if(!populated(cageSid)&&!refs.location_id) {
+      if(type==='locations'&&refs.rack_id&&refs.rack_id===target.rack_id)return true;
+      if(!refs.rack_id&&refs.room_id&&refs.room_id===target.room_id)return true;
+    }
+  }
+  return false;
+}
+
+function validateHousing(type,draft,old,base,errors) {
+  const tables=base.tables,field=ID_FIELDS[type],id=draft[field];
+  const newAppRecord=!old&&draft.record_origin==='app_created';
+  if(newAppRecord&&['rooms','racks'].includes(type)&&!housingText(draft.name))errors.push(`Give this ${type==='rooms'?'room':'rack'} a human-readable name.`);
+  if(newAppRecord&&['racks','locations'].includes(type)&&!housingText(draft.room_id))errors.push(`Select a room for the new ${type==='racks'?'rack':'position'}.`);
+  if(newAppRecord&&type==='locations'&&!housingText(draft.rack_id))errors.push('Select a rack for the new position.');
+  if(type==='locations')for(const coordinate of ['row','column']) {
+    if(populated(draft[coordinate])&&(!old||key(old[coordinate])!==key(draft[coordinate]))&&
+      (typeof draft[coordinate]!=='number'||!Number.isInteger(draft[coordinate])||draft[coordinate]<0))errors.push(`Position ${coordinate} must be a nonnegative whole number.`);
+  }
+
+  // Apply current-housing rules only to changed assignments, not to dated source history.
+  if(['racks','locations','cages'].includes(type)) {
+    const current=housingReferences(draft,base,type),previous=housingReferences(old,base,type);
+    const reactivated=type==='cages'&&['Active','Occupied'].includes(draft.state)&&!['Active','Occupied'].includes(old?.state);
+    const changed=!old||['room_id','rack_id','location_id'].some(name=>current[name]!==previous[name])||(archived(old)&&!archived(draft))||reactivated;
+    if(changed)for(const [name,parent] of [['room',current.room],['rack',current.rack],['position',current.position]]) {
+      if(parent===draft)continue;
+      if(archived(parent))errors.push(`The selected ${name} is archived. Restore it or choose active housing before assigning this ${type==='cages'?'cage':type==='racks'?'rack':'position'}.`);
+    }
+  }
+  if(type==='mice'&&populated(draft.cage_sid)&&(!old||draft.cage_sid!==old.cage_sid||(archived(old)&&!archived(draft))||(draft.state==='Stock'&&old.state!=='Stock'))) {
+    const cage=tables.cages.find(row=>row.cage_sid===draft.cage_sid),refs=housingReferences(cage,base);
+    if([cage,refs.room,refs.rack,refs.position].some(archived))errors.push('The selected cage or its housing is archived. Choose an active cage and housing before assigning this mouse.');
+  }
+
+  if(type==='husbandry_events'&&old?.event_type==='cage_location_assignment') {
+    const snapshotFields=['room_id','rack_id','location_id','room_label','rack_label','position_label','location_label'];
+    const immutable=['event_type','cage_sid','cage_tag','mouse_sid','old_cage_sid',...snapshotFields,...snapshotFields.map(name=>'old_'+name)];
+    if(immutable.some(name=>key(reference(old[name]))!==key(reference(draft[name]))))errors.push('The cage, location references and captured labels of an assignment history record cannot be changed. Record a new dated cage assignment instead; the existing date and notes can be corrected.');
+  }
+
+  if(old&&['racks','locations'].includes(type)) {
+    const current=housingReferences(draft,base,type),previous=housingReferences(old,base,type);
+    const reparented=(type==='racks'?['room_id']:['room_id','rack_id']).some(name=>current[name]!==previous[name]);
+    if(reparented) {
+      const cageReference=tables.cages.some(cage=>housingMatches(type,old[field],cage,base));
+      const eventReference=[...tables.light_events,...tables.husbandry_events].some(event=>datedEventReferences(type,old,event,base));
+      if(cageReference||eventReference)errors.push(`This ${type==='racks'?'rack':'position'} is referenced by cages or dated history and cannot be moved to a different parent. Create a new ${type==='racks'?'rack':'position'} and use a dated cage assignment instead.`);
+    }
+  }
+
+  if(old&&!archived(old)&&archived(draft)&&['rooms','racks','locations'].includes(type)) {
+    const childTypes=type==='rooms'?['racks','locations']:type==='racks'?['locations']:[];
+    const children=childTypes.flatMap(childType=>tables[childType].filter(child=>!archived(child)&&housingMatches(type,id,child,base,childType)));
+    const stockCages=new Set(tables.mice.filter(mouse=>mouse.state==='Stock'&&!archived(mouse)).map(mouse=>mouse.cage_sid));
+    const activeCages=tables.cages.filter(cage=>housingMatches(type,id,cage,base)&&
+      ((!archived(cage)&&['Active','Occupied'].includes(cage.state))||stockCages.has(cage.cage_sid)));
+    if(children.length)errors.push(`This ${type==='locations'?'position':type==='racks'?'rack':'room'} has active child racks or positions. Archive or move those children before archiving it.`);
+    if(activeCages.length)errors.push(`This ${type==='locations'?'position':type==='racks'?'rack':'room'} contains active cages or Stock mice. Move the cages or update their current status before archiving it.`);
+  }
+}
+
 export function normalizeDataset(dataset) {
   if (!dataset || typeof dataset!=='object' || Array.isArray(dataset)) throw new Error('A dataset object is required.');
   const result=copy(dataset);
@@ -168,6 +284,7 @@ export function validateRecord(type,draft,dataset,originalId=null) {
     }
   }
   for(const name of ['sire_sids','dam_sids','male_sids','female_sids'])if(populated(draft[name])&&(!Array.isArray(draft[name])||draft[name].some(id=>typeof id!=='string'||!id.trim())))errors.push(`${name} must contain text identifiers.`);
+  validateHousing(type,draft,old,base,errors);
   const candidate=copy(base);
   candidate.tables[type]=base.tables[type].filter(r=>r[field]!==originalId);
   candidate.tables[type].push(copy(draft));
