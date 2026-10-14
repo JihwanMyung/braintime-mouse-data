@@ -1,6 +1,6 @@
-import { predictCross, validateScenario, rankPairs } from './genetics.js?v=19';
-import { discoverGenotypes, sourceProfile } from './genotype-catalog.js?v=19';
-import { validateFamilyTargetDraft } from './family-targets.js?v=19';
+import { predictCross, validateScenario, rankPairs } from './genetics.js?v=20';
+import { discoverGenotypes, sourceProfile } from './genotype-catalog.js?v=20';
+import { validateFamilyTargetDraft } from './family-targets.js?v=20';
 
 const mounts=new WeakMap();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
