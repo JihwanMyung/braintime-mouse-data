@@ -204,3 +204,5 @@
 @media(max-width:1200px){.exp-filters{grid-template-columns:repeat(3,minmax(0,1fr))}.exp-stats article{padding:14px 12px}.exp-stats span{font-size:11px}}
 @media(max-width:650px){.exp-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.exp-stats article{border-bottom:1px solid #e2e7ed}.exp-stats article:last-child{grid-column:1/-1}.exp-stats strong{font-size:24px}.exp-filters,.exp-form,.exp-revision{grid-template-columns:minmax(0,1fr)}.exp-filters .button{justify-self:start}.exp-form fieldset{padding:12px}.exp-use{grid-template-columns:repeat(2,minmax(0,1fr))}.exp-use input:first-child{grid-column:1/-1}.exp-inline{align-items:stretch}.exp-inline input,.exp-inline select{width:100%;flex-basis:100%}.exp-page .keyvals{grid-template-columns:100px minmax(0,1fr)}}
 @media(max-width:650px){.exp-stats{display:flex;overflow-x:auto}.exp-stats article{flex:0 0 132px;padding:12px;border-bottom:0}.exp-stats article:last-child{flex-basis:150px}.exp-stats span{font-size:11px}.exp-stats strong{font-size:24px}}
+
+.mouse-summary-sex dd{font-size:clamp(14px,1.5vw,22px);letter-spacing:-.03em;white-space:nowrap}

@@ -1,5 +1,5 @@
-import { buildCryoActivity, cryoSourceLotId } from './cryopreservation-model.js?v=21';
-import { discoverCryoSources } from './cryo-sources.js?v=21';
+import { buildCryoActivity, cryoSourceLotId } from './cryopreservation-model.js?v=22';
+import { discoverCryoSources } from './cryo-sources.js?v=22';
 
 const mounts=new WeakMap();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));

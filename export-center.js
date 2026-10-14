@@ -1,4 +1,4 @@
-import { projectAnimalSheet, createAnimalSheetXlsx, createWorkbookXlsx, animalSheetPrintHTML } from './animal-sheet-export.js?v=21';
+import { projectAnimalSheet, createAnimalSheetXlsx, createWorkbookXlsx, animalSheetPrintHTML } from './animal-sheet-export.js?v=22';
 
 const mounts=new WeakMap();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -6,7 +6,7 @@ const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)
 const validDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value;
 const active=row=>!row.app_archived_at&&row.archived!==true;
 const scopeNames={'animal-sheet':'Current Animal Sheet',records:'Records and history',backup:'Full workspace backup','source-archive':'Full source archive'};
-const typeNames={mice:'Mice',matings:'Matings',litters:'Litters',cages:'Cages',rooms:'Rooms',racks:'Racks',locations:'Positions',light_events:'Light history',husbandry_events:'Experiments & husbandry'};
+const typeNames={mice:'Mice',matings:'Matings',litters:'Litters',cages:'Cages',rooms:'Rooms',racks:'Racks',locations:'Positions',light_events:'Light history',husbandry_events:'Experiments, fees & husbandry'};
 const idFields={mice:'mouse_sid',matings:'mating_sid',litters:'litter_sid',cages:'cage_sid',rooms:'room_id',racks:'rack_id',locations:'location_id',light_events:'event_id',husbandry_events:'event_id'};
 const levelNames={low:'Low (past 3 years)',high:'High (past 6 years)',max:'Max (full history)'};
 const formatNames={xlsx:'Excel workbook (.xlsx)',csv:'CSV (.csv)',json:'JSON (.json)',pdf:'PDF (print / save)'};
@@ -22,11 +22,17 @@ const sumCounts=counts=>counts.reduce((sum,row)=>sum+row.count,0);
 const scalarRows=rows=>{const headers=[...new Set(rows.flatMap(row=>Object.keys(row)))].sort();return [headers,...rows.map(row=>headers.map(key=>textValue(row[key]))) ]};
 function experimentColumns(record) {
   const type=record.event_type;
+  if(['lac_fee_options','lac_fee_month'].includes(type)&&object(record[type])){
+    const {[type]:payload,...result}=record;
+    for(const [key,value]of Object.entries(payload))result['fee_'+key]=value;
+    return result;
+  }
   if(!['experiment','experiment_sample'].includes(type)||!object(record[type]))return record;
   const {[type]:payload,...result}=record;
   const timingColumns={decapitation_at:'decapitation_clock_time',decapitation_circadian_time:'decapitation_circadian_time',decapitation_time_basis:'decapitation_time_basis',sampling_at:'sampling_clock_time',sampling_circadian_time:'sampling_circadian_time',sampling_time_basis:'sampling_time_basis',decapitation_circadian_time_source:'decapitation_circadian_time_source',sampling_circadian_time_source:'sampling_circadian_time_source',timezone:'timing_timezone',...(type==='experiment_sample'?{collection_at:'sampling_clock_time',circadian_time:'sampling_circadian_time',time_basis:'sampling_time_basis',circadian_time_source:'sampling_circadian_time_source'}:{})};
   for(const [key,value] of Object.entries(payload)) {
-    if(Object.hasOwn(timingColumns,key))result[timingColumns[key]]=value;
+    if(key==='operator')result[type==='experiment'?'experiment_user':'sample_user']=value;
+    else if(Object.hasOwn(timingColumns,key))result[timingColumns[key]]=value;
     else if(key==='entrainment'&&object(value))for(const [field,item] of Object.entries(value))result['entrainment_'+field]=item;
     else if(key==='storage'&&object(value))for(const [field,item] of Object.entries(value))result['storage_'+field]=item;
     else result[type+'_'+key]=value;
@@ -41,7 +47,8 @@ function experimentProjectionWarnings(tables) {
     const p=row.experiment||row.experiment_sample;
     return p&&(p.participants_truncated||p.sample_usages_truncated||p.donors_truncated||p.parent_samples_truncated||[...(p.participants||[]),...(p.donors||[])].some(link=>link.candidates_truncated));
   }).length;
-  return count?[`${count} experiment or specimen records contain more animal/sample links than this bounded report includes. Exported lists show their total and truncation flags. Full preservation backups require Max.`]:[];
+  const fees=(tables.husbandry_events||[]).filter(row=>row.lac_fee_month?.lines_truncated||row.lac_fee_options?.groups_truncated).length;
+  return [...(count?[`${count} experiment or specimen records contain more animal/sample links than this bounded report includes. Exported lists show their total and truncation flags. Full preservation backups require Max.`]:[]),...(fees?[`${fees} fee records contain more evidence lines or billing groups than this bounded report includes. Exported lists show their total and truncation flags. Full preservation backups require Max.`]:[])];
 }
 
 function checkedPermission(value) {
