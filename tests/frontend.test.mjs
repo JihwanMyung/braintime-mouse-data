@@ -15,11 +15,11 @@ assert(!scheduleApplies({start_date:'2026-10-01',end_date:'2026-10-14',interval_
 let saved=model.createSyntheticDataset();saved.demo=true;
 const store={loadDataset:async()=>structuredClone(saved),saveDataset:async next=>{saved=structuredClone(next)},clearDataset:async()=>{saved=null},getCloudStatus:()=>({mode:'local',configured:false,signedIn:false})};
 const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
-const context={console,model,store,PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
+const context={console,model,store,PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
 vm.createContext(context);vm.runInContext(source,context);await new Promise(resolve=>setTimeout(resolve,10));
 vm.runInContext(`
 assert($('main').innerHTML.includes('Recently born'));
-for(const name of ['mice','matings','litters','cages','family','archive','settings','housing']){route=name;detail=null;render();assert($('main').innerHTML.length>50,name+' renders');}
+for(const name of ['mice','matings','litters','cages','family','archive','settings','housing','planner']){route=name;detail=null;render();assert($('main').innerHTML.length>50,name+' renders');}
 route='settings';detail=null;render();assert($('main').innerHTML.includes('email-link-request'));assert($('main').innerHTML.includes('Password sign-in'));
 route='mice';detail={type:'mice',id:dataset.tables.mice[0].mouse_sid};render();assert($('main').innerHTML.includes('Source provenance'));
 openEditor('mice',null);assert($('record-dialog').open);assert($('record-fields').innerHTML.includes('Recorded dam IDs'));assert(editor.record.sex==='Unknown');
@@ -55,6 +55,7 @@ cloud={signedIn:false,role:'owner'};renderSettings();assert(!$('main').innerHTML
 cloud={mode:'cloud',signedIn:true,role:'viewer'};cloudReady=true;route='mice';detail={type:'mice',id:managedMouse.mouse_sid};render();assert($('add-button').hidden);assert(!$('main').innerHTML.includes('data-action="edit"'));assert(!$('main').innerHTML.includes('data-action="archive-record"'));assert($('main').innerHTML.includes('Print ID card'));
 route='overview';detail=null;render();assert(!$('main').innerHTML.includes('data-action="new-mice"'));
 route='settings';renderSettings();assert($('main').innerHTML.includes('account-new-password'));assert($('main').innerHTML.includes('account-name'));assert(!$('main').innerHTML.includes('Upload local records'));
+for(const profile of [{loci:{}},{loci:[null]},{loci:[{id:'bad',name:'Bad'}],calls:{bad:{alleles:'fl',evidence:'confirmed'}}},{loci:[{id:'odd',name:{toString:null}}],calls:{odd:{alleles:[{toString:null},'+'],evidence:'confirmed'}}}]){managedMouse.genetic_profile=profile;assert.doesNotThrow(()=>alleleSummary(managedMouse));route='mice';detail={type:'mice',id:managedMouse.mouse_sid};assert.doesNotThrow(()=>render());}delete managedMouse.genetic_profile;
 managedCage.location='Recorded room / rack';assert(cageHousing(managedCage).housing.includes('Recorded room / rack'));
 cloud={mode:'local'};
 `,context);

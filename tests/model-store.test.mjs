@@ -407,3 +407,19 @@ test('active viewers may edit their own name but a sign-out during the request c
   const original=fetch;globalThis.fetch=async(url,options)=>{const result=await original(url,options);if(url.endsWith('/auth/v1/user')&&options.method==='PUT')sessionStorage.clear();return result;};
   await assert.rejects(store.updateAccountProfile('New Viewer Name'),/account changed/);assert.equal(store.getCloudStatus().signedIn,false);
 });
+
+
+test('structured genotypes and saved breeding plans round-trip as versioned managed records',async()=>{
+  const d=createSyntheticDataset();await connected(d);
+  const next=await store.loadDataset(),mouse=next.tables.mice[0];
+  const locus={id:'test-driver',name:'Synthetic driver',kind:'cre',chromosome:'unknown',alleles:['+','Cre']};
+  mouse.genetic_profile={schema_version:1,loci:[locus],calls:{'test-driver':{alleles:['Cre','+'],evidence:'confirmed'}},notes:'Synthetic confirmation'};
+  const scenario={loci:[locus],sire:{id:mouse.mouse_sid,sex:'Male',calls:structuredClone(mouse.genetic_profile.calls)},dam:{id:'SYN-M002',sex:'Female',calls:{'test-driver':{alleles:['+','+'],evidence:'confirmed'}}},targets:{'test-driver':{mode:'carrier',allele:'Cre'}},independentAssortment:true,sex:'Any',desiredCount:2,confidence:0.95,litterSize:6};
+  const plan={event_id:'PLAN-SYNTHETIC',event_type:'breeding_plan',event_date:'2026-10-14',record_origin:'app_created',breeding_plan:{schema_version:1,name:'Synthetic plan',scenario}};
+  next.tables.husbandry_events.push(plan);await store.saveDataset(next);
+  const pulled=await store.pullFromCloud();assert.deepEqual(pulled.tables.mice[0].genetic_profile,mouse.genetic_profile);assert.deepEqual(pulled.tables.husbandry_events.find(r=>r.event_id===plan.event_id),plan);
+  assert.equal(server.records.get('mice:SYN-M001').version,2);assert(server.records.has('husbandry_events:PLAN-SYNTHETIC'));
+  assert.deepEqual(pulled.tables.matings,d.tables.matings);assert.equal(pulled.tables.mice.length,d.tables.mice.length);assert.equal(pulled.tables.mice[0].genotype,d.tables.mice[0].genotype);
+  const stale=structuredClone(pulled);stale.tables.mice[0].genetic_profile.notes='Conflicting edit';server.records.get('mice:SYN-M001').version++;
+  await assert.rejects(store.saveDataset(stale),/changed in another session/);assert.equal((await store.loadDataset()).tables.mice[0].genetic_profile.notes,'Synthetic confirmation');
+});

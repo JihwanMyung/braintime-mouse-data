@@ -57,3 +57,12 @@ supabase/functions/manage-colony-users/prepare-bundle.mjs
 supabase/tests/user-management.test.mjs
 tests/housing-model.test.mjs
 tests/housing-structure.test.mjs
+web/genetics.js
+web/genotype-schema.js
+web/genotype-catalog.js
+web/breeding-planner.js
+tests/genetics.test.mjs
+tests/genotype-records.test.mjs
+tests/genotype-catalog.test.mjs
+tests/breeding-planner.test.mjs
+docs/colony-planner-research.md

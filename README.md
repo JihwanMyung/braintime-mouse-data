@@ -55,3 +55,9 @@ Signed-in members can set their app password and display name in Settings. The c
 ## Rooms and racks
 
 Housing & light supports adding rooms, racks and named positions as the laboratory grows. Empty structures remain visible, and contextual actions preselect their parent. Cage editors use named, dependent room/rack/position selectors. Changing a cage's location saves its effective date and the old/new location names alongside the cage update; imported source text remains intact. Referenced structures are retained for history rather than reparented silently. Parent archival checks active children and current cage use. These checks are application validation; existing Supabase role, audit and version controls continue to govern shared saves.
+
+## Breeding planner and allele records
+
+The Breeding planner discovers candidate locus labels from the loaded mouse records and Animal Sheet archive. Imported text stays intact. Explicit source allele calls can be reviewed as provisional suggestions; absent or ambiguous calls never become wild type. Confirmed structured profiles are stored on their existing mouse records and use the same access rules, audit trail and version checks.
+
+Plan up to six independent autosomal loci, including Cre drivers, floxed targets and reporter alleles. The calculator shows Mendelian outcome probabilities, a target sex filter, mean offspring counts and binomial attainment counts. Pair ranking compares eligible, confirmed parent profiles by expected target frequency. It does not optimize viability, breeding time, background or experimental validity. Same-locus reporter alleles are represented together; known linkage and sex-linked models are blocked. Saved plans are dated `breeding_plan` husbandry records containing scenario snapshots, and create no animals or actual matings. See the in-app Help and [research comparison](docs/colony-planner-research.md) for sources and limitations.
