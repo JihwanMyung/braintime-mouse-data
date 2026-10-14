@@ -43,12 +43,12 @@ async function readBody(request) {
 }
 
 function validate(body, config) {
-  const fields = {list: [], invite: ['email', 'role', 'export_level', 'permissions'], update_access: ['user_id', 'role', 'active', 'export_level', 'permissions']};
-  if (!Object.hasOwn(fields, body.action)) fail(400, 'invalid_action', 'Choose list, invite, or update_access.');
+  const fields = {list: [], invite: ['email', 'role', 'export_level', 'permissions'], invite_preregistered: ['person_id', 'version'], update_access: ['user_id', 'role', 'active', 'export_level', 'permissions']};
+  if (!Object.hasOwn(fields, body.action)) fail(400, 'invalid_action', 'Choose list, invite, invite_preregistered, or update_access.');
   const allowed = new Set(['action', 'colony_id', ...fields[body.action]]);
   if (Object.keys(body).some(key => !allowed.has(key))) fail(400, 'invalid_request', 'The request contains unsupported fields.');
   if (body.colony_id !== config.colonyId) fail(403, 'wrong_colony', 'This endpoint manages only its configured colony.');
-  if (body.action !== 'list' && !['viewer', 'editor', 'manager'].includes(body.role)) fail(400, 'invalid_role', 'Access must be viewer, editor, or manager.');
+  if (['invite', 'update_access'].includes(body.action) && !['viewer', 'editor', 'manager'].includes(body.role)) fail(400, 'invalid_role', 'Access must be viewer, editor, or manager.');
   if (body.export_level !== undefined && !EXPORT_LEVELS.includes(body.export_level)) fail(400, 'invalid_export_level', 'Export permission must be low, high, or max.');
   if (body.permissions !== undefined && !validPermissions(body.permissions)) fail(400, 'invalid_permissions', 'Manager permissions must contain only known boolean flags.');
   if (body.action === 'invite') {
@@ -57,6 +57,7 @@ function validate(body, config) {
     if (body.email === config.ownerEmail) fail(403, 'owner_protected', 'The original owner account is protected.');
   }
   if (body.action === 'update_access' && (!UUID.test(body.user_id || '') || typeof body.active !== 'boolean')) fail(400, 'invalid_request', 'A user ID, access role, and active flag are required.');
+  if (body.action === 'invite_preregistered' && (!UUID.test(body.person_id || '') || !Number.isInteger(body.version) || body.version < 1 || body.version > 2147483647)) fail(400, 'invalid_request', 'A preregistered person ID and current record version are required.');
 }
 
 export function createHandler({env, fetchImpl = fetch}) {
@@ -117,6 +118,16 @@ export function createHandler({env, fetchImpl = fetch}) {
       const protect = (id, row) => {
         if (id === actor.id || row?.role === 'owner') fail(403, 'owner_protected', 'Owner accounts are read-only in user management.');
       };
+      const findAccount = async email => {
+        for (let page = 1; ; page++) {
+          if (page > 50) fail(503, 'directory_limit', 'The authentication directory exceeds the safe lookup limit. No invitation was sent.');
+          const result = await call('/auth/v1/admin/users?page=' + page + '&per_page=200', {admin: true});
+          if (!result.ok || !Array.isArray(result.data?.users)) fail(503, 'directory_read_failed', 'Existing accounts could not be checked. No invitation was sent.');
+          const found = result.data.users.find(item => emailValue(item.email) === email);
+          if (found) return found;
+          if (result.data.users.length < 200) return null;
+        }
+      };
       const save = async (user, action, role, active, emailSent = false) => {
         let result; const exportLevel = body.export_level ?? (action === 'add' ? 'low' : null);
         try { result = await call('/rest/v1/rpc/manage_colony_member', {method: 'POST', payload: {p_colony_id: config.colonyId, p_user_id: user.id, p_role: role, p_active: active, p_action: action, p_export_level: exportLevel, p_permissions: body.permissions ?? null}}); }
@@ -158,14 +169,61 @@ export function createHandler({env, fetchImpl = fetch}) {
         return reply({user: saved, message: body.active ? 'Colony access updated.' : 'Colony access disabled. The authentication account has been retained.'});
       }
 
-      let user = null;
-      for (let page = 1; ; page++) {
-        if (page > 50) fail(503, 'directory_limit', 'The authentication directory exceeds the safe lookup limit. No invitation was sent.');
-        const result = await call('/auth/v1/admin/users?page=' + page + '&per_page=200', {admin: true});
-        if (!result.ok || !Array.isArray(result.data?.users)) fail(503, 'directory_read_failed', 'Existing accounts could not be checked. No invitation was sent.');
-        user = result.data.users.find(item => emailValue(item.email) === body.email) || null;
-        if (user || result.data.users.length < 200) break;
+      if (body.action === 'invite_preregistered') {
+        const preregistration = async () => {
+          // The owner JWT and roster RPC are authoritative. The browser supplies no recipient or privileges.
+          const result = await call('/rest/v1/rpc/list_lab_members', {method: 'POST', payload: {p_colony_id: config.colonyId}});
+          if (!result.ok || !Array.isArray(result.data?.members)) fail(503, 'roster_read_failed', 'Preregistered members could not be verified. Reload Members before sending an invitation.');
+          const rows = result.data.members.filter(row => row.person_id === body.person_id && row.colony_id === config.colonyId);
+          if (rows.length !== 1) fail(404, 'preregistration_not_found', 'This preregistered member was not found. Reload Members.');
+          const person = rows[0];
+          if (person.version !== body.version) fail(409, 'preregistration_changed', 'This member record changed. Reload Members and review it before sending.');
+          if (person.status !== 'current' || person.archived !== false) fail(409, 'preregistration_inactive', 'Only current, unarchived members can receive a registration invitation.');
+          if (person.linked_user_id !== null || person.username !== null) fail(409, 'registration_complete', 'This member has already registered. They can sign in or use Forgot password.');
+          const email = emailValue(person.email);
+          if (!validEmail(email)) fail(409, 'registration_email_required', 'Add a valid email address to this member before inviting them.');
+          if (email === config.ownerEmail || person.effective_role === 'owner') fail(403, 'owner_protected', 'The original owner account is protected.');
+          return {...person, email};
+        };
+        const person = await preregistration();
+        let account = await findAccount(person.email);
+        if (account) {
+          if (!UUID.test(account.id || '')) fail(503, 'account_unavailable', 'The existing account could not be verified.');
+          account = await profile(account.id);
+          if (!account || emailValue(account.email) !== person.email || account.is_anonymous) fail(409, 'account_changed', 'The account changed while preparing the invitation. Reload Members and retry.');
+          const row = await member(account.id); protect(account.id, row);
+          if (row) fail(409, 'already_member', 'This account already has colony access settings. Use its existing sign-in or Forgot password; invitation will not change access.');
+          if (account.banned_until && Date.parse(account.banned_until) > Date.now()) fail(409, 'account_disabled', 'This authentication account is disabled. An invitation cannot enable it.');
+          const lastSent = Math.max(...['invited_at', 'confirmation_sent_at', 'recovery_sent_at'].map(key => Date.parse(account[key]) || 0));
+          const seconds = Math.ceil((lastSent + 60000 - Date.now()) / 1000);
+          if (seconds > 0) fail(429, 'email_rate_limit', 'An account email was recently requested. Wait before sending another invitation.', {retry_after_seconds: Math.min(seconds, 60)});
+        }
+        await assertOwner();
+        const current = await preregistration();
+        if (current.email !== person.email) fail(409, 'preregistration_changed', 'This member record changed. Reload Members and review it before sending.');
+        const existingConfirmed = !!account?.email_confirmed_at;
+        let invitation;
+        try {
+          invitation = await call('/auth/v1/' + (existingConfirmed ? 'otp' : 'invite') + '?redirect_to=' + encodeURIComponent(config.appUrl), {
+            admin: true, method: 'POST', payload: {email: person.email, ...(existingConfirmed ? {create_user: false} : {})}
+          });
+        } catch { fail(502, 'invitation_outcome_unknown', 'The email service did not confirm the result. An email may already have been sent. Wait and reload Members before retrying.'); }
+        if (!invitation.ok) {
+          const code = invitation.data?.code || invitation.data?.error_code;
+          if (code === 'email_address_not_authorized') fail(503, 'email_delivery_not_configured', 'Supabase email delivery is restricted to project-team addresses. Configure custom SMTP before inviting lab members.');
+          if (invitation.status === 429) fail(429, 'email_rate_limit', 'The email service rate limit was reached. Wait before sending another invitation.');
+          if (['email_exists', 'user_already_exists', 'otp_disabled'].includes(code)) fail(409, 'account_changed', 'The account changed while preparing the invitation. Reload Members and retry.');
+          if (invitation.status >= 500) fail(502, 'invitation_outcome_unknown', 'The email service returned an error without confirming delivery. An email may already have been sent. Wait and reload Members before retrying.');
+          fail(502, 'invitation_failed', 'The registration email could not be sent. Check the server email configuration before retrying.');
+        }
+        if (!existingConfirmed && (!UUID.test(invitation.data?.id || '') || emailValue(invitation.data?.email) !== person.email || account && invitation.data.id !== account.id)) fail(502, 'invitation_outcome_unknown', 'The invitation returned an unexpected account. An email may have been sent. Reload Members before retrying.');
+        try { await preregistration(); }
+        catch { fail(409, 'invitation_sent_registration_unconfirmed', 'The email service accepted the invitation, but the member registration could not be reconfirmed. Reload Members. Access still requires a current preregistration and completed account setup.', {invitation_sent: true}); }
+        return reply({person_id: person.person_id, email_sent: true, email_kind: existingConfirmed ? 'sign_in_link' : 'invitation',
+          message: 'Registration email accepted by the email service. The member can open the link and choose their own ID and password. Their saved access level applies after setup.'});
       }
+
+      let user = await findAccount(body.email);
       if (user) {
         if (!UUID.test(user.id || '')) fail(503, 'account_unavailable', 'The existing account could not be verified.');
         const row = await member(user.id); protect(user.id, row);

@@ -707,10 +707,14 @@ export async function manageColonyUsers(action,payload={}) {
   if(!c)throw new Error('Configure the cloud project first.');
   if(!signedIn?.access_token||!signedIn.user?.id)throw new Error('Sign in before managing colony users.');
   if(signedIn.role!=='owner')throw new Error('Only an active colony owner can manage users.');
-  const allowed={list:[],invite:['email','role','export_level','permissions'],update_access:['user_id','role','active','export_level','permissions']};
+  const allowed={list:[],invite:['email','role','export_level','permissions'],invite_preregistered:['person_id','version'],update_access:['user_id','role','active','export_level','permissions']};
   if(!Object.hasOwn(allowed,action))throw new Error('Unsupported user-management action.');
   if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(k=>!allowed[action].includes(k)))throw new Error('Unexpected user-management fields. Colony and invitation return URLs are configured by the app and server.');
   const fields={};
+  if(action==='invite_preregistered') {
+    if(typeof payload.person_id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.person_id)||!Number.isSafeInteger(payload.version)||payload.version<1)throw new Error('Refresh Members and choose a saved preregistered member.');
+    fields.person_id=payload.person_id;fields.version=payload.version;
+  }
   if(action==='invite')fields.email=emailAddress(payload.email);
   if(action==='invite'||action==='update_access') {
     if(!['viewer','editor','manager'].includes(payload.role))throw new Error('Choose viewer or editor access. Owner accounts cannot be changed here.');
@@ -732,6 +736,7 @@ export async function manageColonyUsers(action,payload={}) {
     response=await fetch(`${c.url}/functions/v1/manage-colony-users`,{method:'POST',cache:'no-store',redirect:'error',headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({...fields,action,colony_id:c.colonyId})});
   }catch{throw new Error('The user-management request was not confirmed. Reload the user list before retrying.');}
   const result=await responseJSON(response);
+  if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==signedIn.user.id)throw new Error('The cloud account or colony changed while the request was running. Its result is uncertain; refresh Members before continuing.');
   if(!response.ok) {
     const partialMessage=result?.invitation_sent===true&&typeof result.message==='string';
     const error=!partialMessage&&(response.status===401||response.status===403)?apiError(response,result):new Error(typeof result?.message==='string'?result.message:`User management failed (${response.status}).`);
@@ -739,9 +744,11 @@ export async function manageColonyUsers(action,payload={}) {
     if(result?.invitation_sent===true)error.invitationSent=true;
     throw error;
   }
-  if(!result||typeof result!=='object'||(action==='list'?!Array.isArray(result.users):!result.user||typeof result.user!=='object'))throw new Error('The server did not return a verifiable user-management result. Reload the user list before retrying.');
+  if(!result||typeof result!=='object'||(action==='list'?!Array.isArray(result.users):action==='invite_preregistered'?result.person_id!==fields.person_id||result.email_sent!==true:!result.user||typeof result.user!=='object'))throw new Error('The server did not return a verifiable user-management result. Reload the user list before retrying.');
   return result;
 }
+
+export async function inviteLabMember(payload){return manageColonyUsers('invite_preregistered',payload);}
 
 const HISTORY_BUCKET='colony-history';
 function historyIndex(value){

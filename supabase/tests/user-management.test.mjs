@@ -7,6 +7,7 @@ import {createHandler} from '../functions/manage-colony-users/handler.mjs';
 const owner = '11111111-1111-4111-8111-111111111111';
 const target = '22222222-2222-4222-8222-222222222222';
 const other = '33333333-3333-4333-8333-333333333333';
+const personId = '44444444-4444-4444-8444-444444444444';
 const colony = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const foreign = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const values = {SUPABASE_URL: 'https://example.supabase.co', SUPABASE_ANON_KEY: 'public-key', SUPABASE_SERVICE_ROLE_KEY: 'server-secret',
@@ -14,6 +15,8 @@ const values = {SUPABASE_URL: 'https://example.supabase.co', SUPABASE_ANON_KEY: 
 const user = (id, email, extra = {}) => ({id, email, email_confirmed_at: '2026-01-01', user_metadata: {full_name: 'Member', private_field: 'PRIVATE'}, ...extra});
 const membership = (id = target, extra = {}) => ({colony_id: colony, user_id: id, role: id === owner ? 'owner' : 'viewer', active: true, export_level: id === owner ? 'max' : 'low', ...extra});
 const json = (body, status = 200) => Response.json(body, {status});
+const preregistered = (extra = {}) => ({person_id: personId, colony_id: colony, version: 4, name: 'New Member', email: 'new@example.org', status: 'current', archived: false,
+  linked_user_id: null, username: null, intended_role: 'editor', export_level: 'high', ...extra});
 function fixture(options = {}) {
   const calls = [];
   const members = options.members || [membership(owner), membership()];
@@ -30,6 +33,19 @@ function fixture(options = {}) {
       assert.equal(url.searchParams.get('colony_id'), 'eq.' + colony);
       const id = url.searchParams.get('user_id')?.slice(3);
       return json(id ? members.filter(row => row.user_id === id) : members.slice(Number(url.searchParams.get('offset')), Number(url.searchParams.get('offset')) + 500));
+    }
+    if (path === '/rest/v1/rpc/list_lab_members') {
+      assert.equal(init.headers.apikey, values.SUPABASE_ANON_KEY);
+      assert.equal(init.headers.Authorization, 'Bearer owner-token');
+      assert.deepEqual(body, {p_colony_id: colony});
+      return json({members: options.roster || [preregistered()]});
+    }
+    if (path === '/auth/v1/otp') {
+      assert.equal(init.headers.apikey, values.SUPABASE_SERVICE_ROLE_KEY);
+      assert.equal(init.headers.Authorization, 'Bearer ' + values.SUPABASE_SERVICE_ROLE_KEY);
+      assert.equal(url.searchParams.get('redirect_to'), values.USER_MANAGEMENT_APP_URL);
+      assert.deepEqual(body, {email: 'new@example.org', create_user: false});
+      return json({});
     }
     if (path.startsWith('/auth/v1/admin/') || path === '/auth/v1/invite') {
       assert.equal(init.headers.apikey, values.SUPABASE_SERVICE_ROLE_KEY);
@@ -62,8 +78,10 @@ function fixture(options = {}) {
   };
   return {calls, request};
 }
-const adminCalls = calls => calls.filter(call => call.url.pathname.includes('/admin/') || call.url.pathname.endsWith('/invite'));
+const adminCalls = calls => calls.filter(call => call.url.pathname.includes('/admin/') || /\/(invite|otp)$/.test(call.url.pathname));
 const mutations = calls => calls.filter(call => call.init.method === 'POST');
+const registrationRequest = {action: 'invite_preregistered', person_id: personId, version: 4};
+const emailCalls = calls => calls.filter(call => /\/(invite|otp)$/.test(call.url.pathname));
 
 test('missing/invalid user credentials never reach admin APIs', async () => {
   const a = fixture(); assert.equal((await a.request({action: 'list'}, {Authorization: ''})).response.status, 401); assert.equal(a.calls.length, 0);
@@ -171,6 +189,76 @@ test('invalid server configuration is closed and normal preflight never touches 
   const f = fixture({env: {USER_MANAGEMENT_APP_URL: 'https://example.org/app/?next=evil'}});
   assert.equal((await f.request({action: 'list'})).response.status, 503); assert.equal(f.calls.length, 0);
   const g = fixture(); assert.equal((await g.request({}, {}, 'OPTIONS')).response.status, 204); assert.equal(g.calls.length, 0);
+});
+
+test('preregistered invitation accepts only person identity and expected version, never browser recipient or privileges', async () => {
+  for (const extra of [{email:'attacker@example.org'}, {role:'manager'}, {export_level:'max'}, {permissions:{fees:true}}, {redirect:'https://attacker.example'}, {version:0}, {version:'4'}, {version:1.5}, {person_id:'invalid'}]) {
+    const f=fixture(); const result=await f.request({...registrationRequest,...extra});
+    assert.equal(result.response.status,400); assert.equal(f.calls.length,0);
+  }
+  const wrongColony=fixture(); assert.equal((await wrongColony.request({...registrationRequest,colony_id:foreign})).response.status,403); assert.equal(wrongColony.calls.length,0);
+});
+test('only the verified configured active owner can send preregistration invitations', async () => {
+  for (const role of ['viewer','editor','manager']) {
+    const f=fixture({members:[membership(owner,{role})]}); assert.equal((await f.request(registrationRequest)).response.status,403); assert.equal(adminCalls(f.calls).length,0);
+  }
+  for (const identity of [user(owner,'someone@example.org'),user(owner,'owner@example.org',{email_confirmed_at:null})]) {
+    const f=fixture({identity:json(identity)}); assert.equal((await f.request(registrationRequest)).response.status,403); assert.equal(adminCalls(f.calls).length,0);
+  }
+});
+test('current eligible preregistration sends one invite without granting membership or changing the roster', async () => {
+  const f=fixture(); const {data,response}=await f.request(registrationRequest);
+  assert.equal(response.status,200); assert.equal(data.person_id,personId); assert.equal(data.email_sent,true); assert.equal(data.email_kind,'invitation');
+  assert.match(data.message,/accepted by the email service/); assert.equal(emailCalls(f.calls).length,1);
+  assert.equal(f.calls.filter(c=>c.url.pathname.endsWith('/list_lab_members')).length,3);
+  assert.equal(f.calls.filter(c=>c.url.pathname==='/rest/v1/memberships'&&c.url.searchParams.get('user_id')==='eq.'+owner).length,2);
+  assert(!f.calls.some(c=>/manage_colony_member|save_lab_member|complete_lab_member_setup/.test(c.url.pathname)));
+  assert.deepEqual(Object.keys(data).sort(),['email_kind','email_sent','message','person_id']);
+});
+test('unclaimed unconfirmed accounts receive a repeat invite, while confirmed accounts receive an existing-only setup link', async () => {
+  for(const confirmed of [false,true]) {
+    const f=fixture({accounts:[user(owner,'owner@example.org'),user(other,'new@example.org',{email_confirmed_at:confirmed?'2026-01-01':null,invited_at:'2026-01-02'})]});
+    const {data,response}=await f.request(registrationRequest); assert.equal(response.status,200); assert.equal(data.email_sent,true);
+    assert.equal(data.email_kind,confirmed?'sign_in_link':'invitation'); assert.equal(emailCalls(f.calls)[0].url.pathname,confirmed?'/auth/v1/otp':'/auth/v1/invite');
+    assert(!f.calls.some(c=>c.url.pathname.endsWith('/manage_colony_member')));
+  }
+});
+test('preregistration must be current, nonarchived, unclaimed, version-matched, in-colony and have a valid nonowner email', async () => {
+  for(const [change,code] of [[{status:'historical'},'preregistration_inactive'],[{status:'review'},'preregistration_inactive'],[{archived:true},'preregistration_inactive'],[{linked_user_id:other,username:'member'},'registration_complete'],[{version:5},'preregistration_changed'],[{email:null},'registration_email_required'],[{email:'bad@example'},'registration_email_required'],[{email:'owner@example.org'},'owner_protected'],[{effective_role:'owner'},'owner_protected'],[{colony_id:foreign},'preregistration_not_found']]) {
+    const f=fixture({roster:[preregistered(change)]}); const {data,response}=await f.request(registrationRequest);
+    assert(response.status>=400); assert.equal(data.code,code); assert.equal(adminCalls(f.calls).length,0);
+  }
+});
+test('registered, disabled, banned and recently invited accounts are not enabled or emailed by preregistration', async () => {
+  for(const active of [false,true]) {
+    const f=fixture({members:[membership(owner),membership(other,{active})],accounts:[user(other,'new@example.org')]});
+    assert.equal((await f.request(registrationRequest)).data.code,'already_member'); assert.equal(emailCalls(f.calls).length,0);
+  }
+  const banned=fixture({accounts:[user(other,'new@example.org',{banned_until:'2999-01-01'})]}); assert.equal((await banned.request(registrationRequest)).data.code,'account_disabled'); assert.equal(emailCalls(banned.calls).length,0);
+  for(const field of ['invited_at','confirmation_sent_at','recovery_sent_at']) {
+    const f=fixture({accounts:[user(other,'new@example.org',{[field]:new Date().toISOString()})]});
+    const {response,data}=await f.request(registrationRequest); assert.equal(response.status,429); assert.equal(data.code,'email_rate_limit'); assert(data.retry_after_seconds>0&&data.retry_after_seconds<=60); assert.equal(emailCalls(f.calls).length,0);
+  }
+});
+test('owner or roster change before send prevents sending; post-send roster failure reports accepted email without falsely granting access', async () => {
+  let ownerChecks=0;
+  const revoked=fixture({intercept:({url})=>url.pathname==='/rest/v1/memberships'&&url.searchParams.get('user_id')==='eq.'+owner&&++ownerChecks===2?json([membership(owner,{active:false})]):null});
+  assert.equal((await revoked.request(registrationRequest)).data.code,'owner_required'); assert.equal(emailCalls(revoked.calls).length,0);
+  for(const when of [2,3]) {
+    let rosterChecks=0;
+    const f=fixture({intercept:({url})=>url.pathname.endsWith('/list_lab_members')&&++rosterChecks===when?json({members:[preregistered({version:5,status:'historical'})]}):null});
+    const {data}=await f.request(registrationRequest); assert.equal(emailCalls(f.calls).length,when===3?1:0);
+    assert.equal(data.code,when===3?'invitation_sent_registration_unconfirmed':'preregistration_changed');
+    assert.equal(data.invitation_sent,when===3?true:undefined); assert(!f.calls.some(c=>c.url.pathname.endsWith('/manage_colony_member')));
+  }
+});
+test('registration email errors, timeouts and malformed successes are truthful, sanitized and never retried', async () => {
+  for(const [status,code,expected] of [[400,'email_address_not_authorized','email_delivery_not_configured'],[429,'over_email_send_rate_limit','email_rate_limit'],[422,'email_exists','account_changed'],[400,'invalid_email','invitation_failed'],[500,'unexpected_failure','invitation_outcome_unknown'],[200,'bad','invitation_outcome_unknown']]) {
+    const f=fixture({intercept:({url})=>url.pathname==='/auth/v1/invite'?json({code,message:'server-secret PRIVATE'},status):null});
+    const {data}=await f.request(registrationRequest); assert.equal(data.code,expected); assert.equal(emailCalls(f.calls).length,1); assert(!JSON.stringify(data).includes('PRIVATE')); assert(!JSON.stringify(data).includes('server-secret'));
+  }
+  const timeout=fixture({intercept:({url})=>{if(url.pathname==='/auth/v1/invite')throw new Error('SECRET');}});
+  const result=await timeout.request(registrationRequest); assert.equal(result.data.code,'invitation_outcome_unknown'); assert.equal(emailCalls(timeout.calls).length,1); assert(!JSON.stringify(result.data).includes('SECRET'));
 });
 
 test('export level is independent of read/write access, defaults low for invitations and is verified',async()=>{

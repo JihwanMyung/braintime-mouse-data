@@ -1,6 +1,6 @@
 # Owner account management
 
-This endpoint lets the configured owner list colony users, add an existing account, invite a new email address, and change read/write access, Manager capabilities, and export levels. It cannot create owners, change owner accounts, delete authentication accounts, set passwords, or manage another colony. Disabling a member removes colony access while retaining the authentication account and audit history. The separate private roster supports preregistration without creating accounts or sending invitations.
+This endpoint lets the configured owner list colony users, invite preregistered members to complete account setup, add an existing account, invite a new email address, and change read/write access, Manager capabilities, and export levels. It cannot create owners, change owner accounts, delete authentication accounts, set passwords, or manage another colony. Disabling a member removes colony access while retaining the authentication account and audit history. Saving the separate private roster never creates accounts or sends invitations; its explicit invitation action sends an account setup email.
 
 The browser supplies its public project key and signed-in user JWT. The function verifies the JWT through Supabase Auth `getUser`, requires the configured confirmed owner email and an active owner membership, and only then uses the runtime service role for Auth admin calls. Membership changes use the **user JWT**, through the narrow `manage_colony_member` RPC. That RPC locks the colony and rechecks the actor, target and allowed role before delegating to `set_member_role`, preserving its audit actor and last-owner guard. The original owner's email alone never grants access.
 
@@ -24,9 +24,19 @@ The browser supplies its public project key and signed-in user JWT. The function
 
 Supabase's default SMTP service delivers only to project-team email addresses and has a small rate limit. General lab-member invitations require a configured custom SMTP provider; adding lab members to the Supabase project team is not an onboarding workaround. The app exposes a readable error when the SMTP service refuses the address. Sending an invitation successfully means the email provider accepted it, not that the recipient received or opened it. See [Supabase SMTP guidance](https://supabase.com/docs/guides/auth/auth-smtp).
 
-An existing Auth account receives colony membership without another invitation email; `email_sent:false` reports that outcome. The user can use the app's existing sign-in flow. This endpoint intentionally provides no automatic resend mechanism.
+The legacy `invite` action adds an existing Auth account to the colony without another invitation email; `email_sent:false` reports that outcome. This is separate from the Members preregistration action below. Neither action automatically retries a send.
 
 Auth invitation and database membership cannot be one transaction. If the email was sent but the membership write fails, the error contains `invitation_sent:true` and instructions to reload the user list. Retrying an absent email finds the existing Auth account and adds membership without another invite. A network timeout is treated as an uncertain outcome, never automatically retried. No account is deleted as rollback.
+
+### Preregistered member invitations
+
+`invite_preregistered` is the Members **Send invitation** action. It accepts only `person_id` and the displayed record `version`, plus the configured colony ID. It calls the existing owner-only `list_lab_members` RPC with the owner's JWT, and obtains the email from that authoritative record. The member must be current, unarchived, unclaimed, version-matched, and have a valid email. The request cannot override email, role, export level, permissions, or redirect. Owners, already linked accounts, existing colony memberships (including disabled ones), and banned Auth accounts cannot be invited through this action.
+
+New Auth accounts and unconfirmed, unclaimed accounts use Supabase's admin invitation endpoint. Calling that endpoint again resends an invitation to an unconfirmed account. A confirmed account that has not claimed its preregistration receives an existing-account-only sign-in link (`create_user:false`), which opens the same first-time account setup. Both paths use the fixed configured application redirect. A known invitation/confirmation/recovery email within the last 60 seconds blocks another request, and Supabase's own rate limits still apply. Owner authorization and the roster version are checked again immediately before sending.
+
+This action **never writes membership, links the roster, changes a password, or changes privileges**. After the member verifies their email, the existing onboarding screen requires their chosen ID and password. `complete_lab_member_setup` then checks the current roster and disabled-account state again before assigning its saved role/export level. Moving the preregistration to historical or archiving it prevents setup even if an earlier invitation link exists. Roster checks before and after an external email send cannot make the send transactional; a post-send change or failed recheck returns `invitation_sent:true`, with instructions to reload rather than automatically resend. No new SQL migration is required for this action.
+
+Success means the email service accepted the request, not confirmed inbox delivery. Mail acceptance and invitation activity remain in Supabase Auth/provider logs; this action does not invent a persistent delivery status on the roster.
 
 ## API
 
@@ -35,6 +45,7 @@ Auth invitation and database membership cannot be one transaction. If the email 
 ```json
 {"action":"list","colony_id":"<configured UUID>"}
 {"action":"invite","colony_id":"<configured UUID>","email":"member@example.org","role":"viewer"}
+{"action":"invite_preregistered","colony_id":"<configured UUID>","person_id":"<roster person UUID>","version":4}
 {"action":"update_access","colony_id":"<configured UUID>","user_id":"<member UUID>","role":"editor","active":true}
 ```
 
@@ -47,6 +58,8 @@ Responses:
 {colony_id, users: [{user_id, email, name, role, active, export_level, permissions, status}]}
 // invite
 {user, email_sent, message}
+// invite_preregistered (no membership or privilege mutation)
+{person_id, email_sent: true, email_kind: 'invitation' /* or 'sign_in_link' */, message}
 // update_access
 {user, message}
 // error
@@ -61,9 +74,11 @@ Responses:
 node --no-maglev --test supabase/tests/user-management.test.mjs supabase/tests/manager-permissions.test.mjs supabase/tests/lab-members.test.mjs supabase/tests/username-sign-in.test.mjs
 ```
 
-Tests use mocked HTTP and an isolated in-memory PostgreSQL database. They send no real emails. The SQL test covers anonymous/editor/foreign-owner denial, owner/self protection even after target promotion, membership uniqueness, inactive owner rejection, unchanged other-colony ownership, and audit identity. HTTP tests cover Auth verification, allowlisted origin/redirect, list/email pagination, custom SMTP errors, invitation uncertainty, and partial completion.
+Tests use mocked HTTP and an isolated in-memory PostgreSQL database. They send no real emails. The SQL test covers anonymous/editor/foreign-owner denial, owner/self protection even after target promotion, membership uniqueness, inactive owner rejection, unchanged other-colony ownership, and audit identity. HTTP tests cover Auth verification, allowlisted origin/redirect, list/email pagination, custom SMTP errors, invitation uncertainty, and partial completion. Preregistration tests additionally cover tampered recipient/privileges, stale or ineligible roster records, unconfirmed resend versus existing-only sign-in links, absence of membership writes, disabled accounts, cooldowns, and owner/roster changes before and after sending.
 
 References: [verified Auth user lookup](https://supabase.com/docs/reference/javascript/auth-getuser), [server-only admin user listing](https://supabase.com/docs/reference/javascript/auth-admin-listusers), [standard invite email](https://supabase.com/docs/reference/javascript/auth-admin-inviteuserbyemail), and [Edge Function default secrets](https://supabase.com/docs/guides/functions/secrets).
+
+The resend behavior is implemented in Supabase's [invitation handler](https://github.com/supabase/auth/blob/master/internal/api/invite.go), which rejects confirmed accounts and sends another invitation to unconfirmed accounts. The confirmed-account setup path uses [email OTP/sign-in links](https://supabase.com/docs/reference/javascript/auth-signinwithotp) with account creation disabled, as implemented in the [OTP handler](https://github.com/supabase/auth/blob/master/internal/api/otp.go). The general `auth.resend` API is not used because its supported types do not include invitations.
 
 ## Export permission migration
 
