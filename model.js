@@ -1,5 +1,6 @@
-import { validateGeneticProfile } from './genotype-schema.js?v=10';
-import { validateScenario } from './genetics.js?v=10';
+import { validateGeneticProfile } from './genotype-schema.js?v=11';
+import { validateScenario } from './genetics.js?v=11';
+import { validateCryoRecord } from './cryopreservation-model.js?v=11';
 export const ID_FIELDS = Object.freeze({mice:'mouse_sid',matings:'mating_sid',litters:'litter_sid',cages:'cage_sid',rooms:'room_id',racks:'rack_id',locations:'location_id',light_events:'event_id',husbandry_events:'event_id'});
 const copy = value => structuredClone(value);
 const ids = value => Array.isArray(value) ? value : (typeof value==='string' ? value.split(/[\n,]/).map(s=>s.trim()).filter(Boolean) : []);
@@ -287,6 +288,7 @@ export function validateRecord(type,draft,dataset,originalId=null) {
   }
   for(const name of ['sire_sids','dam_sids','male_sids','female_sids'])if(populated(draft[name])&&(!Array.isArray(draft[name])||draft[name].some(id=>typeof id!=='string'||!id.trim())))errors.push(`${name} must contain text identifiers.`);
   validateHousing(type,draft,old,base,errors);
+  if(type==='husbandry_events'){const checked=validateCryoRecord(draft,base,old);errors.push(...checked.errors);warnings.push(...checked.warnings);}
   if(type==='mice'&&key(draft.genetic_profile)!==key(old?.genetic_profile)) {
     errors.push(...validateGeneticProfile(draft.genetic_profile));
     if(draft.genetic_profile?.calls&&Object.values(draft.genetic_profile.calls).some(call=>call?.evidence!=='confirmed'))warnings.push('Unconfirmed allele calls remain provisional and are excluded from confirmed-parent ranking.');
