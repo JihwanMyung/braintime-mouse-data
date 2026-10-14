@@ -38,7 +38,7 @@ Auth invitation and database membership cannot be one transaction. If the email 
 {"action":"update_access","colony_id":"<configured UUID>","user_id":"<member UUID>","role":"editor","active":true}
 ```
 
-Allowed access roles are `viewer` (read), `editor` (read/write), and `manager` (owner-configurable record capabilities). Existing `owner` rows are returned for display only. Optional `permissions` contains only boolean keys `mice`, `breeding`, `housing`, `experiments`, `cryo`, `genetics`, `imports`, `archive`, and `fees`; missing keys default to true on creation, and omitted update permissions preserve existing values. Managers cannot manage users, the private roster, or privilege settings. Unexpected fields and other colony IDs are rejected. `update_access` requires an existing membership and both role and active flag. List pagination is bounded at 5,000 memberships; email lookup is bounded at 10,000 Auth accounts, with an explicit error rather than an incomplete result or duplicate invitation.
+Allowed access roles are `viewer` (read), `editor` (read/write), and `manager` (owner-configurable record capabilities). Existing `owner` rows are returned for display only. Optional `permissions` contains only boolean keys `mice`, `breeding`, `housing`, `experiments`, `cryo`, `genetics`, `imports`, `archive`, `fees`, and `iacuc`; missing keys default to true on creation, and omitted update permissions preserve existing values. Managers cannot manage users, the private roster, or privilege settings. Unexpected fields and other colony IDs are rejected. `update_access` requires an existing membership and both role and active flag. List pagination is bounded at 5,000 memberships; email lookup is bounded at 10,000 Auth accounts, with an explicit error rather than an incomplete result or duplicate invitation.
 
 Responses:
 
@@ -68,3 +68,9 @@ References: [verified Auth user lookup](https://supabase.com/docs/reference/java
 ## Export permission migration
 
 The generated SQL bundle includes the export, Manager, private roster, and username-rate-limit migrations in the order listed above. Invite and access-update requests accept a separate `export_level` (`low`, `high`, `max`); list and mutation responses return it. Low covers three calendar years, High six, and Max all available history. New nonowners default to Low; omitted update values preserve the existing level. Export levels remain independent from role and Manager capabilities. See `supabase/EXPORTS.md` for the reporting RPC and `supabase/LAB_MEMBERS.md` for private roster and first-time setup boundaries. Applying these SQL files and deploying the functions sends no email; an explicitly invoked invitation or Auth verification request is a separate action.
+
+## IACUC permission update
+
+The current bundle adds `07-iacuc.sql` after account setup. It adds the IACUC manager flag, typed protocol/assignment/usage/design validation and bounded report projections. Re-deploy this Edge handler with its new `iacuc` allowlist before editing that flag in owner settings. Missing legacy flags become enabled, matching the prior broad manager default; explicit denials survive reruns. No protocol data or approval is created. See `supabase/IACUC.md`.
+
+The bundle also includes `08-locobox.sql` after IACUC. On an already migrated deployment, apply only the new Locobox migration. It reuses Housing permission, validates phase/treatment timelines, preserves source evidence and append-only revisions, and filters nested report dates independently. No additional function deployment is required specifically for Locobox. See `supabase/LOCOBOX.md`.

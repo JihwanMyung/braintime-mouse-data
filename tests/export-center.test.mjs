@@ -188,3 +188,10 @@ test('current cage selector retains Occupied, position-linked inactive, derived 
   assert.match(container.innerHTML,/<option value="missing-selected" selected>missing-selected \(selected cage, no current match\)/);
   assert.doesNotMatch(container.innerHTML,/<option value="" selected>All current cages/);
 });
+
+test('Locobox CSV keeps nested intervals and makes clipped report boundaries visible',async()=>{
+ const {container,calls,state}=await mount({scope:'records',format:'csv',entityTypes:['husbandry_events']});
+ state.fresh.tables.husbandry_events=[{event_id:'LOCO',event_type:'locobox_protocol',export_event_date_withheld:true,locobox_protocol:{title:'Timeline',cage_sid:'C1',phase_count:2,phases_truncated:false,phases:[{phase_id:'P1',scheme:'DD',export_interval_clipped:true,export_window_start:'2023-10-14',end_date:'2026-10-01',treatments:[{treatment_id:'T',name:'Recorded compound',status:'cancelled'}],treatment_count:1,treatments_truncated:false}]}}];
+ await click(container,'preview');assert.match(container.innerHTML,/Locobox protocols have intervals clipped/);await click(container,'export');const csv=await text(calls.downloads[0]);
+ for(const field of ['locobox_title','locobox_cage_sid','locobox_phases','locobox_phase_count','locobox_phases_truncated','export_event_date_withheld'])assert(csv.includes('"'+field+'"'),field);assert(csv.includes('export_interval_clipped'));assert(csv.includes('cancelled'));assert(calls.permissions>=3);
+});

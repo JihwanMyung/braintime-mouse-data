@@ -13,10 +13,12 @@ import {buildCryoActivity} from '../web/cryopreservation-model.js';
 class Storage { values=new Map();getItem(k){return this.values.get(k)??null;}setItem(k,v){this.values.set(k,String(v));}removeItem(k){this.values.delete(k);}clear(){this.values.clear();} }
 globalThis.localStorage=new Storage();globalThis.sessionStorage=new Storage();
 const idbData=new Map();
-const db={objectStoreNames:{contains:()=>true},transaction(){const tx={};tx.objectStore=()=>({get:k=>run(()=>idbData.get(k)),put:(v,k)=>run(()=>{idbData.set(k,structuredClone(v));return k;}),delete:k=>run(()=>idbData.delete(k))});function run(fn){const request={};queueMicrotask(()=>{request.result=structuredClone(fn());request.onsuccess?.();tx.oncomplete?.();});return request;}return tx;}};
+const db={close(){},objectStoreNames:{contains:()=>true},transaction(){const tx={};tx.objectStore=()=>({get:k=>run(()=>idbData.get(k)),put:(v,k)=>run(()=>{idbData.set(k,structuredClone(v));return k;}),delete:k=>run(()=>idbData.delete(k))});function run(fn){const request={};queueMicrotask(()=>{request.result=structuredClone(fn());request.onsuccess?.();tx.oncomplete?.();});return request;}return tx;}};
 globalThis.indexedDB={open(){const request={};queueMicrotask(()=>{request.result=db;request.onsuccess?.();});return request;}};
 const cid='11111111-1111-4111-8111-111111111111',uid='22222222-2222-4222-8222-222222222222';
 const jwt=role=>`x.${btoa(JSON.stringify({role}))}.x`;
+const locationKeys=new Set(['location_id','room_id','rack_id','label','row','column','capacity','locobox_id','active','state','manager','manager_acronym','notes','app_created_at','app_updated_at','app_archived_at','archived','record_origin','evidence_status','requires_review','source_current','source_last_seen_at','source_snapshot_date','source_label_conflict','source_manager_name','source_manager_acronym','source_manager_status','source_observed_mouse_sids','source_observed_cage_sids','source_candidate_mouse_sids','source_candidate_cage_sids','source_unresolved_explicit_mouse_sids','source_observed_tags']);
+const projectLocation=row=>({...structuredClone(row),payload:Object.fromEntries(Object.entries(row.payload).filter(([key])=>locationKeys.has(key)))});
 let server;
 function response(body,status=200){return new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});}
 function configure(){store.configureCloud({url:'https://test.supabase.co',anonKey:jwt('anon'),colonyId:cid});}
@@ -34,6 +36,7 @@ function installServer(){
       if(u.searchParams.get('grant_type')==='refresh_token')server.refreshes++;
       return response({access_token:'access',refresh_token:'refresh',expires_in:server.expires,user:{id:uid,email:'demo@example.test'}});
     }
+    if(u.pathname.endsWith('/functions/v1/username-sign-in'))return response(server.recoveryReply??{accepted:true,message:'Request accepted'},server.recoveryStatus??202);
     if(u.pathname.endsWith('/otp'))return server.otpDenied?response({message:'Email request rate limit exceeded'},429):response({});
     if(u.pathname.endsWith('/verify'))return body.token==='123456'?response({access_token:'access',refresh_token:'refresh',expires_in:3600,user:{id:uid,email:body.email}}):response({message:'Token has expired or is invalid'},403);
     if(u.pathname.endsWith('/auth/v1/user')){
@@ -48,6 +51,16 @@ function installServer(){
     }
     if(u.pathname.endsWith('/logout'))return response({});
     if(server.deny)return response({message:'denied',code:'42501'},403);
+    if(u.pathname.endsWith('/rpc/get_lac_fee_visibility')){server.feeReads=(server.feeReads||0)+1;if(server.onFeeRead)server.onFeeRead(server.feeReads);return response(server.feePolicy||{version:0,owner:server.role==='owner',estimate:true,actual:true,source_archive_allowed:true});}
+    if(u.pathname.endsWith('/rpc/get_lac_fee_records'))return response({visibility:server.feePolicy,rows:server.feeRows||[],next_offset:null});
+    if(u.pathname.endsWith('/rpc/get_managed_locations')){
+      if(server.locationError)return response({code:'42501'},403);
+      if(server.locationResponse)return response(await server.locationResponse(body));
+      const rows=[...server.records.values()].filter(row=>row.entity_type==='locations').sort((a,b)=>a.entity_id.localeCompare(b.entity_id)).slice(body.p_offset,body.p_offset+body.p_limit).map(projectLocation);
+      return response({visibility:server.feePolicy,rows,next_offset:rows.length===body.p_limit?body.p_offset+body.p_limit:null});
+    }
+    if(u.pathname.endsWith('/rpc/save_lac_fee_visibility')){if(server.role!=='owner')return response({code:'42501'},403);if(body.p_version!==(server.feePolicy?.version||0))return response({code:'40001'},409);server.feePolicy={version:body.p_version+1,owner:true,estimate:true,actual:true,source_archive_allowed:true,levels:body.p_levels};return response(server.feePolicy);}
+    if(['/rpc/get_brainbot_status','/rpc/save_brainbot_settings','/rpc/run_brainbot','/rpc/review_brainbot_issue'].some(p=>u.pathname.endsWith(p))){if(server.onBrainbot)server.onBrainbot();return response(server.brainbotReply);}
     if(u.pathname.endsWith('/memberships'))return response([{role:server.role,active:server.active}]);
     if(u.pathname.endsWith('/rpc/get_export_permission')||u.pathname.endsWith('/rpc/assert_full_export_permission')){
       server.exportPermissionReads=(server.exportPermissionReads||0)+1;
@@ -91,8 +104,8 @@ function installServer(){
       server.batches++;if(server.failBatch===server.batches)throw new TypeError('Network unavailable');
       if(server.role==='viewer')return response({message:'forbidden',code:'42501'},403);
       const next=new Map(server.records),saved=[];
-      for(const change of body.p_changes){const k=`${change.entity_type}:${change.entity_id}`,old=next.get(k);if((old?.version??0)!==change.expected_version)return response({code:'40001',message:'stale'},409);const row={...change,colony_id:cid,version:(old?.version??0)+1};delete row.expected_version;next.set(k,row);saved.push(row);}
-      server.records=next;return response(saved);
+      for(const change of body.p_changes){const k=`${change.entity_type}:${change.entity_id}`,old=next.get(k);if((old?.version??0)!==change.expected_version)return response({code:'40001',message:'stale'},409);const row={...change,colony_id:cid,version:(old?.version??0)+1};delete row.expected_version;if(server.feePolicy?.source_archive_allowed===false&&row.entity_type==='locations'){row.payload={...Object.fromEntries(Object.entries(old?.payload||{}).filter(([key])=>!locationKeys.has(key))),...row.payload};if(server.locationSaveTransform)row.payload=server.locationSaveTransform(row.payload);}next.set(k,row);saved.push(server.feePolicy?.source_archive_allowed===false&&row.entity_type==='locations'?projectLocation(row):row);}
+      server.records=next;if(server.onSave)server.onSave(saved);return response(saved);
     }
     if(u.pathname.endsWith('/audit_log'))return response([]);
     throw new Error(`Unexpected mocked HTTP route: ${url}`);
@@ -195,7 +208,7 @@ test('atomic multi-record conflict leaves local and all other cloud records unch
 test('viewer and network failures never save cloud edits locally; import resets local mode',async()=>{
   const before=await connected(),changed=structuredClone(before);changed.tables.mice[0].comment='not saved';server.role='viewer';
   await assert.rejects(store.saveDataset(changed),/viewer/);assert.deepEqual(await store.loadDataset(),before);
-  server.role='owner';server.deny=true;await assert.rejects(store.saveDataset(changed),/permission/);assert.deepEqual(await store.loadDataset(),before);
+  server.role='owner';server.deny=true;await assert.rejects(store.saveDataset(changed),/permission/);await assert.rejects(store.loadDataset(),/permission/);assert.deepEqual(idbData.get('current'),before);
   server.deny=false;server.failBatch=server.batches+1;await assert.rejects(store.saveDataset(changed),/not confirmed/);assert.deepEqual(await store.loadDataset(),before);
   await store.saveDataset(changed,{localOnly:true});assert.equal(store.getCloudStatus().mode,'local');assert.equal((await store.loadDataset()).tables.mice[0].comment,'not saved');
 });
@@ -643,4 +656,166 @@ test('room capacity options persist through shared saves with stale and read-onl
   await assert.rejects(store.saveDataset(buildCageSummaryOptions(latest,changed).dataset),/viewer/);
   assert.equal(getCageSummaryOptions(await store.loadDataset()).groups.spf.capacity,120);
   assert.equal(server.records.get('husbandry_events:CAGE-SUMMARY-OPTIONS').payload.cage_summary_options.groups.spf.capacity,120);
+});
+
+test('IACUC bounded reports omit source narratives, preserve planning counts, and cannot redate historical activity',async()=>{
+ await fresh();const data=createSyntheticDataset(),common={schema_version:1,protocol_id:'IACUC-P',notes:'IACUC PRIVATE',source_refs:['IACUC PRIVATE']};
+ data.tables.husbandry_events=[
+  {event_id:'IACUC-P',event_type:'iacuc_protocol',event_date:'2025-02-01',iacuc_protocol:{...common,title:'Protocol',status:'approved',approved_animals:100,document:{text:'IACUC PRIVATE'},sections:{personnel:'IACUC PRIVATE'},allocations:[{id:'A',species:'Mouse',approved:100,portal_used:10,portal_pending:2,portal_remaining:88,notes:'IACUC PRIVATE'}]}},
+  {event_id:'IACUC-U',event_type:'iacuc_usage',event_date:'2025-03-01',iacuc_usage:{...common,category:'used',mouse_sids:Array.from({length:101},(_,i)=>'M'+i),unregistered_count:2,evidence_status:'source',event_date:'2025-03-01'}},
+  {event_id:'IACUC-A',event_type:'iacuc_assignment',event_date:'2025-03-01',iacuc_assignment:{...common,entity_type:'mice',entity_id:'M1',purpose:'experiment',evidence_status:'confirmed',valid_from:'2025-03-01'}},
+  {event_id:'IACUC-D',event_type:'iacuc_design',event_date:'2025-03-01',iacuc_design:{...common,label:'Planning',title:'Study',breeding_inputs:{target:20,notes:'IACUC PRIVATE'},breeding_results:{confidence_offspring:100,notes:'IACUC PRIVATE'},inputs:{sample_size:{effect:1,sd:2,cluster:{animalsPerCage:4,icc:.1,notes:'IACUC PRIVATE'}},breeding:{target:20,genotypeProbability:.25,notes:'IACUC PRIVATE'},notes:'IACUC PRIVATE'},results:{sample_size:{status:'ok',n1:10,adjustment:{animals_per_group:[12,12],total_animals:24,cluster:{cages_per_group:[3,3],notes:'IACUC PRIVATE'}},notes:'IACUC PRIVATE'},breeding:{confidence_offspring:100,achieved_probability:.95,notes:'IACUC PRIVATE'}}}},
+  {event_id:'IACUC-OLD',event_type:'iacuc_usage',event_date:'2001-01-01',source_accessed_at:'2025-03-01',iacuc_usage:{...common,event_date:'2001-01-01'}},
+ ];
+ await store.saveDataset(data,{localOnly:true,localKind:'demo'});const rows=(await store.getExportRecords({scope:'history',fromDate:'2025-01-01',entityTypes:['husbandry_events']})).dataset.tables.husbandry_events;
+ assert(!rows.some(r=>r.event_id==='IACUC-OLD'));assert(!JSON.stringify(rows).includes('IACUC PRIVATE'));
+ const p=rows.find(r=>r.event_id==='IACUC-P').iacuc_protocol,u=rows.find(r=>r.event_id==='IACUC-U').iacuc_usage,d=rows.find(r=>r.event_id==='IACUC-D').iacuc_design;
+ assert.equal(p.allocations[0].portal_remaining,88);assert.equal(u.mouse_count,101);assert.equal(u.mouse_sids.length,100);assert.equal(u.mouse_sids_truncated,true);assert.equal(u.unregistered_count,2);
+ assert.equal(d.title,'Study');assert.equal(d.breeding_inputs.target,20);assert.equal(d.breeding_results.confidence_offspring,100);assert.equal(d.inputs.sample_size.effect,1);assert.equal(d.inputs.breeding.genotypeProbability,.25);assert.equal(d.results.breeding.confidence_offspring,100);assert.deepEqual(d.results.sample_size.adjustment.animals_per_group,[12,12]);assert.deepEqual(d.results.sample_size.adjustment.cluster.cages_per_group,[3,3]);
+});
+
+test('Locobox local history applies phase and treatment limits independently of the wrapper date',async()=>{
+ await fresh();const data=createSyntheticDataset();
+ const phase=(id,start,end)=>({phase_id:id,label:id,start_date:start,end_date:end,timezone:'Asia/Taipei',scheme:'DD',cycle_hours:24,light_hours:0,notes:'LOCO PRIVATE',schedule_details:'LOCO PRIVATE',treatments:[]});
+ const mixed={event_id:'LOCO-LOCAL',event_type:'locobox_protocol',event_date:'2001-01-01',source_text:'LOCO PRIVATE',locobox_protocol:{schema_version:1,protocol_id:'LOCO-LOCAL',title:'Timeline',status:'source',evidence_status:'source',phases:[phase('old','2001-01-01','2002-01-01'),{...phase('spanning','2024-01-01','2025-06-01'),duration_days:500,duration_basis:'recorded',treatments:[{treatment_id:'old-dose',name:'Old',start_date:'2024-02-01',end_date:'2024-02-02',notes:'LOCO PRIVATE'},{treatment_id:'new-dose',name:'New',status:'cancelled',start_date:'2025-01-02',end_date:null,notes:'LOCO PRIVATE'}]}]}};
+ data.tables.husbandry_events=[mixed,{event_id:'LOCO-REV',event_type:'locobox_revision',event_date:'2025-02-01',locobox_revision:{before:{notes:'LOCO PRIVATE'},after:{notes:'LOCO PRIVATE'}}}];
+ await store.saveDataset(data,{localOnly:true,localKind:'demo'});const rows=(await store.getExportRecords({scope:'history',fromDate:'2025-01-01',toDate:'2025-12-31',entityTypes:['husbandry_events']})).dataset.tables.husbandry_events;
+ assert.equal(rows.length,1);assert.equal(rows[0].event_date,undefined);assert.equal(rows[0].export_event_date_withheld,true);const p=rows[0].locobox_protocol.phases;assert.equal(p.length,1);assert.equal(p[0].start_date,undefined);assert.equal(p[0].duration_days,undefined);assert.equal(p[0].export_interval_clipped,true);assert.deepEqual(p[0].treatments.map(t=>t.treatment_id),['new-dose']);assert.equal(p[0].treatments[0].status,'cancelled');assert(!JSON.stringify(rows).includes('LOCO PRIVATE'));
+ const full=await store.getFullExportBackup();assert(full.tables.husbandry_events.some(r=>r.event_id==='LOCO-REV'));assert.equal(full.tables.husbandry_events.find(r=>r.event_id==='LOCO-LOCAL').locobox_protocol.phases.length,2);
+});
+
+
+test('fee visibility refresh clears raw source caches and partial cloud editing preserves hidden server records',async()=>{
+ const d=createSyntheticDataset();d.tables.husbandry_events=[{event_id:'fee-private',event_type:'lac_fee_month',event_date:'2026-01-01',lac_fee_month:{schema_version:1,month:'2026-01',currency:'TWD',revision:1,actual_total:2468,lines:[]},source_raw:'PRIVATE fee source'}];d.tables.financial_source=[{raw:'PRIVATE archive'}];
+ await connected(d);idbData.set('active',{index:{cells:[['PRIVATE source']]}});server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};
+ const raw=server.records.get('husbandry_events:fee-private');server.feeRows=[{...structuredClone(raw),payload:{event_id:'fee-private',event_type:'lac_fee_month',event_date:'2026-01-01',lac_fee_month:{schema_version:1,month:'2026-01',currency:'TWD',revision:1,lines:[]},fee_visibility:{estimate:true,actual:false}}}];
+ const p=await store.getLacFeeVisibility();assert.equal(p.actual,false);assert.equal(idbData.get('current'),undefined);assert.equal(idbData.get('active'),undefined);assert.equal(store.getCloudStatus().readyForEdits,false);
+ const partial=await store.pullFromCloud();assert.equal(partial.source_archive_restricted,true);assert(!JSON.stringify(partial).includes('PRIVATE'));assert.equal(partial.tables.husbandry_events.length,1);assert(!Object.hasOwn(partial.tables.husbandry_events[0].lac_fee_month,'actual_total'));
+ const before=structuredClone([...server.records.values()].filter(r=>r.entity_type==='archive'||r.entity_id==='fee-private'));
+ partial.tables.mice[0].comment='ordinary animal edit';await store.saveDataset(partial);assert.equal(server.records.get('mice:SYN-M001').payload.comment,'ordinary animal edit');assert.deepEqual([...server.records.values()].filter(r=>r.entity_type==='archive'||r.entity_id==='fee-private'),before);
+ const changed=structuredClone(partial);changed.tables.husbandry_events[0].lac_fee_month.actual_total=1;await assert.rejects(store.saveDataset(changed),/Both estimate and actual/);assert.deepEqual([...server.records.values()].filter(r=>r.entity_type==='archive'||r.entity_id==='fee-private'),before);
+ await assert.rejects(store.pushToCloud(partial),/Full financial visibility/);await assert.rejects(store.uploadHistoryIndex({sources:[],sheets:[],cells:[]}),/Full financial visibility/);
+ await store.signOut();assert.equal(await store.loadDataset(),null);
+});
+test('partial fee access accepts only sanitized cage source snapshots and preserves hidden originals',async()=>{
+ const d=createSyntheticDataset();d.tables.husbandry_events=[{event_id:'snapshot',event_type:'animal_sheet_cage_snapshot',event_date:'2026-01-01',source_cage_snapshot:{body:[{raw:'PRIVATE financial source'}]},notes:'PRIVATE notes'}];
+ await connected(d);server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};
+ const raw=structuredClone(server.records.get('husbandry_events:snapshot'));server.feeRows=[{...raw,payload:{event_id:'snapshot',event_type:'animal_sheet_cage_snapshot',event_date:'2026-01-01',fee_visibility:{estimate:true,actual:false}}}];
+ const partial=await store.pullFromCloud();assert.equal(partial.tables.husbandry_events.length,1);assert(!JSON.stringify(partial).includes('PRIVATE'));assert(!partial.tables.husbandry_events[0].source_cage_snapshot);
+ partial.tables.mice[0].comment='ordinary edit';await store.saveDataset(partial);assert.deepEqual(server.records.get('husbandry_events:snapshot'),raw);
+ partial.tables.husbandry_events[0].source_cage_snapshot={body:[]};await assert.rejects(store.saveDataset(partial),/Both estimate and actual/);
+});
+test('cloud cache is never reused across account contexts and fee policy changes mid-pull abort',async()=>{
+ await connected();server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};server.feeRows=[];
+ server.feeReads=0;server.onFeeRead=n=>{if(n===2)server.feePolicy={...server.feePolicy,version:2,estimate:false};};await assert.rejects(store.pullFromCloud(),/visibility changed/i);assert.equal(store.getCloudStatus().readyForEdits,false);assert.equal(idbData.get('current'),undefined);
+ server.onFeeRead=null;server.feePolicy={version:3,owner:false,estimate:true,actual:true,source_archive_allowed:true};await store.pullFromCloud();const s=JSON.parse(sessionStorage.getItem('mouse-colony.session.v1'));s.user.id='ffffffff-ffff-4fff-8fff-ffffffffffff';sessionStorage.setItem('mouse-colony.session.v1',JSON.stringify(s));assert.equal(await store.loadDataset(),null);assert.equal(idbData.get('current'),undefined);
+});
+function locationFixture(count=1){
+ const data=createSyntheticDataset();data.tables.locations=Array.from({length:count},(_,i)=>({location_id:`position-${String(i).padStart(3,'0')}`,label:`Box ${i+1}`,room_id:'room-1',rack_id:'rack-1',row:i+1,column:1,capacity:1,active:true,manager:'Verified caretaker',notes:'Editable note',record_origin:'current_google_sheet_map',source_current:true,source_snapshot_date:'2026-10-15',source_manager_name:'Verified source user',source_observed_tags:['P123'],source_observed_mouse_sids:['SYN-M001'],source_block_text:'HIDDEN-FINANCIAL-CELL-97531',source_manager_evidence_refs:[{raw:'HIDDEN-FINANCIAL-CELL-97531'}],manager_source:{raw:'HIDDEN-FINANCIAL-CELL-97531'}}));return data;
+}
+const restrictedPolicy=version=>({version,owner:false,estimate:true,actual:false,source_archive_allowed:false});
+test('partial fee access pages safe current locations once and saves only projected fields while preserving hidden server sources',async()=>{
+ const original=locationFixture(251);await connected(original);server.role='editor';server.feePolicy=restrictedPolicy(1);
+ const partial=await store.pullFromCloud();assert.equal(partial.tables.locations.length,251);assert.equal(partial.source_projection_version,2);assert(!JSON.stringify(partial).includes('HIDDEN-FINANCIAL'));
+ const location=partial.tables.locations[0];assert.equal(location.manager,'Verified caretaker');assert.equal(location.source_manager_name,'Verified source user');assert.deepEqual(location.source_observed_mouse_sids,['SYN-M001']);
+ assert.deepEqual(server.calls.filter(c=>c.url.endsWith('/rpc/get_managed_locations')).map(c=>JSON.parse(c.options.body).p_offset),[0,250]);
+ location.notes='Changed cage note';partial.tables.mice[0].comment='Changed with position';server.locationSaveTransform=payload=>({...payload,app_updated_at:'2026-10-15T05:00:00Z'});await store.saveDataset(partial);
+ const write=JSON.parse(server.calls.filter(c=>c.url.endsWith('/rpc/save_records')).at(-1).options.body);assert.equal(write.p_changes.length,2);assert(!JSON.stringify(write).includes('HIDDEN-FINANCIAL'));assert(!Object.hasOwn(write.p_changes.find(c=>c.entity_type==='locations').payload,'source_block_text'));
+ const raw=server.records.get('locations:position-000');assert.equal(raw.payload.source_block_text,'HIDDEN-FINANCIAL-CELL-97531');assert.equal(raw.payload.notes,'Changed cage note');
+ const loaded=await store.loadDataset();assert.equal(loaded.tables.locations[0].app_updated_at,'2026-10-15T05:00:00Z');assert(!JSON.stringify(idbData.get('current')).includes('HIDDEN-FINANCIAL'));
+ const before=server.batches;await store.saveDataset(loaded);assert.equal(server.batches,before,'server-normalized payload becomes the new baseline');
+ loaded.tables.locations[0].notes='Second edit';await store.saveDataset(loaded);assert.equal(server.records.get('locations:position-000').version,3);
+});
+test('restricted caches from the previous projection schema are discarded even when the fee flags already match',async()=>{
+ await connected(locationFixture());server.role='editor';server.feePolicy=restrictedPolicy(1);await store.pullFromCloud();
+ const cache=idbData.get('current');delete cache.source_projection_version;cache.tables.locations[0].source_block_text='HIDDEN-FINANCIAL-OLD-CACHE';idbData.set('current',cache);
+ const mark=JSON.parse(localStorage.getItem('mouse-colony.cloud-cache-context.v1'));delete mark.source_projection_version;localStorage.setItem('mouse-colony.cloud-cache-context.v1',JSON.stringify(mark));idbData.set('active',{index:{cells:[['HIDDEN-FINANCIAL-HISTORY']]}});
+ const before=server.calls.length,loaded=await store.loadDataset();assert.equal(loaded.source_projection_version,2);assert(!JSON.stringify(loaded).includes('HIDDEN-FINANCIAL'));assert.equal(idbData.get('active'),undefined);assert(server.calls.slice(before).some(c=>c.url.endsWith('/rpc/get_managed_locations')));
+ // An erroneously stamped cache containing a forbidden key is also rejected.
+ const stamped=idbData.get('current');stamped.tables.locations[0].manager_source={raw:'HIDDEN-FINANCIAL'};idbData.set('current',stamped);assert(!JSON.stringify(await store.loadDataset()).includes('HIDDEN-FINANCIAL'));
+});
+test('restricted saves reject stale full location fields before making a write or retaining those fields locally',async()=>{
+ await connected(locationFixture());server.role='editor';server.feePolicy=restrictedPolicy(1);const partial=await store.pullFromCloud(),batches=server.batches;
+ partial.tables.locations[0].source_block_text='HIDDEN-FINANCIAL-STALE';await assert.rejects(store.saveDataset(partial),/Source location fields/);assert.equal(server.batches,batches);assert(!JSON.stringify(idbData.get('current')).includes('HIDDEN-FINANCIAL'));
+});
+test('restored full visibility requires a full pull before a projected location can be edited',async()=>{
+ await connected(locationFixture());server.role='editor';server.feePolicy=restrictedPolicy(1);const partial=await store.pullFromCloud(),batches=server.batches;
+ partial.tables.locations[0].notes='Do not replace hidden fields';server.feePolicy={version:2,owner:false,estimate:true,actual:true,source_archive_allowed:true};
+ await assert.rejects(store.saveDataset(partial),/Visibility changed/);assert.equal(server.batches,batches);assert.equal(store.getCloudStatus().readyForEdits,false);assert.equal(server.records.get('locations:position-000').payload.source_block_text,'HIDDEN-FINANCIAL-CELL-97531');
+ const full=await store.pullFromCloud();assert.equal(full.tables.locations[0].source_block_text,'HIDDEN-FINANCIAL-CELL-97531');full.tables.locations[0].notes='Full context edit';await store.saveDataset(full);assert.equal(server.records.get('locations:position-000').payload.source_block_text,'HIDDEN-FINANCIAL-CELL-97531');
+});
+test('location projection denial, malformed rows and mid-page policy changes fail closed without a raw-row fallback',async()=>{
+ for(const failure of ['denied','raw','foreign','cursor','policy']){
+  await connected(locationFixture());server.role='editor';server.feePolicy=restrictedPolicy(1);await store.pullFromCloud();
+  if(failure==='denied')server.locationError=true;
+  else server.locationResponse=()=>{const row=projectLocation(server.records.get('locations:position-000'));if(failure==='raw')row.payload.source_block_text='HIDDEN-FINANCIAL';if(failure==='foreign')row.colony_id='foreign';return {visibility:failure==='policy'?restrictedPolicy(2):server.feePolicy,rows:[row],next_offset:failure==='cursor'?0:null};};
+  await assert.rejects(store.pullFromCloud(),/permission|projected location|page cursor|visibility changed/i);assert.equal(idbData.get('current'),undefined,failure);assert.equal(store.getCloudStatus().readyForEdits,false,failure);
+ }
+});
+test('permission changes during saves never cache full location return values and require a fresh pull',async()=>{
+ await connected(locationFixture());const full=await store.loadDataset();full.tables.locations[0].notes='Before restriction';server.role='editor';server.onSave=()=>{server.feePolicy=restrictedPolicy(1);};
+ await assert.rejects(store.saveDataset(full),/visibility changed/i);assert.equal(idbData.get('current'),undefined);assert.equal(store.getCloudStatus().readyForEdits,false);
+ server.onSave=null;const partial=await store.pullFromCloud();assert.equal(partial.tables.locations[0].notes,'Before restriction');assert(!JSON.stringify(partial).includes('HIDDEN-FINANCIAL'));
+ partial.tables.locations[0].notes='Policy changed again';server.onSave=rows=>{rows.find(r=>r.entity_type==='locations').payload.source_block_text='HIDDEN-FINANCIAL-MALFORMED-RETURN';};
+ await assert.rejects(store.saveDataset(partial),/Invalid projected location/);assert.equal(idbData.get('current'),undefined);assert.equal(store.getCloudStatus().readyForEdits,false);
+});
+test('client restricted location keys remain identical to the server allowlist',async()=>{
+ const sql=await readFile(new URL('../supabase/lac-fee-visibility.sql',import.meta.url),'utf8'),js=await readFile(new URL('../web/data-store.js',import.meta.url),'utf8');
+ const sqlKeys=[...sql.match(/managed_location_keys\(\)[\s\S]*?as \$\$select array\[([\s\S]*?)\]\$\$/)[1].matchAll(/'([^']+)'/g)].map(m=>m[1]);
+ const clientKeys=[...js.match(/const MANAGED_LOCATION_KEYS=new Set\(\[([^\]]+)\]/)[1].matchAll(/'([^']+)'/g)].map(m=>m[1]);assert.deepEqual(clientKeys.sort(),sqlKeys.sort());
+});
+test('owner fee visibility saves preserve default visibility and reject nonowner UI escalation',async()=>{
+ await connected();const levels={low:{estimate:true,actual:false},high:{estimate:false,actual:true},max:{estimate:true,actual:true}};
+ const p=await store.saveLacFeeVisibility({version:0,levels});assert.equal(p.version,1);assert.deepEqual(p.levels,levels);assert.equal(p.source_archive_allowed,true);
+ server.role='editor';await assert.rejects(store.saveLacFeeVisibility({version:1,levels}),/Only the owner/);
+});
+
+test('Brainbot RPCs remain owner-only and transient; actual corrections invalidate stale edit state',async()=>{
+ await connected();server.brainbotReply={principal:{principal_id:'test-principal',role:'manager',acronym:'BB'},settings:{version:1},runs:[],issues:[],last_run:null};
+ const before=structuredClone(idbData.get('current'));assert.equal((await store.getBrainbotStatus()).principal.acronym,'BB');
+ assert.equal((await store.saveBrainbotSettings({version:1,enabled:true})).settings.version,1);await store.reviewBrainbotIssue({issue_id:'issue',version:1,status:'acknowledged',note:'Reviewed'});assert.deepEqual(idbData.get('current'),before);
+ server.brainbotReply={...server.brainbotReply,last_run:{fixed_count:1}};await store.runBrainbot();assert.equal(store.getCloudStatus().readyForEdits,false);
+ server.role='manager';for(const action of [()=>store.getBrainbotStatus(),()=>store.runBrainbot(),()=>store.saveBrainbotSettings({}),()=>store.reviewBrainbotIssue({})])await assert.rejects(action(),/Only the owner/);
+});
+test('Brainbot never returns a private response after account switch or malformed service result',async()=>{
+ await connected();server.brainbotReply={principal:{role:'manager'},settings:{version:1},runs:[],issues:[]};
+ server.onBrainbot=()=>{const s=JSON.parse(sessionStorage.getItem('mouse-colony.session.v1'));s.user.id='ffffffff-ffff-4fff-8fff-ffffffffffff';sessionStorage.setItem('mouse-colony.session.v1',JSON.stringify(s));};
+ await assert.rejects(store.getBrainbotStatus(),/account or colony changed/);
+ await connected();server.brainbotReply={principal:{role:'owner'},settings:{version:1},runs:[],issues:[]};await assert.rejects(store.getBrainbotStatus(),/not confirmed/);
+});
+
+test('password reset requests use only the configured gateway and return no resolved email or delivery claim',async()=>{
+ await fresh();server.recoveryReply={accepted:true,email:'PRIVATE lookup@example.org',message:'PRIVATE provider'};
+ const result=await store.requestPasswordReset(' Lab.User ');assert.equal(result.accepted,true);assert(!JSON.stringify(result).includes('PRIVATE'));assert(!JSON.stringify(result).includes('lookup@example.org'));assert.equal(store.getCloudStatus().signedIn,false);
+ const call=server.calls.at(-1);assert.equal(call.url,'https://test.supabase.co/functions/v1/username-sign-in');assert.deepEqual(JSON.parse(call.options.body),{action:'recover',identifier:'Lab.User'});assert.equal(call.options.redirect,'error');assert.equal(call.options.cache,'no-store');assert.equal(call.options.headers.Authorization,'Bearer '+jwt('anon'));
+ server.recoveryStatus=429;await assert.rejects(store.requestPasswordReset('name@example.org'),/Wait one hour/);server.recoveryStatus=503;await assert.rejects(store.requestPasswordReset('name@example.org'),/temporarily unavailable/);
+ const n=server.calls.length;for(const id of ['',null,'bad id','x'.repeat(300)])await assert.rejects(store.requestPasswordReset(id),/valid username or email/);assert.equal(server.calls.length,n);
+});
+test('recovery callback remains isolated after reload, permits only password update, then signs out and removes secrets',async()=>{
+ await connected();idbData.set('active',{index:{cells:['private source']}});callbackPage(callbackHash(callbackToken(),'recovery'));
+ const status=await store.consumeAuthCallback();assert.equal(status.passwordRecovery,true);assert.equal(status.readyForEdits,false);assert.equal(store.getCloudStatus().passwordRecovery,true);assert.equal(idbData.get('current'),undefined);assert.equal(idbData.get('active'),undefined);assert.equal(await store.loadDataset(),null);
+ assert.equal(JSON.parse(sessionStorage.getItem('mouse-colony.session.v1')).passwordRecovery,true);const n=server.calls.length;await assert.rejects(store.pullFromCloud(),/Finish resetting/);await assert.rejects(store.updateAccountPassword('long-password-for-recovery'),/recovery form/);assert.equal(server.calls.length,n);
+ const password=' New private recovery password 71! ';const result=await store.completePasswordRecovery(password);assert.equal(result.updated,true);assert.equal(store.getCloudStatus().signedIn,false);assert.equal(store.getCloudStatus().passwordRecovery,false);assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),null);
+ const update=server.calls.findLast(c=>c.options.method==='PUT');assert.deepEqual(JSON.parse(update.options.body),{password});assert.equal(update.options.redirect,'error');assert.equal(update.options.cache,'no-store');assert(!JSON.stringify(result).includes(password));assert(!JSON.stringify([...localStorage.values,...sessionStorage.values]).includes(password));assert(server.calls.some(c=>c.url.endsWith('/auth/v1/logout')));
+ await assert.rejects(store.completePasswordRecovery(password),/valid password reset link/);
+});
+test('recovery update failure is not success and never echoes a rejected password',async()=>{
+ await fresh();callbackPage(callbackHash(callbackToken(),'recovery'));await store.consumeAuthCallback();
+ server.passwordStatus=422;server.passwordReply={message:'PRIVATE supplied password'};await assert.rejects(store.completePasswordRecovery('long-recovery-password'),e=>/not confirmed/.test(e.message)&&!e.message.includes('PRIVATE'));assert.equal(store.getCloudStatus().passwordRecovery,true);
+ for(const p of ['short','x'.repeat(129),null])await assert.rejects(store.completePasswordRecovery(p),/12 and 128/);
+ server.passwordStatus=null;server.passwordNetworkFailure=true;await assert.rejects(store.completePasswordRecovery('long-recovery-password'),/not confirmed/);assert.equal(store.getCloudStatus().passwordRecovery,true);await store.signOut();
+});
+test('delayed callbacks cannot restore sessions after sign-out/config change or erase a newer sign-in',async()=>{
+ for(const action of ['logout','configure','new-login','new-login-error']){
+  await fresh();callbackPage(callbackHash(callbackToken(),'recovery'));const baseFetch=fetch;let release,started;const waiting=new Promise(r=>started=r);
+  globalThis.fetch=async(url,options)=>{if(url.endsWith('/auth/v1/user')){started();await new Promise(r=>release=r);if(action==='new-login-error')return response({message:'late failure'},401);}return baseFetch(url,options);};
+  const pending=store.consumeAuthCallback();const rejected=assert.rejects(pending,/account or cloud configuration changed/);await waiting;
+  if(action==='logout')await store.signOut();else if(action==='configure')store.configureCloud({url:'https://another.supabase.co',anonKey:jwt('anon'),colonyId:cid});else await store.signIn('demo@example.test','test-password');
+  const current=sessionStorage.getItem('mouse-colony.session.v1');release();await rejected;assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),current);assert.equal(store.getCloudStatus().passwordRecovery,false);
+ }
+});
+test('a stale callback waiting on membership cannot clear a newer authorized session',async()=>{
+ await fresh();callbackPage(callbackHash());const baseFetch=fetch;let release,started;const waiting=new Promise(r=>started=r);let first=true;
+ globalThis.fetch=async(url,options)=>{if(url.includes('/memberships?')&&first){first=false;started();await new Promise(r=>release=r);return response({message:'late failure'},403);}return baseFetch(url,options);};
+ const pending=store.consumeAuthCallback(),rejected=assert.rejects(pending,/account or cloud configuration changed/);await waiting;await store.signIn('demo@example.test','test-password');const saved=sessionStorage.getItem('mouse-colony.session.v1');release();await rejected;assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),saved);
 });

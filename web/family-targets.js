@@ -1,6 +1,6 @@
 /* Desired offspring targets only. This bridge never supplies parental calls. */
-import { rankPairs } from './genetics.js?v=22';
-import { discoverGenotypes } from './genotype-catalog.js?v=22';
+import { rankPairs } from './genetics.js?v=23';
+import { discoverGenotypes } from './genotype-catalog.js?v=23';
 
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const clone=value=>structuredClone(value);

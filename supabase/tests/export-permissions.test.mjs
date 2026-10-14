@@ -163,10 +163,10 @@ await test('fee reports retain dated quantities and uncertainty without raw note
   assert.equal(projected.actual_total,undefined);assert.equal(projected.lines_count,102);assert.equal(projected.lines.length,100);assert.equal(projected.lines_truncated,true);assert(!JSON.stringify(projected).includes('FEE SECRET'));
 });
 
-await test('supplemental experiment export migration replaces only the exact maintained projector and keeps private ACLs',async()=>{
+await test('supplemental export migration matches the maintained projector and its two private IACUC helpers',async()=>{
   const supplemental=await readFile(new URL('../experiment-export.sql',import.meta.url),'utf8');
   const projector=source=>source.match(/create or replace function colony_private\.export_payload\(kind text,p jsonb\)[\s\S]*?revoke all on function colony_private\.export_payload\(text,jsonb\) from public,anon,authenticated;/)?.[0];
-  assert.equal(projector(supplemental),projector(migration));assert.equal((supplemental.match(/create or replace function/g)||[]).length,1);
+  assert.equal(projector(supplemental),projector(migration));assert.equal((supplemental.match(/create or replace function/g)||[]).length,3);
   await db.exec(supplemental);await db.exec(supplemental);
   await as('low',()=>assert.rejects(()=>db.query("select colony_private.export_payload('husbandry_events','{}')"),e=>e.code==='42501'));
   assert((await as('low',()=>exportRows({types:['husbandry_events']}))).rows.some(r=>r.entity_id==='EXPERIMENT-REPORT'&&r.payload.experiment));

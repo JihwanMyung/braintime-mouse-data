@@ -4,7 +4,7 @@ import {projectRecords,projectionRequests,MANAGED_TABS,scheduleApplies} from '..
 const record=(entity_type,payload,archived=false)=>({entity_type,payload,archived});
 test('projection separates current occupancy, uncertain protocols and reference sheets',()=>{
  const grids=projectRecords([
-  record('mice',{mouse_sid:'001',state:'Stock',physical_tag:'=HYPERLINK("bad")',cage_sid:'C1',dam_sids:['2','3']}),
+  record('mice',{mouse_sid:'001',state:'Stock',physical_tag:'=HYPERLINK("bad")',ear_mark:'L0R1',cage_sid:'C1',dam_sids:['2','3']}),
   record('mice',{mouse_sid:'002',state:'Ended',cage_sid:'C1'}),
   record('mice',{mouse_sid:'003',state:'Stock',cage_sid:'C1'},true),
   record('cages',{cage_sid:'C1',state:'Active',location_id:'P1'}),
@@ -13,7 +13,8 @@ test('projection separates current occupancy, uncertain protocols and reference 
   record('light_events',{event_id:'E1',protocol:'T23',cycle_hours:23,evidence_status:'source observation',source_file:'History.xlsx'}),
  ],'2026-10-14T00:00:00Z');
  assert.equal(grids[1].length,2);assert.equal(grids[1][1][0],'001');
- assert.deepEqual(grids[1][1].slice(7,10),['Behaviour','Left','L7']);
+ assert.deepEqual(['Room','Rack','Position'].map(name=>grids[1][1][grids[1][0].indexOf(name)]),['Behaviour','Left','L7']);
+ assert.equal(grids[1][1][grids[1][0].indexOf('Ear marking')],'L0R1');
  assert.equal(grids[2][1][7],1);assert.equal(grids[3][1][4],undefined);
  assert.equal(grids[3][1][7],23);
  const requests=projectionRequests(grids,[]);

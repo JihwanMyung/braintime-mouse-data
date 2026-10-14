@@ -3,19 +3,21 @@
 begin;
 create or replace function colony_private.default_manager_permissions()
 returns jsonb language sql immutable set search_path='' as $$
- select '{"mice":true,"breeding":true,"housing":true,"experiments":true,"cryo":true,"genetics":true,"imports":true,"archive":true,"fees":true}'::jsonb
+ select '{"mice":true,"breeding":true,"housing":true,"experiments":true,"cryo":true,"genetics":true,"imports":true,"archive":true,"fees":true,"iacuc":true}'::jsonb
 $$;
 revoke all on function colony_private.default_manager_permissions() from public,anon,authenticated;
 create or replace function colony_private.valid_manager_permissions(p jsonb)
 returns boolean language sql immutable set search_path='' as $$
- select jsonb_typeof(p)='object' and p ?& array['mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees']
- and not exists(select 1 from jsonb_each(p) where key not in ('mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees') or jsonb_typeof(value)<>'boolean')
+ select jsonb_typeof(p)='object' and p ?& array['mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees','iacuc']
+ and not exists(select 1 from jsonb_each(p) where key not in ('mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees','iacuc') or jsonb_typeof(value)<>'boolean')
 $$;
 revoke all on function colony_private.valid_manager_permissions(jsonb) from public,anon,authenticated;
-alter table public.memberships add column if not exists permissions jsonb not null default '{"mice":true,"breeding":true,"housing":true,"experiments":true,"cryo":true,"genetics":true,"imports":true,"archive":true,"fees":true}'::jsonb;
+alter table public.memberships add column if not exists permissions jsonb not null default '{"mice":true,"breeding":true,"housing":true,"experiments":true,"cryo":true,"genetics":true,"imports":true,"archive":true,"fees":true,"iacuc":true}'::jsonb;
 alter table public.memberships drop constraint if exists memberships_role_check;
 alter table public.memberships add constraint memberships_role_check check(role in ('owner','editor','viewer','manager'));
 alter table public.memberships drop constraint if exists memberships_permissions_check;
+alter table public.memberships alter column permissions set default '{"mice":true,"breeding":true,"housing":true,"experiments":true,"cryo":true,"genetics":true,"imports":true,"archive":true,"fees":true,"iacuc":true}'::jsonb;
+update public.memberships set permissions=jsonb_build_object('iacuc',true)||permissions where not (permissions ? 'iacuc');
 alter table public.memberships add constraint memberships_permissions_check check(colony_private.valid_manager_permissions(permissions));
 
 create or replace function colony_private.has_permission(p_colony_id uuid,p_permission text)
@@ -23,7 +25,7 @@ returns boolean language sql stable security definer set search_path='' as $$
  select coalesce((select case when m.role in ('owner','editor') then true
    when m.role='manager' then m.permissions->p_permission='true'::jsonb else false end
    from public.memberships m where m.colony_id=p_colony_id and m.user_id=auth.uid() and m.active),false)
-   and p_permission in ('mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees')
+   and p_permission in ('mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees','iacuc')
 $$;
 revoke all on function colony_private.has_permission(uuid,text) from public,anon,authenticated;
 grant execute on function colony_private.has_permission(uuid,text) to authenticated;
@@ -39,13 +41,15 @@ begin
  elsif kind in ('cages','rooms','racks','locations','light_events') then return array['housing'];
  elsif kind='archive' then
    -- A reconstruction manifest can replace every source-backed domain.
-   return array['imports','mice','breeding','housing','experiments','cryo','genetics','fees'];
+   return array['imports','mice','breeding','housing','experiments','cryo','genetics','fees','iacuc'];
  elsif kind='husbandry_events' then
+   if event_kind like 'iacuc_%' or p ?| array['iacuc_protocol','iacuc_assignment','iacuc_usage','iacuc_design'] then permissions:=array_append(permissions,'iacuc'); end if;
    if event_kind like 'experiment%' or p ?| array['experiment','experiment_sample','experiment_revision'] then permissions:=array_append(permissions,'experiments'); end if;
    if event_kind like 'cryopreservation%' or p ?| array['cryopreservation','cryopreservation_event'] then permissions:=array_append(permissions,'cryo'); end if;
    if event_kind in ('strain_definition','breeding_plan') or p ?| array['strain_definition','breeding_plan'] then permissions:=array_append(permissions,'genetics'); end if;
    if event_kind='breeding_options' or p ? 'breeding_options' then permissions:=array_append(permissions,'breeding'); end if;
    if event_kind ~ '^(lac_fee|fee|fees|billing)_' or p ?| array['lac_fee_options','lac_fee_month','fee_options','fee_month','fee_actual','fees','billing','billing_options','billing_month'] then permissions:=array_append(permissions,'fees'); end if;
+   if event_kind like 'locobox_%' or p ?| array['locobox_protocol','locobox_revision'] then permissions:=array_append(permissions,'housing'); end if;
    if event_kind like 'cage_%' or p ? 'cage_summary_options' then permissions:=array_append(permissions,'housing'); end if;
    if cardinality(permissions)=0 then permissions:=array['housing']; end if;
    return permissions;
@@ -82,6 +86,18 @@ begin
      end loop;
    end if;
  end loop;
+ -- Protocol references on ordinary forms also affect IACUC associations.
+ if kind in ('mice','cages','matings','litters') then
+  foreach field_name in array case when kind='cages' then array['protocol','cage_protocol'] else array['protocol'] end loop
+   if coalesce(p->field_name,'null'::jsonb) is distinct from coalesce(old_p->field_name,'null'::jsonb)
+    and (old_p is not null or coalesce(p->field_name,'null'::jsonb) not in ('null'::jsonb,'""'::jsonb)) then required:=array_append(required,'iacuc');end if;
+  end loop;
+ elsif kind='husbandry_events' then
+  foreach field_name in array array['experiment','experiment_sample'] loop
+   if coalesce(p#>array[field_name,'protocol'],'null'::jsonb) is distinct from coalesce(old_p#>array[field_name,'protocol'],'null'::jsonb)
+    and (old_p is not null or coalesce(p#>array[field_name,'protocol'],'null'::jsonb) not in ('null'::jsonb,'""'::jsonb)) then required:=array_append(required,'iacuc');end if;
+  end loop;
+ end if;
  if p_archived or p_archived is distinct from old_archived or coalesce(p->'app_archived_at','null'::jsonb) is distinct from coalesce(old_p->'app_archived_at','null'::jsonb)
    or coalesce(p->'archived','false'::jsonb) is distinct from coalesce(old_p->'archived','false'::jsonb) then required:=array_append(required,'archive'); end if;
  -- Newly imported operational rows require imports as well as their section.

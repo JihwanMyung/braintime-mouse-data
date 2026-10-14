@@ -28,12 +28,12 @@ end $$;
 create or replace function public.sheet_sync_snapshot(p_colony_id uuid, p_token uuid)
 returns jsonb language sql security definer set search_path=public,pg_temp as $$
   with projection_fields(entity_type,keys) as (values
-    ('mice',array['mouse_sid','state','physical_tag','sex','genotype','date_of_birth','cage_sid','cage_tag','status','sire_sids','dam_sids','protocol','comment']),
-    ('cages',array['cage_sid','cage_tag','state','room_id','rack_id','location_id','room','rack','location','cage_type','capacity','comment']),
+    ('mice',array['mouse_sid','state','physical_tag','ear_mark','sex','genotype','date_of_birth','cage_sid','cage_tag','status','sire_sids','dam_sids','protocol','comment','owner','manager','manager_acronym']),
+    ('cages',array['cage_sid','cage_tag','state','room_id','rack_id','location_id','room','rack','location','cage_type','capacity','comment','owner','manager','manager_acronym','cage_protocol','protocol']),
     ('rooms',array['room_id','name','label']),
     ('racks',array['rack_id','room_id','name','label']),
-    ('locations',array['location_id','room_id','rack_id','label','source_label','row','column','source_observed_mouse_sids','source_candidate_mouse_sids','source_observed_tags','source_observed_cage_sids','source_candidate_cage_sids','evidence_status','notes','source_block_text','source_snapshot_date']),
-    ('light_events',array['event_id','location_id','cage_sid','room_id','start_date','end_date','protocol','cycle_hours','light_hours','lights_on','lights_off','transition_minutes','intensity_lux','timezone','evidence_status','actual_exposure_verified','notes','interval_semantics'])
+    ('locations',array['location_id','room_id','rack_id','label','source_label','row','column','source_observed_mouse_sids','source_candidate_mouse_sids','source_observed_tags','source_observed_cage_sids','source_candidate_cage_sids','evidence_status','notes','source_block_text','source_snapshot_date','source_current','source_last_seen_at','manager','manager_acronym','source_manager_raw','source_manager_name','source_manager_acronym']),
+    ('light_events',array['event_id','location_id','cage_sid','room_id','rack_id','start_date','end_date','protocol','cycle_hours','light_hours','lights_on','lights_off','transition_minutes','intensity_lux','timezone','evidence_status','actual_exposure_verified','notes','interval_semantics'])
   )
   select jsonb_build_object('captured_at',now(),'records',coalesce((
     select jsonb_agg(jsonb_build_object('entity_type',r.entity_type,'entity_id',r.entity_id,

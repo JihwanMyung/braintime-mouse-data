@@ -1,4 +1,4 @@
-import { projectAnimalSheet, createAnimalSheetXlsx, createWorkbookXlsx, animalSheetPrintHTML } from './animal-sheet-export.js?v=22';
+import { projectAnimalSheet, createAnimalSheetXlsx, createWorkbookXlsx, animalSheetPrintHTML } from './animal-sheet-export.js?v=23';
 
 const mounts=new WeakMap();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -22,6 +22,11 @@ const sumCounts=counts=>counts.reduce((sum,row)=>sum+row.count,0);
 const scalarRows=rows=>{const headers=[...new Set(rows.flatMap(row=>Object.keys(row)))].sort();return [headers,...rows.map(row=>headers.map(key=>textValue(row[key]))) ]};
 function experimentColumns(record) {
   const type=record.event_type;
+  if(type==='locobox_protocol'&&object(record[type])){
+    const {[type]:payload,...result}=record;
+    for(const [key,value]of Object.entries(payload))result['locobox_'+key]=value;
+    return result;
+  }
   if(['lac_fee_options','lac_fee_month'].includes(type)&&object(record[type])){
     const {[type]:payload,...result}=record;
     for(const [key,value]of Object.entries(payload))result['fee_'+key]=value;
@@ -48,7 +53,8 @@ function experimentProjectionWarnings(tables) {
     return p&&(p.participants_truncated||p.sample_usages_truncated||p.donors_truncated||p.parent_samples_truncated||[...(p.participants||[]),...(p.donors||[])].some(link=>link.candidates_truncated));
   }).length;
   const fees=(tables.husbandry_events||[]).filter(row=>row.lac_fee_month?.lines_truncated||row.lac_fee_options?.groups_truncated).length;
-  return [...(count?[`${count} experiment or specimen records contain more animal/sample links than this bounded report includes. Exported lists show their total and truncation flags. Full preservation backups require Max.`]:[]),...(fees?[`${fees} fee records contain more evidence lines or billing groups than this bounded report includes. Exported lists show their total and truncation flags. Full preservation backups require Max.`]:[])];
+  const locobox=(tables.husbandry_events||[]).filter(row=>row.locobox_protocol&&(row.export_event_date_withheld||row.locobox_protocol.phases_truncated||(row.locobox_protocol.phases||[]).some(p=>p.export_interval_clipped||p.treatments_truncated||(p.treatments||[]).some(t=>t.export_interval_clipped)))).length;
+  return [...(locobox?[`${locobox} Locobox protocols have intervals clipped to this report window or bounded lists. Withheld boundaries are not inferred start/end dates; flags identify omissions. Complete source records and revision snapshots require a Max backup.`]:[]),...(count?[`${count} experiment or specimen records contain more animal/sample links than this bounded report includes. Exported lists show their total and truncation flags. Full preservation backups require Max.`]:[]),...(fees?[`${fees} fee records contain more evidence lines or billing groups than this bounded report includes. Exported lists show their total and truncation flags. Full preservation backups require Max.`]:[])];
 }
 
 function checkedPermission(value) {

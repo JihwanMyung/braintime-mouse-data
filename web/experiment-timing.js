@@ -49,16 +49,29 @@ export function calculateEntrainmentDuration(e={},endTimestamp=null){
  return result((Date.parse(end)-Date.parse(e.start_date))/86400000,'Elapsed calendar days (end date minus start date); not a precise elapsed-hour measurement.');
 }
 export function entrainmentLabel(e={}){const scheme=text(e.scheme)||'Unknown';return Number.isFinite(e.duration_days)?`${scheme} (${e.duration_days})`:scheme}
+/** Reviewed cage schedules are candidates only; measured phase never becomes a reference automatically. */
+export function locoboxEntrainmentCandidates(dataset){
+ const rows=[];
+ for(const record of dataset?.tables?.husbandry_events??[]){
+  const p=record.locobox_protocol;
+  if(archived(record)||record.event_type!=='locobox_protocol'||!p||!['active','completed'].includes(p.status)||p.evidence_status!=='recorded'||p.link_status!=='confirmed'||!text(p.cage_sid))continue;
+  for(const phase of p.phases??[]){
+   if(!phase||!text(phase.phase_id)||!validTimingDate(phase.start_date))continue;
+   rows.push({event_id:record.event_id+'/'+phase.phase_id,source_record_id:record.event_id,source_phase_id:phase.phase_id,source_type:'locobox_protocol',protocol:phase.scheme||'unknown',cage_sid:p.cage_sid,location_id:p.location_id??null,start_date:phase.start_date,end_date:phase.end_date??null,start_time:phase.start_time??null,end_time:phase.end_time??null,interval_semantics:'exclusive end; date-only boundaries have unknown clocks',cycle_hours:phase.cycle_hours??null,light_hours:phase.light_hours??null,lights_on:phase.lights_on??null,lights_off:phase.lights_off??null,timezone:phase.timezone??null,evidence_status:'recorded',actual_exposure_verified:false,source_location_label:p.title});
+  }
+ }
+ return rows;
+}
 export function entrainmentHistoryCandidates(dataset,mouseSids=[],date=null){
  const t=dataset?.tables??{},ids=new Set(mouseSids.map(String)),explicit=[];
  // Current cage assignments are deliberately not extrapolated back into the past.
  for(const event of t.husbandry_events??[]){if(archived(event)||!['cage_sid','location_id','rack_id','room_id'].some(k=>present(event[k])))continue;const linked=ids.has(String(event.mouse_sid))||(event.mouse_sids??[]).some(id=>ids.has(String(id)));if(!linked)continue;const start=event.event_date||event.start_date;if(!validTimingDate(start)||!validTimingDate(date)||start>date)continue;explicit.push(event)}
  const last=new Map();for(const e of explicit.sort((a,b)=>String(a.event_date||a.start_date).localeCompare(String(b.event_date||b.start_date))))for(const id of [e.mouse_sid,...(e.mouse_sids??[])].filter(Boolean))if(ids.has(String(id)))last.set(String(id),e);
  const contexts=[...last.values()].filter(e=>!present(e.end_date)||(validTimingDate(e.end_date)&&date<=e.end_date));
- return (t.light_events??[]).filter(e=>!archived(e)).map(e=>{
+ return [...(t.light_events??[]).filter(e=>!archived(e)),...locoboxEntrainmentCandidates(dataset)].map(e=>{
    const validStart=validTimingDate(e.start_date),validEnd=!present(e.end_date)||validTimingDate(e.end_date);
-   const applicable=validTimingDate(date)&&validStart&&validEnd&&e.start_date<=date&&(!e.end_date||(/exclusive|next phase start/i.test(e.interval_semantics||'')?date<e.end_date:date<=e.end_date));
+   const applicable=(e.source_type!=='locobox_protocol'||validTimingDate(e.end_date))&&validTimingDate(date)&&validStart&&validEnd&&e.start_date<=date&&(!e.end_date||(/exclusive|next phase start/i.test(e.interval_semantics||'')?date<e.end_date:date<=e.end_date));
    const related=ids.has(String(e.mouse_sid))||(e.mouse_sids??[]).some(id=>ids.has(String(id)))||contexts.some(c=>e.cage_sid?c.cage_sid===e.cage_sid:e.location_id?c.location_id===e.location_id:e.rack_id?c.rack_id===e.rack_id:e.room_id&&c.room_id===e.room_id);
-   return {...e,applicable,related,label:[e.protocol||'Unknown scheme',e.start_date||'Start unknown',e.end_date?'to '+e.end_date:null,e.source_location_label||e.location_id||e.cage_sid||e.room_id,related?'Animal history candidate':'Check animal association',applicable?'Date applicable':'Check dates',e.actual_exposure_verified===true?'Recorded exposure':'Unverified exposure'].filter(Boolean).join(' · ')};
+   return {...e,applicable,related,label:[e.source_type==='locobox_protocol'?'Locobox cage protocol':null,e.protocol||'Unknown scheme',e.start_date||'Start unknown',e.end_date?'to '+e.end_date:null,e.source_location_label||e.location_id||e.cage_sid||e.room_id,related?'Animal history candidate':'Check animal association',applicable?'Date applicable':'Check dates',e.source_type==='locobox_protocol'&&((date===e.start_date&&e.start_time)||(date===e.end_date&&e.end_time))?'Review exact boundary clock':null,e.actual_exposure_verified===true?'Recorded exposure':'Unverified exposure'].filter(Boolean).join(' · ')};
  }).sort((a,b)=>Number(b.related)-Number(a.related)||Number(b.applicable)-Number(a.applicable)||String(b.start_date||'').localeCompare(String(a.start_date||'')));
 }

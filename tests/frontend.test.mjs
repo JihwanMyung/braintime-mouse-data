@@ -1,3 +1,11 @@
+import { projectCageHistory, getCageHistoryDates } from '../web/cage-history.js';
+import { projectAnimalSheet } from '../web/animal-sheet-export.js';
+import { compareRooms, sortRooms } from '../web/room-order.js';
+import { cageSheetHelpHTML } from '../web/cage-sheet.js';
+import { renderLocobox, locoboxHelpHTML } from '../web/locobox.js';
+import { renderIacuc, iacucHelpHTML } from '../web/iacuc.js';
+import { protocolsForEntity } from '../web/iacuc-model.js';
+import { renderAnimalSheetImport, animalSheetImportHelpHTML } from '../web/animal-sheet-import.js';
 import { renderLacFees, lacFeeHelpHTML } from '../web/lac-fees.js';
 import { userAcronymHelpHTML, setLabUserDirectory } from '../web/user-acronyms.js';
 import { normalizeManagerPermissions } from '../web/permissions.js';
@@ -18,10 +26,11 @@ import { CAGE_SUMMARY_GROUPS, getCageSummaryOptionsStatus } from '../web/cage-su
 import { summarizeBreeding } from '../web/breeding-summary.js';
 import { getBreedingOptions, getBreedingOptionsStatus } from '../web/breeding-options.js';
 import { getStrainRegistry } from '../web/strain-registry.js';
-import { renderHousing, sourceListedAnimals, scheduleApplies } from '../web/husbandry.js';
+import { renderHousing, sourceListedAnimals, scheduleApplies, lightClock } from '../web/husbandry.js';
 const elements=new Map();
 function element(id){if(!elements.has(id))elements.set(id,{id,innerHTML:'',textContent:'',value:'',hidden:false,disabled:false,open:false,classList:{toggle(){}},addEventListener(){},focus(){},setSelectionRange(){},showModal(){this.open=true},close(){this.open=false},appendChild(){},click(){}});return elements.get(id)}
-const fakeDocument={getElementById:element,addEventListener(){},createElement(tag){return element('created-'+tag)},body:{appendChild(){}}};
+const documentListeners=new Map();
+const fakeDocument={getElementById:element,addEventListener(type,handler){documentListeners.set(type,handler)},createElement(tag){return element('created-'+tag)},body:{appendChild(){}}};
 globalThis.document=fakeDocument;
 assert.deepEqual(sourceListedAnimals({source_block_text:"A1: PB'-M123\nA2: EB-F456\nB2: 2026-01-01T00:00:00\nA3 comment: M999 was moved"}),["PB'-M123",'EB-F456']);
 assert(scheduleApplies({start_date:'2026-10-14',timezone:'Asia/Taipei'},new Date('2026-10-13T23:00:00Z')));
@@ -30,7 +39,8 @@ assert(!scheduleApplies({start_date:'2026-10-01',end_date:'2026-10-14',interval_
 let saved=model.createSyntheticDataset();saved.demo=true;
 const store={loadDataset:async()=>structuredClone(saved),saveDataset:async next=>{saved=structuredClone(next)},clearDataset:async()=>{saved=null},getCloudStatus:()=>({mode:'local',configured:false,signedIn:false})};
 const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
-const context={console,renderLacFees,lacFeeHelpHTML,userAcronymHelpHTML,setLabUserDirectory,normalizeManagerPermissions,renderLabMembers:async()=>{},renderAccountAcronym:async()=>{},renderAccountSetup:async()=>{},model,store,renderExperiments,experimentHelpHTML,experimentsForMouse,samplesForMouse,renderFamilyExplorer,familyHelpHTML,buildFamilyGenotypes,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeLitters,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
+const labelRenders=[],cageSheetRenders=[],brainbotRenders=[];
+const context={console,brainbotRenders,renderBrainbot:async(container,hooks)=>{brainbotRenders.push({container,hooks});},brainbotHelpHTML:()=>'Brainbot',projectCageHistory,getCageHistoryDates,projectAnimalSheet,compareRooms,sortRooms,cageSheetHelpHTML,cageSheetRenders,renderCageSheet:(container,sheetDataset,hooks)=>{cageSheetRenders.push({container,sheetDataset,hooks});container.innerHTML="Animal Sheet cage view";},clearCageSheetDrafts:()=>{},hasCageSheetDrafts:()=>false,labelRenders,renderCageLabelEditor:(container,labelDataset,hooks)=>{labelRenders.push({container,labelDataset,hooks});container.innerHTML='Cage label editor';},renderLocobox,locoboxHelpHTML,renderIacuc,iacucHelpHTML,protocolsForEntity,renderAnimalSheetImport,animalSheetImportHelpHTML,lightClock,renderLacFees,lacFeeHelpHTML,userAcronymHelpHTML,setLabUserDirectory,normalizeManagerPermissions,renderLabMembers:async()=>{},renderAccountAcronym:async()=>{},renderAccountSetup:async()=>{},model,store,renderExperiments,experimentHelpHTML,experimentsForMouse,samplesForMouse,renderFamilyExplorer,familyHelpHTML,buildFamilyGenotypes,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeLitters,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
 vm.createContext(context);vm.runInContext(source,context);await new Promise(resolve=>setTimeout(resolve,10));
 vm.runInContext(`
 assert($('main').innerHTML.includes('Recently born'));
@@ -57,7 +67,7 @@ route='mice';query='';filters={};renderTable();assert(!$('main').innerHTML.inclu
 
 
 for(const name of ['mice','matings','litters','cages','family','archive','settings','housing','planner','cryo']){route=name;detail=null;render();assert($('main').innerHTML.length>50,name+' renders');}
-route='settings';detail=null;render();assert($('main').innerHTML.includes('email-link-request'));assert($('main').innerHTML.includes('Password sign-in'));
+route='settings';detail=null;render();assert($('main').innerHTML.includes('email-link-request'));assert($('main').innerHTML.includes('id="cloud-login"'));assert($('main').innerHTML.indexOf('id="cloud-login"')<$('main').innerHTML.indexOf('Sign in with an email link'));assert($('main').innerHTML.includes('<details class="source-disclosure"><summary>Sign in with an email link'));assert($('main').innerHTML.includes('id="password-reset-request"'));
 route='mice';detail={type:'mice',id:dataset.tables.mice[0].mouse_sid};render();assert($('main').innerHTML.includes('Source provenance'));
 openEditor('mice',null);assert($('record-dialog').open);assert($('record-fields').innerHTML.includes('Recorded dam IDs'));assert(editor.record.sex==='Unknown');
 const current=dataset.tables.mice[2];current.dam_sids=[dataset.tables.mice[1].mouse_sid,'UNKNOWN-CANDIDATE'];
@@ -105,7 +115,7 @@ assert(strainLegendHTML().includes('AD'));assert(strainLegendHTML().includes('ho
 showHelp(true);assert($('help-dialog').innerHTML.includes('class="source-disclosure" open><summary>Current mouse counts'));assert($('help-dialog').innerHTML.includes('Strain acronyms &amp; insertion types'));$('help-dialog').close();
 dataset=previousDataset;filters={};renderTable();
 
-printCards([dataset.tables.mice[0].mouse_sid]);assert($('print-area').innerHTML.includes('Generated'));assert($('print-area').innerHTML.includes('Protocol'));assert($('print-preview').open);assert($('print-area').innerHTML.includes('Light record'));action('system-print');
+printCards([dataset.tables.mice[0].mouse_sid]);assert($('print-area').innerHTML.includes('Generated'));assert($('print-area').innerHTML.includes('IACUC'));assert($('print-preview').open);assert($('print-area').innerHTML.includes('Light record'));action('system-print');
 `,context);
 assert(context.printed,'print triggered');
 vm.runInContext(`
@@ -168,6 +178,104 @@ await assert.rejects(()=>archiveRecord(),/archived/i);assert(destination.app_arc
 confirmAction=confirmOriginal;
 })()`,context);
 
+// Exercise the actual app wiring, including delayed private-roster responses.
+await vm.runInContext(`(async()=>{
+const originalStatus=store.getCloudStatus,originalList=store.listLabMembers,originalPermission=store.getExportPermission,originalFullPermission=store.assertFullExportPermission,originalExportRecords=store.getExportRecords;
+const initialData=dataset;let rosterCalls=0;
+const owner={mode:'cloud',signedIn:true,role:'owner',url:'https://example.supabase.co',colonyId:'synthetic-colony',email:'owner@example.test'};
+store.getCloudStatus=()=>({...cloud});
+store.getExportPermission=async()=>({level:'max',full_history:true,cutoff_date:null,as_of_date:'2026-10-15',local:cloud.mode!=='cloud'});store.assertFullExportPermission=()=>store.getExportPermission();
+store.listLabMembers=async()=>{rosterCalls++;return {members:[]}};
+cloud={mode:'local',signedIn:false};
+printCageCards([dataset.tables.cages[0].cage_sid]);
+assert($('print-preview').innerHTML.includes('data-action="lac-cage-label"'));
+assert($('print-preview').innerHTML.includes('data-id="'+dataset.tables.cages[0].cage_sid+'"'));
+await action('lac-cage-label',{dataset:{id:dataset.tables.cages[0].cage_sid}});
+assert(!$('print-preview').open,'choosing Design 2 closes the compact preview');
+assert($('cage-label-dialog').open);assert(labelRenders.at(-1).hooks.initialCage===dataset.tables.cages[0].cage_sid);
+assert(labelRenders.at(-1).hooks.allowFullLocoboxHistory===true,'local full history requires the explicit full export gate');
+assert(rosterCalls===0,'local labels do not fetch private contacts');labelRenders.at(-1).hooks.onClose();
+for(const state of [{...owner,role:'editor'},{...owner,role:'manager'},{...owner,role:'viewer'},{...owner,signedIn:false}]){cloud=state;await openCageLabel('SYN-C1');assert(labelRenders.at(-1).hooks.members.length===0);labelRenders.at(-1).hooks.onClose();}
+assert(rosterCalls===0,'only a signed-in owner may fetch the private roster');
+const privateRows=[{name:'Current User',acronym:'CU',phone:'000-0000',email:'current@example.test',status:'current',archived:false,notes:'private note',provenance:{source:'private'}},{name:'Former User',phone:'999-9999',status:'historical'},{name:'Review User',phone:'888-8888',status:'review'},{name:'Archived User',phone:'777-7777',status:'current',archived:true}];
+store.listLabMembers=async()=>{rosterCalls++;return {members:privateRows}};cloud={...owner};
+await openCageLabel('SYN-C1');const first=labelRenders.at(-1);assert(first.hooks.members.length===1);
+assert(JSON.stringify(Object.keys(first.hooks.members[0]).sort())===JSON.stringify(['acronym','archived','name','phone','status']));
+assert(first.hooks.members[0].phone==='000-0000');assert(privateRows[0].email==='current@example.test','private roster object is unchanged');
+first.hooks.onPreview({documentHTML:'<p>000-0000</p>'});assert($('export-print-frame').srcdoc.includes('000-0000'));
+first.hooks.onClose();assert(!$('cage-label-dialog').open);assert($('cage-label-dialog').innerHTML==='');assert($('export-print-frame').srcdoc==='');assert(first.hooks.members.length===0,'close releases contact values');
+await openCageLabel('SYN-C1');assert(labelRenders.at(-1).hooks.initialContextKey!==first.hooks.initialContextKey,'same-cage reopening starts a fresh draft');labelRenders.at(-1).hooks.onClose();
+let finish;store.listLabMembers=()=>new Promise(resolve=>{finish=resolve});
+const beforeClosed=labelRenders.length,closedRequest=openCageLabel('SYN-C1');$('cage-label-close').onclick();finish({members:privateRows});await closedRequest;
+assert(labelRenders.length===beforeClosed,'closed dialogs ignore late contact results');assert($('cage-label-dialog').innerHTML==='');
+let finishOld,finishNew;store.listLabMembers=()=>new Promise(resolve=>{if(!finishOld)finishOld=resolve;else finishNew=resolve});
+const oldRequest=openCageLabel('SYN-C1'),newRequest=openCageLabel('SYN-C2');finishNew({members:privateRows});await newRequest;const newest=labelRenders.at(-1);finishOld({members:privateRows});await oldRequest;
+assert(labelRenders.at(-1)===newest&&newest.hooks.initialCage==='SYN-C2','late first request cannot replace newer cage');newest.hooks.onClose();
+for(const change of [()=>{cloud={...cloud,colonyId:'other-colony'}},()=>{cloud={...cloud,url:'https://other.supabase.co'}},()=>{cloud={...cloud,email:'different@example.test'}},()=>{cloud={...cloud,role:'viewer'}},()=>{dataset=structuredClone(dataset)}]){
+ cloud={...owner};store.listLabMembers=()=>new Promise(resolve=>{finish=resolve});const before=labelRenders.length,pending=openCageLabel('SYN-C1');change();finish({members:privateRows});await pending;assert(labelRenders.length===before,'changed identity or dataset drops contact response');assert(!$('cage-label-dialog').open);dataset=initialData;
+}
+cloud={...owner};store.listLabMembers=async()=>({members:privateRows});await openCageLabel('SYN-C1');const oldHooks=labelRenders.at(-1).hooks;oldHooks.onPreview({documentHTML:'<p>000-0000</p>'});
+cloud={...owner,role:'viewer'};await refreshCloud();assert(!$('cage-label-dialog').open);assert(!$('export-print-dialog').open);assert($('export-print-frame').srcdoc==='');assert.throws(()=>oldHooks.onPreview({documentHTML:'<p>stale</p>'}),/Workspace or account changed/);
+cloud={...owner};await openCageLabel('SYN-C1');labelRenders.at(-1).hooks.onPreview({documentHTML:'<p>000-0000</p>'});
+let finishPermission,privatePrints=0;store.getExportPermission=()=>new Promise(resolve=>{finishPermission=resolve});$('export-print-frame').contentWindow={focus(){},print(){privatePrints++}};
+const printPending=$('export-print-start').onclick();cloud={...owner,role:'viewer'};finishPermission({level:'low'});await printPending;
+assert(privatePrints===0,'identity changes during permission checks prevent printing');assert($('export-print-frame').srcdoc==='');
+// History arrives through the authorized export pipeline, separately from current identity fields.
+cloud={...owner,role:'viewer'};let boundedCalls=0,fullGateCalls=0;
+const bounded={tables:{husbandry_events:[{event_id:'AUTHORIZED',event_type:'locobox_protocol',locobox_protocol:{phases:[]}}]}};
+const low={level:'low',full_history:false,cutoff_date:'2023-10-15',as_of_date:'2026-10-15',local:false};
+store.getExportPermission=async()=>({...low});store.getExportRecords=async options=>{boundedCalls++;assert(options.scope==='history');assert(JSON.stringify(options.entityTypes)===JSON.stringify(['husbandry_events']));return {dataset:bounded,metadata:{...low,export_level:'low'}}};store.assertFullExportPermission=async()=>{fullGateCalls++;throw new Error('Denied')};
+await openCageLabel('SYN-C1','locobox');let allowed=labelRenders.at(-1).hooks;assert(allowed.locoboxDataset===bounded);assert(!allowed.allowFullLocoboxHistory);assert(allowed.initialSide==='locobox');assert(boundedCalls===1&&fullGateCalls===0);allowed.onClose();
+store.getExportRecords=async()=>{throw new Error('Denied')};await openCageLabel('SYN-C1');allowed=labelRenders.at(-1).hooks;assert(allowed.locoboxDataset===null&&!allowed.allowFullLocoboxHistory,'failed history authorization offers blank handwriting only');allowed.onClose();
+const max={...low,level:'max',full_history:true,cutoff_date:null};store.getExportPermission=async()=>max;store.assertFullExportPermission=async()=>{fullGateCalls++;return {...max}};
+await openCageLabel('SYN-C1');allowed=labelRenders.at(-1).hooks;assert(allowed.allowFullLocoboxHistory&&allowed.locoboxDataset===null);assert(fullGateCalls===1,'Max raw history requires its dedicated server gate');allowed.onPreview({documentHTML:'<p>Approved full history</p>'});
+let printsAfterDowngrade=0;$('export-print-frame').contentWindow={focus(){},print(){printsAfterDowngrade++}};store.getExportPermission=async()=>({...low});await $('export-print-start').onclick();assert(printsAfterDowngrade===0);assert($('toast').textContent.includes('Export permission changed'));
+allowed.onClose();store.getExportPermission=async()=>max;store.assertFullExportPermission=async()=>{throw new Error('Denied')};await openCageLabel('SYN-C1');allowed=labelRenders.at(-1).hooks;assert(!allowed.allowFullLocoboxHistory&&allowed.locoboxDataset===null);allowed.onClose();
+store.getCloudStatus=originalStatus;store.listLabMembers=originalList;store.getExportPermission=originalPermission;store.assertFullExportPermission=originalFullPermission;store.getExportRecords=originalExportRecords;cloud={mode:'local'};dataset=initialData;
+})()`,context);
+
+// Actual app routing must keep historical evidence read-only and BB owner-only.
+vm.runInContext(`
+{
+ const previous={dataset,route,detail,cloud,cageDate,cageView};
+ dataset=model.createSyntheticDataset();route='cages';detail=null;cloud={mode:'local',signedIn:false};cageView='rack';cageDate='';
+ dataset.tables.husbandry_events.push({event_id:'SYN-HISTORY',event_type:'animal_sheet_cage_snapshot',event_date:'2020-01-02',source_cage_snapshot:{schema_version:1,snapshot_date:'2020-01-02',date_basis:'captured_date',workbook_id:'synthetic-workbook',sheet_id:'1',sheet_name:'Synthetic room',source_header_cell:'A1',cage_label:'SYN-OLD',body:[{cell:'A2',raw:'P-M0001'}]}});
+ render();assert($('main').innerHTML.includes('id="cage-date"'));assert($('main').innerHTML.includes('2020-01-02'));
+ const currentHook=cageSheetRenders.at(-1).hooks;assert(!currentHook.readOnly);assert(currentHook.canEdit('cages'));
+ setCageDate('2020-01-02');const historic=cageSheetRenders.at(-1);
+ assert(historic.hooks.readOnly&&historic.hooks.selectedDate==='2020-01-02');assert(!historic.hooks.canEdit('cages'));assert(!historic.hooks.openCage&&!historic.hooks.openMouse&&!historic.hooks.printLabel&&!historic.hooks.openLocobox);
+ assert(historic.sheetDataset.history_projection.read_only);assert(historic.sheetDataset.tables.mice.length===0,'present-day mice are never projected backward');assert($('main').innerHTML.includes('Historical view · Read only'));assert($('add-button').hidden);assert(currentHook.context!==historic.hooks.context);
+ const pending=hasCageSheetDrafts;hasCageSheetDrafts=()=>true;setCageDate('');assert(cageDate==='2020-01-02');assert($('toast').textContent.includes('Sync or discard'));hasCageSheetDrafts=pending;
+ cageView='table';render();assert($('main').innerHTML.includes('SYN-OLD'));assert(!$('main').innerHTML.includes('data-action="edit"'));
+ setCageDate('');cageView='rack';render();assert(!cageSheetRenders.at(-1).hooks.readOnly);
+ for(const denied of [{mode:'local',signedIn:true,role:'owner'},{mode:'cloud',signedIn:false,role:'owner'},...['viewer','editor','manager','pending'].map(role=>({mode:'cloud',signedIn:true,role}))]){
+  cloud=denied;route='brainbot';const before=brainbotRenders.length;render();assert(!($('navigation').innerHTML.includes('data-route="brainbot"')));assert($('main').innerHTML.includes('only to the signed-in database owner'));assert(brainbotRenders.length===before);
+ }
+ cloud={mode:'cloud',signedIn:true,role:'owner',colonyId:'synthetic-colony',email:'owner@example.test'};const before=brainbotRenders.length;render();assert($('navigation').innerHTML.includes('data-route="brainbot"'));assert(brainbotRenders.length===before+1);
+ dataset=previous.dataset;route=previous.route;detail=previous.detail;cloud=previous.cloud;cageDate=previous.cageDate;cageView=previous.cageView;
+}
+`,context);
+
+// Recovery takes precedence over every route, including a direct settings refresh.
+await vm.runInContext(`(async()=>{
+ const previous={cloud,route,dataset,cloudReady};
+ cloud={mode:'cloud',configured:true,signedIn:true,role:'owner',passwordRecovery:true};cloudReady=true;
+ for(const name of ['mice','settings','brainbot']){route=name;render();assert($('main').innerHTML.includes('id="password-recovery"'));assert(!$('navigation').innerHTML);assert(!canEditRecords('mice')&&!canWriteCloud());assert($('export-button').disabled);}
+ renderSettings();assert($('main').innerHTML.includes('id="password-recovery"'));assert(!$('main').innerHTML.includes('user-management'));
+ await assert.rejects(action('cloud-push'),/Complete or cancel password recovery/);
+ cloud=previous.cloud;route=previous.route;dataset=previous.dataset;cloudReady=previous.cloudReady;
+})()`,context);
+const submitHandler=documentListeners.get('submit');
+const submitButton={disabled:false};
+const submitEvent=id=>({target:{id,querySelector:()=>submitButton},preventDefault(){}});
+let recoveryRequests=[];store.requestPasswordReset=async identifier=>{recoveryRequests.push(identifier);return {message:'If this ID or email has an active account, a reset link will be sent to its registered email.'}};
+element('reset-identifier').value='  unknown-id  ';submitHandler(submitEvent('password-reset-request'));await new Promise(resolve=>setTimeout(resolve,0));
+assert.deepEqual(recoveryRequests,['unknown-id']);assert(element('password-reset-status').textContent.startsWith('If this ID or email'));assert(!submitButton.disabled);
+let passwordChanges=0;store.completePasswordRecovery=async()=>{passwordChanges++;throw new Error('Reset link has expired. Request a new reset link.');};
+element('recovery-password').value='synthetic-password';element('recovery-confirm').value='different';submitHandler(submitEvent('password-recovery'));assert.equal(passwordChanges,0);assert.equal(element('password-recovery-status').textContent,'Passwords do not match.');
+element('recovery-confirm').value='synthetic-password';submitHandler(submitEvent('password-recovery'));await new Promise(resolve=>setTimeout(resolve,0));
+assert.equal(passwordChanges,1);assert(element('password-recovery-status').textContent.includes('expired'));assert.equal(element('recovery-password').value,'');assert.equal(element('recovery-confirm').value,'');assert(!submitButton.disabled);
+
 const shell=fs.readFileSync(new URL('../web/sw.js',import.meta.url),'utf8');
 assert(shell.includes('!allowed.has(event.request.url)'),'service worker exact shell allowlist');
 assert(!shell.includes('supabase.co'),'no cloud API route cached');
@@ -195,5 +303,11 @@ const retainedContext={...context,store:retainedStore,PUBLIC_CONFIG:publicExampl
 vm.createContext(retainedContext);vm.runInContext(source,retainedContext);await new Promise(resolve=>setTimeout(resolve,10));
 assert.equal(localPulls,0,'Auth callback preserves an existing local working dataset');
 assert(element('main').innerHTML.includes('Load shared colony'));
+
+let recoveryPulls=0;
+const recoveryStore={...callbackStore,getCloudStatus:()=>({mode:'cloud',configured:true,signedIn:true,passwordRecovery:true}),consumeAuthCallback:async()=>({signedIn:true,passwordRecovery:true}),loadDataset:async()=>null,pullFromCloud:async()=>{recoveryPulls++;throw new Error('Recovery must not pull colony data')}};
+const recoveryContext={...context,store:recoveryStore,PUBLIC_CONFIG:publicExample,location:{hash:'',protocol:'https:',href:'https://example.test/app/'}};
+vm.createContext(recoveryContext);vm.runInContext(source,recoveryContext);await new Promise(resolve=>setTimeout(resolve,10));
+assert.equal(recoveryPulls,0);assert(element('main').innerHTML.includes('id="password-recovery"'));
 
 console.log('PASS: frontend synthetic rendering, current candidate pedigree, editor, table filters, print card, housing, manifest assets and shell-only cache checks. Browser inspection remains separate.');

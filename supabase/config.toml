@@ -5,3 +5,8 @@ verify_jwt = false
 # verifies account credentials through Auth and enforces server-only counters.
 [functions.username-sign-in]
 verify_jwt = true
+
+# Internal queue supplies this project's public legacy anon JWT to the gateway.
+# Every POST independently verifies the existing server-only sync secret.
+[functions.import-animal-sheet]
+verify_jwt = true

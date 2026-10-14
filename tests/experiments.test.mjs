@@ -201,7 +201,7 @@ test('source full-name search cache refreshes when historical-user visibility is
 });
 
 test('current directory changes invalidate source full-name search without changing recorded IDs',async t=>{
- const {setLabUserDirectory,getLabUserDirectoryVersion}=await import('../web/user-acronyms.js?v=22');t.after(()=>setLabUserDirectory([]));setLabUserDirectory([{code:'ZZ',name:'Original Directory Name'}]);
+ const {setLabUserDirectory,getLabUserDirectoryVersion}=await import('../web/user-acronyms.js?v=23');t.after(()=>setLabUserDirectory([]));setLabUserDirectory([{code:'ZZ',name:'Original Directory Name'}]);
  const d=base();d.tables.experiment_sources[0].operator='ZZ';const original=structuredClone(d),h=await harness(t,d);await h.click('tab','sources');let search=h.container.querySelector('[name="search"]');search.value='Original Directory Name';h.container.oninput({target:search});assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);
  const version=getLabUserDirectoryVersion();setLabUserDirectory([{code:'ZZ',name:'Changed Directory Name'}]);assert(getLabUserDirectoryVersion()>version);h.render();assert.match(h.container.innerHTML,/No matching source observations/);search=h.container.querySelector('[name="search"]');search.value='Changed Directory Name';h.container.oninput({target:search});assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);
  setLabUserDirectory([{code:'NEW',name:'Changed Directory Name'}]);h.render();assert.match(h.container.innerHTML,/No matching source observations/);assert.deepEqual(h.dataset,original);assert.equal(h.dataset.tables.experiment_sources[0].operator,'ZZ');assert.equal(h.saves.length,0);

@@ -38,11 +38,11 @@ test('cages in use counts current living assignments and flags missing mouse ass
   assert.deepEqual(summarize(data).cagesInUse,{count:0,unknown:true});
 });
 
-test('breeding group eligibility respects setup and disbanded dates and archives',()=>{
+test('registered dates and archives do not erase independently observed current mixed-sex housing',()=>{
   const data=fixture();
   for(const [key,value] of [['set_up_date','2026-10-15'],['disbanded_date',asOf],['app_archived_at','2026-10-01']]) {
     const copy=structuredClone(data);copy.tables.matings[0][key]=value;
-    const result=summarize(copy);assert.equal(result.activeGroups,0);assert.deepEqual(result.breedingCages,{count:0,unknown:false,unresolvedGroups:0});
+    const result=summarize(copy);assert.equal(result.activeGroups,1);assert.equal(result.registeredActiveGroups,0);assert.deepEqual(result.breedingCages,{count:1,unknown:false,unresolvedGroups:0});
   }
   data.tables.matings[0].set_up_date=asOf;data.tables.matings[0].disbanded_date='2026-10-15';
   assert.equal(summarize(data).breedingCages.count,1);
@@ -65,14 +65,13 @@ test('a confirmed pair still counts when another member location is unresolved',
 test('breeding cages count distinct physical cages across active groups and deduplicate records',()=>{
   const data=fixture();data.tables.matings.push({...structuredClone(data.tables.matings[0]),mating_sid:'B2'},structuredClone(data.tables.matings[0]));
   data.tables.mice.push(structuredClone(data.tables.mice[0]));data.tables.cages.push(structuredClone(data.tables.cages[0]));
-  const result=summarize(data);assert.equal(result.activeGroups,2);assert.equal(result.breedingCages.count,1);assert.equal(result.breedingCages.unknown,false);
+  const result=summarize(data);assert.equal(result.activeGroups,1);assert.equal(result.registeredActiveGroups,2);assert.equal(result.breedingCages.count,1);assert.equal(result.breedingCages.unknown,false);
 });
 
 test('conflicting duplicates and archived or missing cages remain unresolved',()=>{
   for(const update of [
     data=>data.tables.mice.push({...data.tables.mice[0],cage_sid:'C2'}),
     data=>data.tables.cages.push({...data.tables.cages[0],location_id:'different'}),
-    data=>data.tables.matings.push({...data.tables.matings[0],female_sids:['MISSING']}),
     data=>{data.tables.cages[0].app_archived_at='2026-10-01'},
     data=>{data.tables.cages[0].state='Inactive'},
     data=>{data.tables.cages=[]},
@@ -87,9 +86,9 @@ test('ended, archived or incorrectly sexed group members cannot confirm a breedi
   }
 });
 
-test('malformed breeding dates do not prove current cage use even when group state is Active',()=>{
+test('malformed registry dates stay unresolved while independent current cohabitation remains',()=>{
   const data=fixture();data.tables.matings[0].disbanded_date='not a date';
-  const result=summarize(data);assert.equal(result.activeGroups,1);assert.equal(result.breedingCages.count,0);assert.equal(result.breedingCages.unknown,true);
+  const result=summarize(data);assert.equal(result.activeGroups,1);assert.equal(result.breedingCages.count,1);assert.equal(result.breedingCages.unknown,true);
 });
 
 test('unweaned counts require current state and valid dates, not all historical litter rows',()=>{

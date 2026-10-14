@@ -110,4 +110,20 @@ await test('self acronym edits require verified current own access, enforce CAS 
   assert.deepEqual((await db.query('select * from public.memberships order by colony_id,user_id')).rows,beforeMembers);assert.deepEqual((await db.query('select * from auth.users order by id')).rows,beforeAccounts);assert.deepEqual((await db.query('select * from public.audit_log order by audit_id')).rows,beforeLogs);
   const directory=await as('editor',()=>rpc('get_lab_user_directory',[colony]));assert(directory.users.some(r=>r.code==='M-G_2'));assert(!directory.users.some(r=>r.code==='MG'));
 });
+await test('current and historical transitions preserve private identity and audit, while only explicit owner reactivation restores access',async()=>{
+ const before=(await as('owner',()=>rpc('list_lab_members',[colony]))).members.find(r=>r.linked_user_id===ids.manager);
+ const authBefore=(await db.query('select * from auth.users order by id')).rows,recordsBefore=(await db.query('select count(*) n from public.entity_records')).rows[0].n;
+ const history=(await ownerSave({person_id:before.person_id,version:before.version,status:'historical'})).member;
+ assert.equal(history.membership_active,false);for(const key of ['person_id','username','linked_user_id','email','phone','acronym','created_at'])assert.deepEqual(history[key],before[key]);assert.deepEqual(history.provenance,before.provenance);
+ assert.equal((await as('manager',()=>get())).eligible,false);await as('manager',()=>denied(()=>complete(before.username)));
+ const directory=await as('editor',()=>rpc('get_lab_user_directory',[colony]));assert(!directory.users.some(r=>r.code===before.acronym));
+ await as('editor',()=>denied(()=>save({person_id:before.person_id,version:history.version,status:'current'})));
+ const returned=(await ownerSave({person_id:history.person_id,version:history.version,status:'current'})).member;assert.equal(returned.membership_active,false);assert.equal((await as('manager',()=>get())).reason,'access_disabled');
+ await denied(()=>ownerSave({person_id:history.person_id,version:history.version,status:'historical'}),'40001');
+ await as('owner',()=>rpc('manage_colony_member',[colony,ids.manager,returned.intended_role,true,'update',returned.export_level]));
+ const restored=await as('manager',()=>get());assert.equal(restored.eligible,true);assert.equal(restored.setup_required,false);assert.equal(restored.member.person_id,before.person_id);assert.equal(restored.member.username,before.username);
+ const audit=(await db.query('select before_record,after_record,actor_id from public.lab_member_audit where person_id=$1 order by audit_id desc limit 2',[before.person_id])).rows;
+ assert.equal(audit.length,2);assert(audit.every(row=>row.actor_id===ids.owner));assert.equal(audit[0].before_record.status,'historical');assert.equal(audit[0].after_record.status,'current');assert.equal(audit[1].before_record.status,'current');assert.equal(audit[1].after_record.status,'historical');
+ assert.deepEqual((await db.query('select * from auth.users order by id')).rows,authBefore);assert.equal((await db.query('select count(*) n from public.entity_records')).rows[0].n,recordsBefore);
+});
 await db.close();

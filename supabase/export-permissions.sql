@@ -131,26 +131,78 @@ begin
 end $$;
 revoke all on function colony_private.export_fields(jsonb,text[]) from public,anon,authenticated;
 
+create or replace function colony_private.iacuc_export_numeric_arrays(p jsonb,keys text[])
+returns jsonb language plpgsql immutable set search_path='' as $$
+declare result jsonb:='{}';k text;items jsonb;
+begin
+ foreach k in array keys loop
+  if jsonb_typeof(p->k)='array' then
+   select coalesce(jsonb_agg(value),'[]') into items from (select value from jsonb_array_elements(p->k) where jsonb_typeof(value)='number' limit 100) a;
+   result:=result||jsonb_build_object(k,items);
+  end if;
+ end loop;return result;
+end $$;
+revoke all on function colony_private.iacuc_export_numeric_arrays(jsonb,text[]) from public,anon,authenticated;
+create or replace function colony_private.iacuc_export_design_part(p jsonb,part text)
+returns jsonb language plpgsql immutable set search_path='' as $$
+declare result jsonb;adjustment jsonb;
+begin
+ if part='inputs' then
+  result:=colony_private.export_fields(p,array['design','variance','mean1','mean2','effect','sd','sd1','sd2','sdDifference','correlation','alpha','power','allocationRatio','experimentalUnit','animalsPerUnit','technicalReplicates','attrition','maxUnitsPerGroup','n1','n2','target','genotypeProbability','sexProbability','survivalProbability','confidence','maxOffspring','litterSize','littersPerPair']);
+  if jsonb_typeof(p->'cluster')='object' then result:=result||jsonb_build_object('cluster',colony_private.export_fields(p->'cluster',array['animalsPerCage','icc','cages_per_group','approximate','power_recomputed','attrition_basis','whole_cage_loss_modeled']));end if;
+ else
+  result:=colony_private.export_fields(p,array['status','method','approximate','n1','n2','achieved_power','previous_power','df','critical','noncentrality','standard_error','alpha','target_power','effect','sd_difference','power','sidedness','usable_probability','expected_offspring','expected_offspring_rounded','confidence_offspring','achieved_probability','previous_probability','expected_litters','confidence_litters','expected_pairs','confidence_pairs','expected_unusable_at_confidence_count','breeder_animals','errors','warnings','assumptions']);
+  if jsonb_typeof(p->'allocation')='object' then result:=result||jsonb_build_object('allocation',colony_private.export_fields(p->'allocation',array['rule','requested_ratio','actual_ratio']));end if;
+  if jsonb_typeof(p->'maximum_checked')='object' then result:=result||jsonb_build_object('maximum_checked',colony_private.export_fields(p->'maximum_checked',array['n1','n2','power','offspring','probability']));end if;
+  if jsonb_typeof(p->'adjustment')='object' then
+   adjustment:=colony_private.export_fields(p->'adjustment',array['analyzed_units_per_group','independent_equivalent_units_per_group','experimental_unit','recruited_units_per_group','animals_per_group','total_animals','animals_per_unit','technical_replicates','measurement_count','attrition','attrition_basis','design_effect'])||colony_private.iacuc_export_numeric_arrays(p->'adjustment',array['analyzed_units_per_group', 'independent_equivalent_units_per_group', 'recruited_units_per_group', 'animals_per_group', 'cages_per_group']);
+   if jsonb_typeof(p#>'{adjustment,cluster}')='object' then adjustment:=adjustment||jsonb_build_object('cluster',colony_private.export_fields(p#>'{adjustment,cluster}',array['animalsPerCage','icc','cages_per_group','approximate','power_recomputed','attrition_basis','whole_cage_loss_modeled'])||colony_private.iacuc_export_numeric_arrays(p#>'{adjustment,cluster}',array['cages_per_group']));end if;
+   result:=result||jsonb_build_object('adjustment',adjustment);
+  end if;
+ end if;return result;
+end $$;
+revoke all on function colony_private.iacuc_export_design_part(jsonb,text) from public,anon,authenticated;
+
 create or replace function colony_private.export_payload(kind text,p jsonb)
 returns jsonb language plpgsql immutable set search_path='' as $$
 declare keys text[]; result jsonb; nested jsonb; source_items jsonb; items jsonb;
 begin
   keys:=case kind
-    when 'mice' then array['mouse_sid','physical_tag','sex','state','mouseline','genotype','date_of_birth','end_date','wean_date','sire_sids','dam_sids','litter_sid','cage_sid','cage_tag','manager','owner']
+    when 'mice' then array['mouse_sid','physical_tag','ear_mark','sex','state','mouseline','genotype','date_of_birth','end_date','wean_date','sire_sids','dam_sids','litter_sid','cage_sid','cage_tag','manager','owner']
     when 'matings' then array['mating_sid','state','male_sids','female_sids','sire_sids','dam_sids','set_up_date','disbanded_date','cage_sid','cage_tag','owner']
     when 'litters' then array['litter_sid','state','date_of_birth','wean_date','end_date','mating_sid','sire_sids','dam_sids','size_reported','male_count','female_count','unknown_count','cage_sid']
     when 'cages' then array['cage_sid','cage_tag','state','cage_type','room_id','rack_id','location_id','room','rack','location','capacity','manager','owner','set_up_date','end_date']
-    when 'rooms' then array['room_id','name','label']
-    when 'racks' then array['rack_id','room_id','name','label']
-    when 'locations' then array['location_id','room_id','rack_id','label','row','column','capacity']
-    when 'light_events' then array['event_id','start_date','end_date','protocol','cycle_hours','light_hours','lights_on','lights_off','transition_minutes','intensity_lux','timezone','evidence_status','interval_semantics','actual_exposure_verified','room_id','rack_id','location_id','cage_sid']
+    when 'rooms' then array['room_id','name','label','source_current','source_last_seen_at']
+    when 'racks' then array['rack_id','room_id','name','label','source_current','source_last_seen_at']
+    when 'locations' then array['location_id','room_id','rack_id','label','row','column','capacity','source_current','source_last_seen_at','source_manager_name','source_manager_acronym','source_manager_status']
+    when 'light_events' then array['event_id','start_date','end_date','protocol','cycle_hours','light_hours','lights_on','lights_off','transition_minutes','intensity_lux','timezone','evidence_status','interval_semantics','actual_exposure_verified','room_id','rack_id','location_id','cage_sid','source_current','source_last_seen_at']
     when 'husbandry_events' then array['event_id','event_type','event_date','mouse_sid','cage_sid','old_cage_sid','room_id','rack_id','location_id','old_room_id','old_rack_id','old_location_id','location_label','old_location_label']
     else array[]::text[] end;
   result:=colony_private.export_fields(p,keys);
   if kind='locations' then
     result:=result||jsonb_build_object('record_origin',case when p->>'record_origin'='app_created' then 'app_created' else 'source_recorded' end);
   end if;
-  if kind='husbandry_events' and p->>'event_type'='lac_fee_options' then
+  if kind='husbandry_events' and p->>'event_type'='iacuc_protocol' then
+    nested:=colony_private.export_fields(p->'iacuc_protocol',array['schema_version','protocol_id','number','aliases','title','title_en','pi','status','start_date','end_date','approved_animals']);
+    source_items:=case when jsonb_typeof(p#>'{iacuc_protocol,allocations}')='array' then p#>'{iacuc_protocol,allocations}' else '[]'::jsonb end;
+    select coalesce(jsonb_agg(colony_private.export_fields(value,array['id','species','strain','approved','portal_used','portal_pending','portal_remaining'])),'[]') into items from (select value from jsonb_array_elements(source_items) where jsonb_typeof(value)='object' limit 100) a;
+    result:=result||jsonb_build_object('iacuc_protocol',nested||jsonb_build_object('allocations',items,'allocation_count',jsonb_array_length(source_items),'allocations_truncated',jsonb_array_length(items)<jsonb_array_length(source_items)));
+  elsif kind='husbandry_events' and p->>'event_type'='iacuc_assignment' then
+    nested:=colony_private.export_fields(p->'iacuc_assignment',array['schema_version','protocol_id','entity_type','entity_id','purpose','valid_from','valid_to','evidence_status']);
+    result:=result||jsonb_build_object('iacuc_assignment',nested);
+  elsif kind='husbandry_events' and p->>'event_type'='iacuc_usage' then
+    nested:=colony_private.export_fields(p->'iacuc_usage',array['schema_version','protocol_id','category','mouse_sids','unregistered_count','event_date','experiment_id','litter_sid','evidence_status']);
+    source_items:=case when jsonb_typeof(p#>'{iacuc_usage,mouse_sids}')='array' then p#>'{iacuc_usage,mouse_sids}' else '[]'::jsonb end;
+    nested:=nested||jsonb_build_object('mouse_count',jsonb_array_length(source_items),'mouse_sids_truncated',jsonb_array_length(source_items)>coalesce(jsonb_array_length(nested->'mouse_sids'),0));
+    result:=result||jsonb_build_object('iacuc_usage',nested);
+  elsif kind='husbandry_events' and p->>'event_type'='iacuc_design' then
+    nested:=colony_private.export_fields(p->'iacuc_design',array['schema_version','protocol_id','label','title','method','calculated_at']);
+    nested:=nested||jsonb_build_object('inputs',colony_private.iacuc_export_design_part(p#>'{iacuc_design,inputs}','inputs')||case when jsonb_typeof(p#>'{iacuc_design,inputs,sample_size}')='object' then jsonb_build_object('sample_size',colony_private.iacuc_export_design_part(p#>'{iacuc_design,inputs,sample_size}','inputs')) else '{}'::jsonb end||case when jsonb_typeof(p#>'{iacuc_design,inputs,breeding}')='object' then jsonb_build_object('breeding',colony_private.iacuc_export_design_part(p#>'{iacuc_design,inputs,breeding}','inputs')) else '{}'::jsonb end);
+    nested:=nested||jsonb_build_object('results',colony_private.iacuc_export_design_part(p#>'{iacuc_design,results}','results')||case when jsonb_typeof(p#>'{iacuc_design,results,sample_size}')='object' then jsonb_build_object('sample_size',colony_private.iacuc_export_design_part(p#>'{iacuc_design,results,sample_size}','results')) else '{}'::jsonb end||case when jsonb_typeof(p#>'{iacuc_design,results,breeding}')='object' then jsonb_build_object('breeding',colony_private.iacuc_export_design_part(p#>'{iacuc_design,results,breeding}','results')) else '{}'::jsonb end);
+    if jsonb_typeof(p#>'{iacuc_design,breeding_inputs}')='object' then nested:=nested||jsonb_build_object('breeding_inputs',colony_private.iacuc_export_design_part(p#>'{iacuc_design,breeding_inputs}','inputs'));end if;
+    if jsonb_typeof(p#>'{iacuc_design,breeding_results}')='object' then nested:=nested||jsonb_build_object('breeding_results',colony_private.iacuc_export_design_part(p#>'{iacuc_design,breeding_results}','results'));end if;
+    result:=result||jsonb_build_object('iacuc_design',nested);
+  elsif kind='husbandry_events' and p->>'event_type'='lac_fee_options' then
     nested:=colony_private.export_fields(p->'lac_fee_options',array['schema_version','effective_from','currency','target_percent','maximum_percent','excluded_room_ids','revision']);
     source_items:=case when jsonb_typeof(p#>'{lac_fee_options,groups}')='array' then p#>'{lac_fee_options,groups}' else '[]'::jsonb end;
     select coalesce(jsonb_agg(colony_private.export_fields(value,array['key','label','unit','room_ids','rack_ids','rate','rate_period','rate_reference'])),'[]') into items
@@ -203,6 +255,62 @@ begin
 end $$;
 revoke all on function colony_private.export_payload(text,jsonb) from public,anon,authenticated;
 
+-- Context-sensitive Locobox reports: nested intervals have independent date limits.
+create or replace function colony_private.locobox_export_fields(p jsonb,keys text[])
+returns jsonb language sql immutable set search_path='' as $$
+ select coalesce(jsonb_object_agg(key,case when jsonb_typeof(value)='string' then to_jsonb(left(value#>>'{}',500)) else value end),'{}')
+ from jsonb_each(case when jsonb_typeof(p)='object' then p else '{}' end)
+ where key=any(keys) and jsonb_typeof(value) in ('string','number','boolean','null')
+$$;
+revoke all on function colony_private.locobox_export_fields(jsonb,text[]) from public,anon,authenticated;
+create or replace function colony_private.locobox_export_interval(p jsonb,start_at date,end_at date,include_undated boolean)
+returns jsonb language plpgsql immutable set search_path='' as $$
+declare a date:=colony_private.export_date(p->'start_date'); b date:=colony_private.export_date(p->'end_date'); result jsonb:='{}'; withheld jsonb:='[]'; k text; d date;
+begin
+ if jsonb_typeof(p) is distinct from 'object' or end_at is null then return null;end if;
+ if not coalesce((a between coalesce(start_at,'0001-01-01') and end_at) or (b between coalesce(start_at,'0001-01-01') and end_at) or (a is not null and b is not null and a<=end_at and (start_at is null or b>start_at or b=start_at and p->>'end_time'>'00:00:00')) or (a is null and b is null and include_undated and start_at is null),false) then return null;end if;
+ foreach k in array array['start','end'] loop
+  d:=case k when 'start' then a else b end;
+  if d between coalesce(start_at,'0001-01-01') and end_at then
+   result:=result||jsonb_build_object(k||'_date',d);
+   if jsonb_typeof(p->(k||'_time'))='string' then result:=result||jsonb_build_object(k||'_time',p->(k||'_time'));end if;
+  elsif d is not null then withheld:=withheld||to_jsonb(k);
+  else result:=result||jsonb_build_object(k||'_date',null);end if;
+ end loop;
+ if jsonb_array_length(withheld)>0 then result:=result||jsonb_build_object('export_interval_clipped',true,'export_window_start',start_at,'export_window_end',end_at,'export_withheld_boundaries',withheld);end if;
+ return result;
+end $$;
+revoke all on function colony_private.locobox_export_interval(jsonb,date,date,boolean) from public,anon,authenticated;
+create or replace function colony_private.export_locobox_payload(p jsonb,start_at date,end_at date,include_undated boolean)
+returns jsonb language plpgsql stable set search_path='' as $$
+declare nested jsonb:=p->'locobox_protocol'; result jsonb; phases jsonb:='[]'; phase jsonb; item jsonb; span jsonb; treatment jsonb; treatment_span jsonb; treatments jsonb; phase_count integer:=0; treatment_count integer; measured jsonb; measured_date date; event_date date:=colony_private.export_date(p->'event_date');
+begin
+ if p->>'event_type' is distinct from 'locobox_protocol' or jsonb_typeof(nested) is distinct from 'object' then return null;end if;
+ result:=colony_private.locobox_export_fields(p,array['event_id','event_type']);
+ for phase in select value from jsonb_array_elements(case when jsonb_typeof(nested->'phases')='array' then nested->'phases' else '[]' end) loop
+  span:=colony_private.locobox_export_interval(phase,start_at,end_at,include_undated);if span is null then continue;end if;phase_count:=phase_count+1;
+  item:=colony_private.locobox_export_fields(phase,array['phase_id','label','timezone','scheme','cycle_hours','light_hours','lights_on','lights_off','transition_minutes','intensity_lux'])||span;
+  if not (span ? 'export_interval_clipped') then item:=item||colony_private.locobox_export_fields(phase,array['duration_days','duration_basis']);end if;
+  measured:=phase->'measured_phase';measured_date:=null;
+  if jsonb_typeof(measured)='object' and measured->>'measured_at' ~ '(Z|[+-][0-9]{2}:[0-9]{2})$' then
+   begin measured_date:=((measured->>'measured_at')::timestamptz at time zone (phase->>'timezone'))::date;exception when others then measured_date:=null;end;
+   if measured_date between coalesce(start_at,'0001-01-01') and end_at then item:=item||jsonb_build_object('measured_phase',colony_private.locobox_export_fields(measured,array['measured_at','phase_hours','basis','method']));end if;
+  end if;
+  treatments:='[]';treatment_count:=0;
+  for treatment in select value from jsonb_array_elements(case when jsonb_typeof(phase->'treatments')='array' then phase->'treatments' else '[]' end) loop
+   treatment_span:=colony_private.locobox_export_interval(treatment,start_at,end_at,include_undated);if treatment_span is null then continue;end if;treatment_count:=treatment_count+1;
+   if jsonb_array_length(treatments)<30 then treatments:=treatments||jsonb_build_array(colony_private.locobox_export_fields(treatment,array['treatment_id','name','status','dose','dose_unit','concentration','concentration_unit','route','vehicle','delivery','frequency'])||treatment_span);end if;
+  end loop;
+  item:=item||jsonb_build_object('treatments',treatments,'treatment_count',treatment_count,'treatments_truncated',jsonb_array_length(treatments)<treatment_count);
+  if octet_length((phases||jsonb_build_array(item))::text)<=300000 then phases:=phases||jsonb_build_array(item);end if;
+ end loop;
+ if jsonb_array_length(phases)=0 then return null;end if;
+ if event_date between coalesce(start_at,'0001-01-01') and end_at then result:=result||jsonb_build_object('event_date',event_date);
+ elsif p->>'event_date' is not null then result:=result||jsonb_build_object('export_event_date_withheld',true);else result:=result||jsonb_build_object('event_date',null);end if;
+ return result||jsonb_build_object('locobox_protocol',colony_private.locobox_export_fields(nested,array['schema_version','protocol_id','title','status','evidence_status','cage_sid','location_id','source_cage_label','link_status'])||jsonb_build_object('phases',phases,'phase_count',phase_count,'phases_truncated',jsonb_array_length(phases)<phase_count));
+end $$;
+revoke all on function colony_private.export_locobox_payload(jsonb,date,date,boolean) from public,anon,authenticated;
+
 create or replace function public.export_records(
   p_colony_id uuid,p_scope text default 'current_housing',p_from_date date default null,p_to_date date default null,
   p_entity_types text[] default null,p_offset integer default 0,p_limit integer default 250
@@ -244,10 +352,15 @@ begin
       r.entity_type in ('rooms','racks','locations') or
       (r.entity_type='light_events' and colony_private.export_light_current(r.payload,coalesce((zone_days->>(r.payload->>'timezone'))::date,today)))
     )))
+  ), contextual as materialized (
+    select *,case when entity_type='husbandry_events' and payload->>'event_type'='locobox_protocol' then colony_private.export_locobox_payload(payload,start_at,end_at,include_undated) else null end locobox_report from eligible
   ), selected as (
-    select * from eligible where p_scope='current_housing' or (domain_date between coalesce(start_at,'0001-01-01'::date) and end_at) or (domain_date is null and include_undated)
+    select * from contextual where case
+      when entity_type='husbandry_events' and payload->>'event_type'='locobox_revision' then false
+      when entity_type='husbandry_events' and payload->>'event_type'='locobox_protocol' then locobox_report is not null
+      else p_scope='current_housing' or (domain_date between coalesce(start_at,'0001-01-01'::date) and end_at) or (domain_date is null and include_undated) end
   ), page as (select * from selected order by entity_type collate "C",entity_id collate "C" offset p_offset limit p_limit+1), projected as (
-    select entity_type,entity_id,jsonb_build_object('entity_type',entity_type,'entity_id',entity_id,'record_date',domain_date,'payload',colony_private.export_payload(entity_type,payload)) body from page
+    select entity_type,entity_id,jsonb_build_object('entity_type',entity_type,'entity_id',entity_id,'record_date',case when locobox_report is not null then colony_private.export_date(locobox_report->'event_date') else domain_date end,'payload',coalesce(locobox_report,colony_private.export_payload(entity_type,payload))) body from page
   ), numbered as (
     select *,row_number() over(order by entity_type collate "C",entity_id collate "C") n,
       sum(octet_length(body::text)) over(order by entity_type collate "C",entity_id collate "C") bytes from projected

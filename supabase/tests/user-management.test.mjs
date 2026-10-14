@@ -49,7 +49,7 @@ function fixture(options = {}) {
     if (path === '/rest/v1/rpc/manage_colony_member') {
       assert.equal(init.headers.apikey, values.SUPABASE_ANON_KEY);
       assert.equal(init.headers.Authorization, 'Bearer owner-token');
-      return json([membership(body.p_user_id, {role: body.p_role, active: body.p_active, export_level:body.p_export_level??members.find(row=>row.user_id===body.p_user_id)?.export_level??'low', permissions:{...Object.fromEntries(['mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees'].map(key=>[key,true])),...(body.p_permissions??members.find(row=>row.user_id===body.p_user_id)?.permissions??{})}})]);
+      return json([membership(body.p_user_id, {role: body.p_role, active: body.p_active, export_level:body.p_export_level??members.find(row=>row.user_id===body.p_user_id)?.export_level??'low', permissions:{...Object.fromEntries(['mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees','iacuc'].map(key=>[key,true])),...(body.p_permissions??members.find(row=>row.user_id===body.p_user_id)?.permissions??{})}})]);
     }
     throw new Error('Unexpected route: ' + path);
   };

@@ -1,7 +1,7 @@
 // Native-fetch handler. Admin credentials stay inside the Edge runtime.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EXPORT_LEVELS = ['low', 'high', 'max'];
-const PERMISSIONS = ['mice', 'breeding', 'housing', 'experiments', 'cryo', 'genetics', 'imports', 'archive', 'fees'];
+const PERMISSIONS = ['mice', 'breeding', 'housing', 'experiments', 'cryo', 'genetics', 'imports', 'archive', 'fees', 'iacuc'];
 const validPermissions = value => value !== null && typeof value === 'object' && !Array.isArray(value) &&
   Object.entries(value).every(([key, allowed]) => PERMISSIONS.includes(key) && typeof allowed === 'boolean');
 const normalizedPermissions = value => Object.fromEntries(PERMISSIONS.map(key => [key, Object.hasOwn(value || {}, key) ? value[key] === true : true]));

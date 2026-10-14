@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizeBreeding, isMouseGenotyped } from '../web/breeding-summary.js';
+import { summarizeBreeding, isMouseGenotyped, estimateBreedingGroups, classifyAnimalSheetBreedingBlock } from '../web/breeding-summary.js';
 import { buildBreedingOptions, DEFAULT_BREEDING_OPTIONS } from '../web/breeding-options.js';
 
 const asOf='2026-10-14';
 const born=days=>new Date(Date.parse(`${asOf}T00:00:00Z`)-days*86400000).toISOString().slice(0,10);
 const dataset=(mice,extra={})=>({tables:{mice:mice.map((mouse,index)=>({mouse_sid:`SYN-${index}`,state:'Stock',...mouse})),mouse_genes:[],matings:[],husbandry_events:[],...extra}});
 const summarize=(data,scope='living')=>summarizeBreeding(data,{asOf,scope});
+function cohouse(data,ids,cage='C1'){data.tables.cages??=[];data.tables.cages.push({cage_sid:cage,state:'Active'});for(const mouse of data.tables.mice)if(ids.includes(mouse.mouse_sid))mouse.cage_sid=cage;return data;}
 const locus=(id,name,alleles=['+',name])=>({id,name,kind:'other',chromosome:'unknown',alleles});
 const profile=(loci,calls)=>({schema_version:1,loci,calls});
 const call=(alleles,evidence='confirmed')=>({alleles,evidence});
@@ -15,7 +16,7 @@ const pProfile=()=>profile([locus('per2','PER2::LUC')],{per2:call(['PER2::LUC','
 test('living summary deduplicates Stock animals and excludes ended and archived records',()=>{
   const data=dataset([{sex:'Male',date_of_birth:born(70),genotype:'PER2::LUC(+/-)'},{sex:'Female',date_of_birth:born(70)},{sex:'unknown'},{state:'Ended',sex:'Male'},{archived:true},{app_archived_at:asOf},{state:'Unknown'}]);
   data.tables.mice.push({...data.tables.mice[0]});
-  assert.deepEqual(summarize(data),{total:3,male:1,female:1,unknownSex:1,maleFertile:1,femaleFertile:1,unknownMaleAge:0,unknownFemaleAge:0,genotyped:1,activeGroups:0,scope:'living',asOf});
+  const {groupEstimate,...result}=summarize(data);assert.equal(groupEstimate.totalGroups,0);assert.deepEqual(result,{total:3,male:1,female:1,unknownSex:1,maleFertile:1,femaleFertile:1,unknownMaleAge:0,unknownFemaleAge:0,genotyped:1,activeGroups:0,scope:'living',asOf});
 });
 
 test('age windows use exact calendar days including both endpoints',()=>{
@@ -45,7 +46,7 @@ test('active scope counts distinct living breeders, not memberships or inferred 
     {mating_sid:'SYN-M2',state:'Active',male_sids:['SYN-0'],female_sids:['SYN-1']},
     {mating_sid:'SYN-M3',state:'Inactive',female_sids:['SYN-4']},
   ]});
-  data.tables.matings.push({...data.tables.matings[0]});
+  data.tables.matings.push({...data.tables.matings[0]});cohouse(data,['SYN-0','SYN-1','SYN-2']);
   const result=summarize(data,'active');assert.equal(result.activeGroups,2);assert.equal(result.total,3);assert.equal(result.male,1);assert.equal(result.female,1);assert.equal(result.unknownSex,1);assert.equal(summarize(data).total,4);
 });
 
@@ -58,7 +59,7 @@ test('active groups exclude archived, future setup and already disbanded matings
     {state:'Active',male_sids:['SYN-0'],app_archived_at:asOf},
     {state:'Active',male_sids:['SYN-0'],archived:true},
   ]});
-  assert.equal(summarize(data,'active').activeGroups,1);assert.equal(summarize(data,'active').total,1);
+  assert.equal(summarize(data,'active').activeGroups,1);assert.equal(summarize(data,'active').total,0);assert.equal(summarize(data).groupEstimate.totalGroups,0);
 });
 
 test('empty data is safe and invalid summary date or scope is explicit',()=>{
@@ -185,10 +186,39 @@ test('duplicate named profile targets are rejected even when record IDs differ',
 
 test('genotyped numerator uses the same selected cohort as denominator and source is immutable',()=>{
   const data=dataset([{sex:'Male',genotype:'PER2::LUC(+/-)'},{sex:'Female',genotype:'PER2::LUC(-/-)'},{sex:'Female',genotype:'PER2::LUC'}],{matings:[{state:'Active',male_sids:['SYN-0'],female_sids:['SYN-2']}]});
-  const before=structuredClone(data);assert.equal(summarize(data).genotyped,2);assert.equal(summarize(data,'active').genotyped,1);assert.equal(summarize(data,'active').total,2);assert.deepEqual(data,before);
+  cohouse(data,['SYN-0','SYN-2']);const before=structuredClone(data);assert.equal(summarize(data).genotyped,2);assert.equal(summarize(data,'active').genotyped,1);assert.equal(summarize(data,'active').total,2);assert.deepEqual(data,before);
 });
 
 test('shorthand numerator includes clear animals and excludes unresolved or ended animals in either scope',()=>{
   const data=dataset([{genotype:'P'},{physical_tag:"PB'-F7"},{genotype:'P(B)'},{genotype:'AD',state:'Ended'}],{matings:[{state:'Active',male_sids:['SYN-0'],female_sids:['SYN-2']}]});
-  const before=structuredClone(data);assert.equal(summarize(data).genotyped,2);assert.equal(summarize(data).total,3);assert.equal(summarize(data,'active').genotyped,1);assert.equal(summarize(data,'active').total,2);assert.deepEqual(data,before);
+  cohouse(data,['SYN-0','SYN-2']);data.tables.mice[0].sex='Male';data.tables.mice[2].sex='Female';const before=structuredClone(data);assert.equal(summarize(data).genotyped,2);assert.equal(summarize(data).total,3);assert.equal(summarize(data,'active').genotyped,1);assert.equal(summarize(data,'active').total,2);assert.deepEqual(data,before);
+});
+
+const sourcePosition=(id='L1',extra={})=>({location_id:id,label:'Synthetic '+id,record_origin:'current_google_sheet_map',source_current:true,source_snapshot_date:asOf,source_cell:'T7',source_block_text:"T7: B1\nT8: P' M101\nU8: 2026-08-01\nT9: (P) F102\nU9: 2026-08-01",...extra});
+test('known male and female sharing a current cage count as breeding without a registered mating or fertility claim',()=>{
+ const data=cohouse(dataset([{sex:'Male',date_of_birth:born(10)},{sex:'Female',date_of_birth:born(10)},{sex:'Unknown'}]),['SYN-0','SYN-1','SYN-2']),before=structuredClone(data),out=estimateBreedingGroups(data,{asOf});assert.equal(out.totalGroups,1);assert.equal(out.inferredOnlyGroups,1);assert.equal(out.registeredCount,0);assert.deepEqual(out.activeMouseSids,['SYN-0','SYN-1','SYN-2']);assert.equal(out.groups[0].fertility_confirmed,false);assert.equal(summarize(data,'active').total,3);assert.equal(summarize(data,'active').femaleFertile,0);assert.deepEqual(data,before);
+});
+test('registered rows match current cohabitation once, while separated and missing members do not inflate estimates',()=>{
+ const data=cohouse(dataset([{sex:'Male'},{sex:'Female'},{sex:'Male'}],{matings:[{mating_sid:'R1',state:'Active',male_sids:['SYN-0'],female_sids:['SYN-1']},{mating_sid:'R2',state:'Active',male_sids:['SYN-0'],female_sids:['SYN-1']},{mating_sid:'STALE',state:'Active',male_sids:['SYN-2'],female_sids:['missing']}]}),['SYN-0','SYN-1']);const out=estimateBreedingGroups(data,{asOf});assert.equal(out.totalGroups,1);assert.equal(out.registeredCount,3);assert.equal(out.resolvedRegisteredCount,2);assert.deepEqual(out.groups[0].registered_mating_sids,['R1','R2']);assert.equal(out.unresolvedRegisteredGroups[0].mating_sid,'STALE');assert.equal(out.inferredOnlyGroups,0);assert.equal(summarize(data,'active').total,2);
+});
+test('ended, conflicting, archived, future-born and unassigned animals cannot establish current cohabitation',()=>{
+ for(const change of [d=>d.tables.mice[1].state='Ended',d=>d.tables.mice[1].archived=true,d=>d.tables.mice[1].date_of_birth='2026-10-15',d=>d.tables.mice[1].end_date=asOf,d=>d.tables.mice[1].cage_sid=null,d=>d.tables.mice.push({...d.tables.mice[1],sex:'Male'}),d=>d.tables.cages[0].state='Inactive',d=>d.tables.cages[0].archived=true]){const d=cohouse(dataset([{sex:'Male'},{sex:'Female'}]),['SYN-0','SYN-1']);change(d);assert.equal(estimateBreedingGroups(d,{asOf}).totalGroups,0);}
+});
+test('Animal Sheet parser uses explicit animal-column sex suffixes, not Cre genotype F or unrelated comments',()=>{
+ const good=classifyAnimalSheetBreedingBlock(sourcePosition());assert.equal(good.male,1);assert.equal(good.female,1);assert.equal(good.mixed,true);assert.ok(good.evidence.every(e=>!e.identity_confirmed));const bad=sourcePosition('L1',{source_block_text:"T7: B1\nT8: F\nT9: P\nU8: P M101\nU9: P F102\nT10: P F\nT11: sample from F3"});assert.equal(classifyAnimalSheetBreedingBlock(bad).mixed,false);const ended=sourcePosition();ended.source_block_text+='\nT8 comment: died';assert.equal(classifyAnimalSheetBreedingBlock(ended).male,0);
+});
+test('current source-only positions count separately, historical or future maps do not count as current',()=>{
+ const data=dataset([],{locations:[sourcePosition(),sourcePosition('OLD',{source_current:false}),sourcePosition('ARCHIVE',{record_origin:'source_layout'}),sourcePosition('FUTURE',{source_snapshot_date:'2026-10-15'})]});const out=estimateBreedingGroups(data,{asOf});assert.equal(out.totalGroups,1);assert.equal(out.currentCageCount,0);assert.equal(out.sourceEstimatedCount,1);assert.equal(out.activeMouseSids.length,0);assert.equal(out.sourceGroups[0].source_snapshot_date,asOf);
+});
+test('overlapping source positions and contradictory source occupants cannot double count linked cages',()=>{
+ const data=cohouse(dataset([{sex:'Male'},{sex:'Female'}],{locations:[sourcePosition()]}),['SYN-0','SYN-1']);data.tables.cages[0].location_id='L1';let out=estimateBreedingGroups(data,{asOf});assert.equal(out.totalGroups,1);assert.equal(out.sourceOverlaps.length,1);assert.equal(out.sourceEstimatedCount,0);data.tables.mice[1].sex='Male';out=estimateBreedingGroups(data,{asOf});assert.equal(out.totalGroups,0);assert.equal(out.sourceConflicts.length,1);assert.equal(out.sourceEstimatedCount,0);
+});
+test('repeated animal tags across source positions and conflicting duplicate position records stay unresolved',()=>{
+ const data=dataset([],{locations:[sourcePosition('L1'),sourcePosition('L2')]});let out=estimateBreedingGroups(data,{asOf});assert.equal(out.totalGroups,0);assert.equal(out.sourceConflicts.length,2);data.tables.locations=[sourcePosition('L1'),sourcePosition('L1',{source_block_text:'T8: P M5'})];out=estimateBreedingGroups(data,{asOf});assert.equal(out.totalGroups,0);assert.match(out.issues[0].kind,/conflicting_source_position/);
+});
+test('unconfirmed matching cage labels or animal numbers cannot add another current group',()=>{
+ for(const source of [sourcePosition('L1',{label:'Current cage'}),sourcePosition('L1',{source_block_text:"T8: P' M1001\nT9: P F9000"})]){
+  const data=dataset([{mouse_sid:'1001',sex:'Male'},{mouse_sid:'1002',sex:'Female'}],{locations:[source]});cohouse(data,['1001','1002']);data.tables.cages[0].cage_tag='Current cage';const out=estimateBreedingGroups(data,{asOf});assert.equal(out.totalGroups,1);assert.equal(out.sourceEstimatedCount,0);assert.equal(out.sourceConflicts.length,1);assert.equal(out.sourceConflicts[0].identity_confirmed,false);
+ }
+ const data=dataset([],{locations:[sourcePosition('L1',{source_block_text:"T8: P M1001\nT9: P F1002"}),sourcePosition('L2',{source_block_text:"T8: P' M1001\nT9: P F1003"})]});assert.equal(estimateBreedingGroups(data,{asOf}).totalGroups,0);
 });

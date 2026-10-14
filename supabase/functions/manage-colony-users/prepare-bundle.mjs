@@ -16,5 +16,7 @@ await copyFile(new URL('../../manager-permissions.sql', import.meta.url), join(o
 await copyFile(new URL('../../lab-members.sql', import.meta.url), join(output, '04-lab-members.sql'));
 await copyFile(new URL('../../username-sign-in.sql', import.meta.url), join(output, '05-username-sign-in.sql'));
 await copyFile(new URL('../../account-acronym.sql', import.meta.url), join(output, '06-account-acronym.sql'));
+await copyFile(new URL('../../iacuc.sql', import.meta.url), join(output, '07-iacuc.sql'));
+await copyFile(new URL('../../locobox.sql', import.meta.url), join(output, '08-locobox.sql'));
 await copyFile(new URL('./README.md', import.meta.url), join(output, 'README.md'));
-console.log(JSON.stringify({output, bundle_bytes: Buffer.byteLength(bundled), files: ['index.ts', '01-membership.sql', '02-export-permissions.sql', '03-manager-permissions.sql', '04-lab-members.sql', '05-username-sign-in.sql', '06-account-acronym.sql', 'README.md']}));
+console.log(JSON.stringify({output, bundle_bytes: Buffer.byteLength(bundled), files: ['index.ts', '01-membership.sql', '02-export-permissions.sql', '03-manager-permissions.sql', '04-lab-members.sql', '05-username-sign-in.sql', '06-account-acronym.sql', '07-iacuc.sql', '08-locobox.sql', 'README.md']}));

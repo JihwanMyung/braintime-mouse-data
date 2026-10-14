@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 
 const ids={owner:'11111111-1111-4111-8111-111111111111',manager:'22222222-2222-4222-8222-222222222222',editor:'33333333-3333-4333-8333-333333333333',viewer:'44444444-4444-4444-8444-444444444444',outside:'55555555-5555-4555-8555-555555555555',colony:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'};
-const keys=['mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees'];
+const keys=['mice','breeding','housing','experiments','cryo','genetics','imports','archive','fees','iacuc'];
 const flags=extra=>({...Object.fromEntries(keys.map(k=>[k,true])),...extra});
 const fixture=async()=>{
  const db=new PGlite();
@@ -120,12 +120,12 @@ test('mouse and breeder fields cannot bypass housing, genetics or parentage rest
  }finally{await db.close()}
 });
 
-test('fee hardening patch replaces only exact maintained classifier/projector functions and reruns safely',async()=>{
+test('maintained fee patch includes exact classifier/projector and two private IACUC helpers',async()=>{
  const {db,as,save,allow}=await fixture();try{
   const patch=await readFile(new URL('../fees-hardening.sql',import.meta.url),'utf8'),manager=await readFile(new URL('../manager-permissions.sql',import.meta.url),'utf8'),report=await readFile(new URL('../export-permissions.sql',import.meta.url),'utf8');
   const classifier=source=>source.match(/create or replace function colony_private\.record_permissions\(kind text,p jsonb\)[\s\S]*?revoke all on function colony_private\.record_permissions\(text,jsonb\) from public,anon,authenticated;/)?.[0];
   const projector=source=>source.match(/create or replace function colony_private\.export_payload\(kind text,p jsonb\)[\s\S]*?revoke all on function colony_private\.export_payload\(text,jsonb\) from public,anon,authenticated;/)?.[0];
-  assert.equal(classifier(patch),classifier(manager));assert.equal(projector(patch),projector(report));assert.equal((patch.match(/create or replace function/g)||[]).length,2);assert(!/alter table|insert into|update public|delete from/i.test(patch));
+  assert.equal(classifier(patch),classifier(manager));assert.equal(projector(patch),projector(report));assert.equal((patch.match(/create or replace function/g)||[]).length,4);assert(!/alter table|insert into|update public|delete from/i.test(patch));
   await db.exec(patch);await db.exec(patch);await allow({fees:false});await as('manager',()=>denied(()=>save('husbandry_events','hidden-fees',{event_type:'cage_note',lac_fee_options:{rate:12}})));
  }finally{await db.close()}
 });

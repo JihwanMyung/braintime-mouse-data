@@ -35,14 +35,15 @@ function roomRackGrid(records,capturedAt){
   const cages=active('cages'),mice=active('mice'),lights=active('light_events');
   const locations=active('locations').sort((a,b)=>String(a.room_id||'').localeCompare(String(b.room_id||''))||String(a.rack_id||'').localeCompare(String(b.rack_id||''))||Number(a.row||0)-Number(b.row||0)||Number(a.column||0)-Number(b.column||0)||String(a.label||a.location_id).localeCompare(String(b.label||b.location_id),undefined,{numeric:true}));
   const asOf=snapshotDate(capturedAt)||'date unavailable';
-  const headers=['Room','Rack','Position','Position ID','Map row','Map column','Linked cage SIDs','Linked cage tags','Stock mouse SIDs in linked cages','Source-listed mouse SIDs','Source candidate mouse SIDs','Source tags / notes','Source-listed cage SIDs','Source candidate cage SIDs','Link evidence',`Date-applicable schedules (${asOf}, Taipei)`,'Undated schedule observations','Source position notes','Source snapshot date','Source'];
+  const headers=['Room','Rack','Position','Position ID','Map row','Map column','Linked cage SIDs','Linked cage tags','Stock mouse SIDs in linked cages','Source-listed mouse SIDs','Source candidate mouse SIDs','Source tags / notes','Source-listed cage SIDs','Source candidate cage SIDs','Link evidence',`Date-applicable schedules (${asOf}, Taipei)`,'Undated schedule observations','Source position notes','Source snapshot date','Source','Source current','Source last seen','Manager','Manager acronym'];
   return [headers,...locations.map(location=>{
     const rack=racks.get(location.rack_id)||{},roomId=location.room_id||rack.room_id,room=rooms.get(roomId)||{};
     const linked=cages.filter(c=>c.location_id===location.location_id),cageIds=new Set(linked.map(c=>c.cage_sid));
     const scoped=lights.flatMap(event=>{
       if(event.location_id===location.location_id)return [{event,scope:'position'}];
       if(event.cage_sid&&cageIds.has(event.cage_sid))return [{event,scope:'linked cage'}];
-      if(!event.location_id&&!event.cage_sid&&event.room_id&&event.room_id===roomId)return [{event,scope:'room'}];
+      if(!event.location_id&&!event.cage_sid&&event.rack_id===location.rack_id&&(!event.room_id||event.room_id===roomId))return [{event,scope:'rack'}];
+      if(!event.location_id&&!event.cage_sid&&!event.rack_id&&event.room_id&&event.room_id===roomId)return [{event,scope:'room'}];
       return [];
     });
     const applicable=scoped.filter(({event})=>scheduleApplies(event,capturedAt));
@@ -50,10 +51,10 @@ function roomRackGrid(records,capturedAt){
     return [room.name||room.label||roomId,rack.name||rack.label||location.rack_id,location.label||location.source_label,location.location_id,location.row,location.column,
       linked.map(c=>c.cage_sid),linked.map(c=>c.cage_tag).filter(Boolean),mice.filter(m=>m.state==='Stock'&&cageIds.has(m.cage_sid)).map(m=>m.mouse_sid),
       location.source_observed_mouse_sids,location.source_candidate_mouse_sids,list(location.source_observed_tags).join(', '),location.source_observed_cage_sids,location.source_candidate_cage_sids,
-      location.evidence_status||(linked.length?'explicit cage location link':'unlinked position'),
+      location.source_current===false?'withdrawn source position (historical evidence)':location.evidence_status||(linked.length?'explicit cage location link':'unlinked position'),
       applicable.map(({event,scope})=>scheduleText(event,scope)).join('\n')||'No date-applicable schedule recorded',
       undated.map(({event,scope})=>scheduleText(event,scope)).join('\n'),
-      [location.notes,location.source_block_text].filter(Boolean).join('\n'),location.source_snapshot_date,sourceOf(location)];
+      [location.notes,location.source_block_text].filter(Boolean).join('\n'),location.source_snapshot_date,sourceOf(location),location.source_current===false?'No':'Yes',location.source_last_seen_at||'',location.manager||location.source_manager_name||'',location.manager_acronym||location.source_manager_acronym||''];
   })];
 }
 export function projectRecords(records, capturedAt, status='Database snapshot; automatic sync pending setup') {
@@ -67,7 +68,7 @@ export function projectRecords(records, capturedAt, status='Database snapshot; a
   const source=r=>r.source_url||r.source_file||r.source_filename||'';
   return [
     [['Field','Value'],['Status',status],['Database snapshot at',capturedAt],['Direction','Database → this workbook'],['Editing','Edit records in the Colony app. Managed tabs are replaced on refresh.'],['Reference tabs','Copied Animal Sheet tabs are preserved reference snapshots.'],['Current animal rule','Stock mice, excluding app-archived records.'],['Identity','Unresolved historical IDs remain in the source archive, without invented links.'],['Light history','Recorded protocols, including uncertain source observations; does not prove biological entrainment.'],['Stock mice',mice.filter(m=>m.state==='Stock').length],['Active cages',cages.filter(c=>c.state==='Active').length]],
-    [['Mouse SID','Physical tag','Sex','Genotype','Born','Cage SID','Cage tag','Room','Rack','Position','Status','Recorded sire IDs','Candidate dam IDs','Protocol','Comment','Source'],...mice.filter(m=>m.state==='Stock').map(m=>{const c=cmap.get(m.cage_sid)||{};return [m.mouse_sid,m.physical_tag,m.sex,m.genotype,m.date_of_birth,m.cage_sid,c.cage_tag||m.cage_tag,...housing(c),m.status,m.sire_sids,m.dam_sids,m.protocol,m.comment,source(m)];})],
+    [['Mouse SID','Physical tag','Ear marking','Sex','Genotype','Born','Cage SID','Cage tag','Room','Rack','Position','Status','Recorded sire IDs','Candidate dam IDs','Protocol','Comment','Source'],...mice.filter(m=>m.state==='Stock').map(m=>{const c=cmap.get(m.cage_sid)||{};return [m.mouse_sid,m.physical_tag,m.ear_mark,m.sex,m.genotype,m.date_of_birth,m.cage_sid,c.cage_tag||m.cage_tag,...housing(c),m.status,m.sire_sids,m.dam_sids,m.protocol,m.comment,source(m)];})],
     [['Cage SID','Cage tag','State','Room','Rack','Position','Type','Stock mice','Mouse SIDs','Capacity','Comment','Source'],...cages.filter(c=>c.state==='Active'||mice.some(m=>m.state==='Stock'&&m.cage_sid===c.cage_sid)).map(c=>{const members=mice.filter(m=>m.state==='Stock'&&m.cage_sid===c.cage_sid);return[c.cage_sid,c.cage_tag,c.state,...housing(c),c.cage_type,members.length,members.map(m=>m.mouse_sid),c.capacity,c.comment,source(c)];})],
     [['Event ID','Cage SID','Position ID','Position','Start','End','Protocol','Cycle hours','Light hours','Lights on','Lights off','Transition minutes','Lux','Time zone','Evidence','Notes','Source'],...lights.sort((a,b)=>String(a.start_date||'').localeCompare(String(b.start_date||''))).map(e=>[e.event_id,e.cage_sid,e.location_id,locations.get(e.location_id)?.label,e.start_date,e.end_date,e.protocol,e.cycle_hours,e.light_hours,e.lights_on,e.lights_off,e.transition_minutes,e.intensity_lux,e.timezone,e.evidence_status,e.notes,source(e)])],
     roomRackGrid(records,capturedAt)

@@ -1,5 +1,5 @@
-import { getBreedingOptions } from './breeding-options.js?v=22';
-import { mouseLineAssignments } from './mouse-summary.js?v=22';
+import { getBreedingOptions } from './breeding-options.js?v=23';
+import { mouseLineAssignments } from './mouse-summary.js?v=23';
 import { validateGeneticProfile } from './genotype-schema.js';
 
 const text=value=>typeof value==='string'?value:'';
@@ -185,6 +185,56 @@ export function isMouseGenotyped(mouse,geneRows=[]) {
   return true;
 }
 
+const recordId=value=>typeof value==='string'?value.trim():typeof value==='number'&&Number.isFinite(value)?String(value):'';
+const sexKey=value=>/^(?:male|m)$/i.test(text(value).trim())?'male':/^(?:female|f)$/i.test(text(value).trim())?'female':null;
+function recordIndex(records,key,signature){const map=new Map();for(const record of rows(records)){if(!record||typeof record!=='object')continue;const id=recordId(record[key]);if(!id)continue;const value=signature(record),old=map.get(id);if(!old)map.set(id,{record,signature:value,ambiguous:false});else if(old.signature!==value)old.ambiguous=true;}return map;}
+/** Literal M/F-number suffixes in the animal column only. A strain token F or
+ * a note elsewhere in the block does not establish the animal's sex. */
+export function classifyAnimalSheetBreedingBlock(position={}){
+ const header=text(position.source_cell).match(/^([A-Z]+)(\d+)$/),evidence=[],unresolved=[],seen=new Set();if(!header)return {male:0,female:0,mixed:false,evidence,unresolved};
+ for(const line of text(position.source_block_text).split('\n')){
+  const cell=line.match(/^([A-Z]+)(\d+):\s*(.*)$/);if(!cell||cell[1]!==header[1]||Number(cell[2])<=Number(header[2])||Number(cell[2])>Number(header[2])+7)continue;
+  const raw=cell[3].trim(),comment=text(position.source_block_text).split('\n').find(x=>x.startsWith(cell[1]+cell[2]+' comment:'))||'',value=raw.replace(/^\([MF]\d+\)\s*/,'').replace(/[‘’′]/g,"'");if(!raw||raw.startsWith('='))continue;if(/\b(?:dead|died|ended|sacrificed|removed|euthanized|transfer(?:red)?)\b/i.test(raw+' '+comment)){unresolved.push({cell:cell[1]+cell[2],raw,reason:'lifecycle_annotation_requires_review'});continue;}
+  const match=value.match(/^(.*?)(?:\s+|-)([MF])\s*(\d+)$/),prefix=match?.[1]?.trim();
+  if(!match||!(compactResults(prefix)||keyFor(prefix)||/^(?:C57BL\/?6J?|WT)$/i.test(prefix||''))){if(/\b[MF]\s*\d+\b/.test(raw))unresolved.push({cell:cell[1]+cell[2],raw,reason:'ambiguous_animal_tag'});continue;}
+  const canonical=value.replace(/\s+/g,'');if(seen.has(canonical))continue;seen.add(canonical);evidence.push({cell:cell[1]+cell[2],raw,tag:raw,canonical_tag:canonical,source_animal_number:match[3],sex:match[2]==='M'?'Male':'Female',identity_confirmed:false});
+ }
+ const male=evidence.filter(x=>x.sex==='Male').length,female=evidence.filter(x=>x.sex==='Female').length;
+ return {male,female,mixed:male>0&&female>0,evidence,unresolved};
+}
+
+/** User's operational rule: known male and female currently sharing a cage
+ * are a breeding group. This is a housing estimate, not proof of fertility.
+ * Source-only positions remain distinct from individually linked animals. */
+export function estimateBreedingGroups(dataset,{asOf=localDate()}={}){
+ const day=calendarDay(asOf);if(day===null)throw new TypeError('Breeding estimate needs a valid YYYY-MM-DD date.');
+ const t=dataset?.tables||{},issues=[],cages=recordIndex(t.cages,'cage_sid',r=>JSON.stringify([archived(r),text(r.state).toLowerCase(),r.location_id,r.cage_tag])),mice=recordIndex(t.mice,'mouse_sid',r=>JSON.stringify([archived(r),r.state,sexKey(r.sex),recordId(r.cage_sid),r.date_of_birth,r.end_date])),byCage=new Map(),registered=[],seenMatings=new Set();
+ for(const [sid,entry] of mice){const m=entry.record;if(m.state!=='Stock'||archived(m))continue;const born=calendarDay(m.date_of_birth),end=calendarDay(m.end_date);if(entry.ambiguous||born!==null&&born>day||end!==null&&end<=day){issues.push({kind:'ambiguous_or_not_current_mouse',mouse_sid:sid});continue;}const cageSid=recordId(m.cage_sid),c=cages.get(cageSid);if(!cageSid||!c||c.ambiguous||archived(c.record)||/^(?:inactive|ended|closed)$/i.test(text(c.record.state))){issues.push({kind:'unresolved_current_cage',mouse_sid:sid,cage_sid:cageSid||null});continue;}if(!byCage.has(cageSid))byCage.set(cageSid,{male:[],female:[],unknown:[]});byCage.get(cageSid)[sexKey(m.sex)||'unknown'].push(sid);}
+ const groups=[...byCage].filter(([,x])=>x.male.length&&x.female.length).map(([sid,x])=>({group_id:'cage:'+sid,cage_sid:sid,cage_tag:text(cages.get(sid).record.cage_tag)||sid,location_id:recordId(cages.get(sid).record.location_id)||null,male_sids:x.male,female_sids:x.female,unknown_sids:x.unknown,registered_mating_sids:[],basis:'current_mixed_sex_cage',fertility_confirmed:false}));
+ for(const [index,m] of rows(t.matings).entries()){
+  if(!m||m.state!=='Active'||archived(m))continue;const setup=calendarDay(m.set_up_date),end=calendarDay(m.disbanded_date);if(setup!==null&&setup>day||end!==null&&end<=day)continue;const sid=recordId(m.mating_sid)||'anonymous:'+index;if(seenMatings.has(sid))continue;seenMatings.add(sid);
+  const signature=r=>JSON.stringify([r.state,archived(r),r.set_up_date,r.disbanded_date,...['male_sids','female_sids'].map(k=>[...new Set(rows(r[k]).map(recordId))].sort())]);
+  const ambiguous=recordId(m.mating_sid)&&rows(t.matings).some(other=>recordId(other?.mating_sid)===sid&&signature(other)!==signature(m));
+  const invalidDates=['set_up_date','disbanded_date'].some(k=>m[k]&&calendarDay(m[k])===null),members=new Set([...rows(m.male_sids),...rows(m.female_sids)].map(recordId));const matches=invalidDates||ambiguous?[]:groups.filter(g=>g.male_sids.some(x=>members.has(x))&&g.female_sids.some(x=>members.has(x)));
+  const unresolvedMembers=['male','female'].some(role=>!rows(m[role+'_sids']).length||rows(m[role+'_sids']).some(member=>!matches.some(g=>g[role+'_sids'].includes(recordId(member)))));
+  for(const g of matches)g.registered_mating_sids.push(sid);registered.push({mating_sid:sid,cage_sids:matches.map(g=>g.cage_sid),resolved:matches.length>0&&!unresolvedMembers,reason:ambiguous?'conflicting_registered_group':invalidDates?'invalid_mating_dates':!matches.length?'no_confirmed_current_mixed_sex_cage':unresolvedMembers?'some_registered_members_not_confirmed_current':'current_mixed_sex_members'});
+ }
+ const sourceGroups=[],sourceOverlaps=[],sourceConflicts=[],positionIndex=recordIndex(t.locations,'location_id',p=>JSON.stringify([archived(p),p.source_current,p.record_origin,p.source_snapshot_date,p.source_block_text]));
+ for(const [positionId,entry] of positionIndex){const pos=entry.record;if(entry.ambiguous){issues.push({kind:'conflicting_source_position',location_id:positionId});continue;}
+  if(!pos||archived(pos)||pos.source_current!==true||pos.record_origin!=='current_google_sheet_map'||pos.source_label_conflict)continue;const sourceDay=calendarDay(pos.source_snapshot_date);if(sourceDay===null||sourceDay>day)continue;
+  const observed=classifyAnimalSheetBreedingBlock(pos);if(!observed.mixed)continue;const locationId=recordId(pos.location_id);if(!locationId)continue;
+  const associated=[...cages].filter(([,c])=>!c.ambiguous&&!archived(c.record)&&recordId(c.record.location_id)===locationId&&byCage.has(recordId(c.record.cage_sid))).map(([id])=>id);
+  const item={group_id:'source:'+locationId,location_id:locationId,label:text(pos.label)||text(pos.source_label)||locationId,male_count:observed.male,female_count:observed.female,evidence:observed.evidence,unresolved:observed.unresolved,source_url:text(pos.source_url),source_cell:text(pos.source_cell),source_snapshot_date:pos.source_snapshot_date,source_age_days:day-sourceDay,basis:'current_animal_sheet_position',identity_confirmed:false,fertility_confirmed:false};
+  const labelMatches=groups.filter(g=>text(g.cage_tag).replace(/\s+/g,'')===text(pos.label||pos.source_label).replace(/\s+/g,'')),candidateMatches=groups.filter(g=>[...g.male_sids,...g.female_sids].some(sid=>observed.evidence.some(e=>e.source_animal_number===sid)));const overlaps=groups.filter(g=>g.location_id===locationId);if(overlaps.length){sourceOverlaps.push({...item,cage_sids:overlaps.map(g=>g.cage_sid)});continue;}
+  if(labelMatches.length||candidateMatches.length){sourceConflicts.push({...item,cage_sids:[...new Set([...labelMatches,...candidateMatches].map(g=>g.cage_sid))],reason:'source_label_or_animal_number_overlaps_current_cage_without_confirmed_location'});continue;}
+  if(associated.length){sourceConflicts.push({...item,cage_sids:associated,reason:'source_mixed_sex_disagrees_with_linked_current_residents'});continue;}
+  if(!sourceGroups.some(g=>g.location_id===locationId))sourceGroups.push(item);
+ }
+ const sourceTagPositions=new Map(),key=e=>Number(e.source_animal_number)>=1000?'number:'+e.source_animal_number:'tag:'+e.canonical_tag;for(const source of [...sourceGroups,...sourceOverlaps,...sourceConflicts])for(const e of source.evidence){const ids=sourceTagPositions.get(key(e))||new Set();ids.add(source.location_id);sourceTagPositions.set(key(e),ids);}for(let i=sourceGroups.length-1;i>=0;i--){const source=sourceGroups[i];if(source.evidence.some(e=>sourceTagPositions.get(key(e)).size>1)){sourceConflicts.push({...source,reason:'same_animal_tag_or_number_in_multiple_current_positions'});sourceGroups.splice(i,1);}}
+ const unresolvedRegisteredGroups=registered.filter(r=>!r.resolved),activeMouseSids=[...new Set(groups.flatMap(g=>[...g.male_sids,...g.female_sids,...g.unknown_sids]))];
+ return {asOf,groups,currentCageCount:groups.length,inferredOnlyGroups:groups.filter(g=>!g.registered_mating_sids.length).length,registeredCount:registered.length,resolvedRegisteredCount:registered.filter(r=>r.resolved).length,unresolvedRegisteredGroups,sourceGroups,sourceOverlaps,sourceConflicts,sourceEstimatedCount:sourceGroups.length,totalGroups:groups.length+sourceGroups.length,activeMouseSids,issues};
+}
+
 /** Counts always use one coherent cohort, independent of table filters. */
 export function summarizeBreeding(dataset,{asOf=localDate(),scope='living'}={}) {
   const day=calendarDay(asOf);
@@ -200,7 +250,11 @@ export function summarizeBreeding(dataset,{asOf=localDate(),scope='living'}={}) 
     activeGroups++;
     for(const id of [...rows(mating.male_sids),...rows(mating.female_sids)])activeIds.add(String(id));
   }
-  const summary={total:0,male:0,female:0,unknownSex:0,maleFertile:0,femaleFertile:0,unknownMaleAge:0,unknownFemaleAge:0,genotyped:0,activeGroups,scope,asOf};
+  const groupEstimate=estimateBreedingGroups(dataset,{asOf});
+  const summary={total:0,male:0,female:0,unknownSex:0,maleFertile:0,femaleFertile:0,unknownMaleAge:0,unknownFemaleAge:0,genotyped:0,activeGroups,scope,asOf,groupEstimate};
+  // A registry row alone does not establish current cohabitation. Source-only
+  // position counts cannot supply individual mouse identities to this cohort.
+  if(scope==='active'){activeIds.clear();for(const sid of groupEstimate.activeMouseSids)activeIds.add(sid);}
   const genes=new Map(),seen=new Set();
   for(const row of rows(tables.mouse_genes)) {
     if(!row||row.mouse_sid===undefined)continue;const sid=String(row.mouse_sid);
