@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import * as model from '../web/model.js';
 import { MOUSE_LINE_GROUPS, summarizeMice, mouseLineAssignments } from '../web/mouse-summary.js';
+import { summarizeLitters } from '../web/litter-summary.js';
 import { summarizeOverview } from '../web/overview-summary.js';
 import { summarizeCages } from '../web/cage-summary.js';
 import { CAGE_SUMMARY_GROUPS, getCageSummaryOptionsStatus } from '../web/cage-summary-options.js';
@@ -22,7 +23,7 @@ assert(!scheduleApplies({start_date:'2026-10-01',end_date:'2026-10-14',interval_
 let saved=model.createSyntheticDataset();saved.demo=true;
 const store={loadDataset:async()=>structuredClone(saved),saveDataset:async next=>{saved=structuredClone(next)},clearDataset:async()=>{saved=null},getCloudStatus:()=>({mode:'local',configured:false,signedIn:false})};
 const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
-const context={console,model,store,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
+const context={console,model,store,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeLitters,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
 vm.createContext(context);vm.runInContext(source,context);await new Promise(resolve=>setTimeout(resolve,10));
 vm.runInContext(`
 assert($('main').innerHTML.includes('Recently born'));
@@ -37,6 +38,16 @@ dataset.tables.cages.push({cage_sid:'OLD-C',state:'Inactive'});
 renderOverview();assert(overviewStatsHTML()===initialOverview,'historical records do not inflate current activity');assert(!$('main').innerHTML.includes('Historical animal only'),'recent births include living animals only');
 showHelp(false,false,false,true);assert($('help-dialog').innerHTML.includes('class="source-disclosure" open><summary>Current Overview counts'));$('help-dialog').close();
 dataset=overviewDataset;renderOverview();
+route='litters';detail=null;query='';filters={};renderTable();
+const litterHTML=litterSummaryHTML();
+for(const key of ['newborn','preWeaning','weaningAge'])assert(litterHTML.includes('data-litter-count="'+key+'"'));
+assert($('main').innerHTML.indexOf('litter-summary-heading')<$('main').innerHTML.indexOf('table-search'));
+assert(litterHTML.includes('recorded weaning &amp; separate cages'));
+filters={state:'Ended'};query='no matching litter';renderTable();assert(currentRows.length===0);assert($('main').innerHTML.includes(litterHTML),'mouse age totals do not change with litter filters');
+const litterDataset=dataset;dataset=structuredClone(dataset);dataset.tables.mice[0].date_of_birth=localDate();renderTable();assert(litterSummaryHTML()!==litterHTML,'age totals update from current mouse records');dataset=litterDataset;
+showHelp(false,false,false,false,true);assert($('help-dialog').innerHTML.includes('class="source-disclosure" open><summary>Litter ages &amp; weaning'));assert($('help-dialog').innerHTML.includes('includes the newborn group'));$('help-dialog').close();
+route='mice';query='';filters={};renderTable();assert(!$('main').innerHTML.includes('litter-summary-heading'));
+
 
 for(const name of ['mice','matings','litters','cages','family','archive','settings','housing','planner','cryo']){route=name;detail=null;render();assert($('main').innerHTML.length>50,name+' renders');}
 route='settings';detail=null;render();assert($('main').innerHTML.includes('email-link-request'));assert($('main').innerHTML.includes('Password sign-in'));

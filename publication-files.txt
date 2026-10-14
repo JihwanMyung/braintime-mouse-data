@@ -98,3 +98,5 @@ tests/cage-summary.test.mjs
 tests/cage-summary-options.test.mjs
 web/overview-summary.js
 tests/overview-summary.test.mjs
+web/litter-summary.js
+tests/litter-summary.test.mjs
