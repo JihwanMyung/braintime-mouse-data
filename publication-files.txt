@@ -218,3 +218,5 @@ docs/brainbot.md
 supabase/password-recovery.sql
 supabase/PASSWORD_RECOVERY.md
 supabase/tests/password-recovery.test.mjs
+web/site-migration.js
+tests/site-migration.test.mjs

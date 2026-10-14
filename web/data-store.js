@@ -1,8 +1,8 @@
 import {clearHistoryIndex} from './history-index.js';
-import { projectLocoboxExport } from './locobox-export.js?v=23';
+import { projectLocoboxExport } from './locobox-export.js?v=24';
 import { PUBLIC_CONFIG } from './config.js';
 import { validateManagerPermissions } from './permissions.js';
-import { normalizeDataset, ID_FIELDS } from './model.js?v=23';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=24';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
@@ -15,6 +15,7 @@ const MANAGED=Object.keys(ID_FIELDS);
 const clone=value=>structuredClone(value);
 let feeVisibility=null,feeVisibilityContext=null;
 let authGeneration=0;
+const guardedCacheWrites=new Set(),CACHE_WRITE_KEY='current-cloud-write';
 let versions=new Map(),baseline=null,synced=false,refreshPromise=null,statusMessage='',pendingEmail=null;
 const memory=new Map();
 function getStorage(kind,key){try{return globalThis[kind]?.getItem(key)??null;}catch{return memory.get(`${kind}:${key}`)??null;}}
@@ -27,7 +28,8 @@ function setMode(value){setStorage('localStorage',MODE_KEY,value);}
 function invalidate(){synced=false;baseline=null;versions=new Map();}
 function saveSession(s){setStorage('sessionStorage',SESSION_KEY,s?JSON.stringify(s):null);}
 function stable(value){if(Array.isArray(value))return `[${value.map(stable).join(',')}]`;if(value&&typeof value==='object')return `{${Object.keys(value).sort().filter(k=>value[k]!==undefined).map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')}}`;return JSON.stringify(value);}
-function beginAuthAction(){const generation=++authGeneration,config=stable(configuration());const current=()=>generation===authGeneration&&stable(configuration())===config;return {current,check(){if(!current())throw new Error('The account or cloud configuration changed. Start sign-in again.');}};}
+function advanceAuthGeneration(){authGeneration++;for(const cancel of guardedCacheWrites)cancel();return authGeneration;}
+function beginAuthAction(){const generation=advanceAuthGeneration(),config=stable(configuration());const current=()=>generation===authGeneration&&stable(configuration())===config;return {current,check(){if(!current())throw new Error('The account or cloud configuration changed. Start sign-in again.');}};}
 
 let dbPromise;
 function database(){
@@ -41,16 +43,45 @@ function database(){
   }).catch(e=>{dbPromise=null;throw e;});
   return dbPromise;
 }
-async function local(action,value){
+async function discardCloudWrite(id){
   const db=await database();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction('datasets','readwrite'),store=tx.objectStore('datasets'),request=store.get(CACHE_WRITE_KEY);
+    request.onsuccess=()=>{if(request.result?.id===id){store.delete('current');store.delete(CACHE_WRITE_KEY);}};
+    tx.oncomplete=()=>resolve();tx.onerror=tx.onabort=()=>reject(new Error('Unable to clear a cancelled cloud cache write.'));
+  });
+}
+function ownCacheWrite(mark){
+  const c=configuration(),s=session();
+  return !!s?.access_token&&mark.url===c?.url&&mark.colony===c?.colonyId&&mark.user===s.user?.id;
+}
+async function local(action,value,{check,cacheWrite}={}){
+  const db=await database();check?.();
   return new Promise((resolve,reject)=>{
     const tx=db.transaction('datasets',action==='get'?'readonly':'readwrite'),store=tx.objectStore('datasets');
     const request=action==='get'?store.get('current'):action==='delete'?store.delete('current'):store.put(clone(value),'current');
-    let result;
-    request.onsuccess=()=>{result=request.result;};
-    tx.oncomplete=()=>resolve(result??null);
-    tx.onerror=()=>reject(new Error('Local database write failed. No save was confirmed.'));
-    tx.onabort=()=>reject(new Error('Local database transaction was cancelled.'));
+    // The sidecar and dataset commit atomically. It never enters a dataset/export.
+    const markRequest=action==='get'?store.get(CACHE_WRITE_KEY):cacheWrite?store.put(cacheWrite,CACHE_WRITE_KEY):store.delete(CACHE_WRITE_KEY);
+    let result,mark,guardError;
+    const cancel=()=>{try{check?.();}catch(error){guardError=error;try{tx.abort();}catch{/* A committed write is removed by its own ID below. */}}};
+    if(check)guardedCacheWrites.add(cancel);
+    request.onsuccess=()=>{result=request.result;cancel();};
+    markRequest.onsuccess=()=>{if(action==='get')mark=markRequest.result;cancel();};
+    tx.oncomplete=()=>{
+      guardedCacheWrites.delete(cancel);
+      try{
+        check?.();if(guardError)throw guardError;
+        if(action==='get'&&mark&&(!ownCacheWrite(mark)||mark.id!==readJSON('localStorage',CLOUD_CACHE_KEY)?.write_id)){
+          // A matching but not-yet-published write may still be finishing. Hide it.
+          // A previous account's write can be discarded by ID without touching a newer cache.
+          if(!ownCacheWrite(mark)&&typeof mark.id==='string')void discardCloudWrite(mark.id).then(()=>resolve(null),()=>resolve(null));
+          else resolve(null);
+        }else resolve(result??null);
+      }
+      catch(error){if(cacheWrite)void discardCloudWrite(cacheWrite.id).then(()=>reject(error),()=>reject(error));else reject(error);}
+    };
+    tx.onerror=()=>{guardedCacheWrites.delete(cancel);reject(guardError||new Error('Local database write failed. No save was confirmed.'));};
+    tx.onabort=()=>{guardedCacheWrites.delete(cancel);reject(guardError||new Error('Local database transaction was cancelled.'));};
   });
 }
 export async function loadDataset(){
@@ -83,7 +114,7 @@ export function configureCloud({url,anonKey,colonyId}){
   if(u.protocol!=='https:'&&!(u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname)))throw new Error('Supabase URL must use HTTPS.');
   if(u.username||u.password||u.search||u.hash||u.pathname!=='/')throw new Error('Enter the Supabase project URL without credentials or a path.');
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(colonyId??''))throw new Error('A valid colony UUID is required.');
-  const config={url:u.origin,anonKey:publicKey(anonKey.trim()),colonyId};authGeneration++;
+  const config={url:u.origin,anonKey:publicKey(anonKey.trim()),colonyId};advanceAuthGeneration();
   setStorage('localStorage',DEMO_KEY,null);setStorage('localStorage',CONFIG_KEY,JSON.stringify(config));saveSession(null);pendingEmail=null;setMode('local');invalidate();statusMessage='Cloud configured. Sign in to connect.';
 }
 export function getCloudStatus(){
@@ -123,16 +154,31 @@ async function request(route,{method='GET',body}={}){
   if(session()?.passwordRecovery)throw new Error('Finish resetting your password before opening colony data.');
   const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
   const token=await accessToken();
-  const response=await fetch(`${c.url}/rest/v1/${route}`,{method,headers:{apikey:c.anonKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json',...(method==='POST'?{Prefer:'return=representation'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
+  const response=await fetch(`${c.url}/rest/v1/${route}`,{method,cache:'no-store',redirect:'error',headers:{apikey:c.anonKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json',...(method==='POST'?{Prefer:'return=representation'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
   const result=await responseJSON(response);if(!response.ok)throw apiError(response,result);return result;
 }
-async function membership(){
+async function membership(action){
   const c=configuration(),s=session();
   if(!s?.user?.id)throw new Error('The signed-in user is unavailable. Sign in again.');
   const rows=await request(`memberships?select=role,active,export_level,permissions&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
   if(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','manager','editor','viewer'].includes(rows[0].role))throw new Error('This account is not an active member of the configured colony.');
   if(configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==s.user.id)throw new Error('The cloud account or colony changed. Sign in again.');
+  action?.check();
   saveSession({...session(),role:rows[0].role,permissions:rows[0].permissions||{},setupRequired:false,exportLevel:rows[0].role==='owner'?'max':rows[0].export_level||'low'});return rows[0].role;
+}
+// A live, data-free access check for the internal tools portal. Cached roles
+// alone never unlock the portal; no animal records or roster are requested.
+export async function verifyCloudMembership(){
+  const initial=session(),c=configuration();
+  if(!c||!initial?.user?.id)throw new Error('Sign in to open lab tools.');
+  if(initial.passwordRecovery)throw new Error('Finish resetting your password before opening lab tools.');
+  if(initial.setupRequired||initial.role==='pending')throw new Error('Finish your account setup before opening lab tools.');
+  const action=beginAuthAction(),token=await accessToken();action.check();
+  const response=await fetch(`${c.url}/auth/v1/user`,{headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`},cache:'no-store',redirect:'error'});
+  const user=await responseJSON(response);action.check();
+  if(!response.ok||user?.id!==initial.user.id||user.is_anonymous||!user.email_confirmed_at)throw new Error('Your sign-in could not be verified. Sign in again.');
+  await membership(action);action.check();
+  return getCloudStatus();
 }
 async function establishMembershipOrSetup(action){
   const c=configuration(),s=session();
@@ -236,7 +282,7 @@ export async function verifyEmailCode(email,token){
   return getCloudStatus();
 }
 export async function signOut(){
-  authGeneration++;const s=session(),wasCloud=mode()==='cloud'||Boolean(readJSON('localStorage',CLOUD_CACHE_KEY));saveSession(null);pendingEmail=null;setMode('local');invalidate();feeVisibility=null;feeVisibilityContext=null;if(wasCloud){await local('delete');setStorage('localStorage',CLOUD_CACHE_KEY,null);await clearHistoryIndex();}statusMessage=wasCloud?'Signed out. Shared data cleared from this device.':'Signed out. Local data is retained.';
+  advanceAuthGeneration();const s=session(),wasCloud=mode()==='cloud'||Boolean(readJSON('localStorage',CLOUD_CACHE_KEY));saveSession(null);pendingEmail=null;setMode('local');invalidate();feeVisibility=null;feeVisibilityContext=null;if(wasCloud){await local('delete');setStorage('localStorage',CLOUD_CACHE_KEY,null);await clearHistoryIndex();}statusMessage=wasCloud?'Signed out. Shared data cleared from this device.':'Signed out. Local data is retained.';
   if(s?.access_token)try{await authRequest('logout',null,s.access_token);}catch{/* Local credentials are already removed even if the server is unreachable. */}
 }
 
@@ -301,18 +347,19 @@ function checkedManagedLocation(row,colonyId){
  return row;
 }
 async function refreshFeeVisibility({notify=true}={}){
- const context=exportContext(),c=configuration();if(!c||!session()?.access_token)throw new Error('Sign in before loading shared fee visibility.');
- const value=checkedFeeVisibility(await request('rpc/get_lac_fee_visibility',{method:'POST',body:{p_colony_id:c.colonyId}}));checkExportContext(context);
+ const generation=authGeneration,context=exportContext(),c=configuration();if(!c||!session()?.access_token)throw new Error('Sign in before loading shared fee visibility.');
+ const check=()=>{if(generation!==authGeneration)throw new Error('The account or colony changed during loading. Open the shared colony again.');checkExportContext(context);};
+ const value=checkedFeeVisibility(await request('rpc/get_lac_fee_visibility',{method:'POST',body:{p_colony_id:c.colonyId}}));check();
  const previousPolicy=feeVisibility,changed=feeVisibilityContext!==context||!feeVisibility||feeVisibility.estimate!==value.estimate||feeVisibility.actual!==value.actual;
  feeVisibility=value;feeVisibilityContext=context;
  // A projected baseline cannot become a full replacement when access expands.
  // Reload the previously withheld fields before allowing another cloud edit.
  if(previousPolicy?.source_archive_allowed===false&&value.source_archive_allowed)invalidate();
  if(!value.source_archive_allowed){
-  const cached=await local('get'),mark=readJSON('localStorage',CLOUD_CACHE_KEY),validCache=currentRestrictedCache(cached,mark,value)&&mark.url===c.url&&mark.colony===c.colonyId&&mark.user===session()?.user?.id;
+  const cached=await local('get',undefined,{check});check();const mark=readJSON('localStorage',CLOUD_CACHE_KEY),validCache=currentRestrictedCache(cached,mark,value)&&mark.url===c.url&&mark.colony===c.colonyId&&mark.user===session()?.user?.id;
   if(changed||!validCache){
-  invalidate();if(!validCache)await local('delete');
-  await clearHistoryIndex();checkExportContext(context);
+  check();invalidate();if(!validCache)await local('delete',undefined,{check});check();
+  await clearHistoryIndex({check,registerCancel:cancel=>{guardedCacheWrites.add(cancel);return()=>guardedCacheWrites.delete(cancel);}});check();
   if(notify&&globalThis.dispatchEvent&&globalThis.CustomEvent)globalThis.dispatchEvent(new CustomEvent('lac-fee-visibility-changed',{detail:{estimate:value.estimate,actual:value.actual,source_archive_allowed:false}}));
   }
  }
@@ -328,7 +375,7 @@ export async function saveLacFeeVisibility({version,levels}){
  const value=checkedFeeVisibility(await request('rpc/save_lac_fee_visibility',{method:'POST',body:{p_colony_id:c.colonyId,p_version:version,p_levels:levels}}));checkExportContext(context);feeVisibility=value;feeVisibilityContext=context;return clone(value);
 }
 async function allRecords(){
-  const context=exportContext(),c=configuration(),policy=await refreshFeeVisibility({notify:false});const result=[];
+  const generation=authGeneration,context=exportContext(),c=configuration(),policy=await refreshFeeVisibility({notify:false});const result=[];
   try{
   // Archive chunks have much larger payloads than individual mice. Keep those
   // responses bounded instead of putting hundreds of chunks on a 1,000-row page.
@@ -354,7 +401,12 @@ async function allRecords(){
   }
   checkExportContext(context);const finalPolicy=await refreshFeeVisibility({notify:false});if(!sameFeeVisibility(finalPolicy,policy))throw new Error('Fee visibility changed while loading. Pull again.');
   result.fee_visibility=policy;return result;
-  }catch(error){invalidate();if(!policy.source_archive_allowed)await local('delete');throw error;}
+  }catch(error){
+    // An older read must not clear a workspace created by a later sign-in.
+    const check=()=>{if(generation!==authGeneration)throw error;checkExportContext(context);};
+    try{check();invalidate();if(!policy.source_archive_allowed)await local('delete',undefined,{check});}catch{/* The newer account owns its cache. */}
+    throw error;
+  }
 }
 const recordKey=r=>`${r.entity_type}:${r.entity_id}`;
 async function entityRecords(dataset){
@@ -384,12 +436,19 @@ async function assemble(rows){
   }
   if(partial)data.fee_visibility=rows.fee_visibility;return normalizeDataset(data);
 }
-function rememberCloudCache(){const c=configuration();setStorage('localStorage',CLOUD_CACHE_KEY,JSON.stringify({url:c.url,colony:c.colonyId,user:session()?.user?.id,estimate:feeVisibility?.estimate,actual:feeVisibility?.actual,source_projection_version:SOURCE_PROJECTION_VERSION}));}
+function rememberCloudCache(writeId){const c=configuration();setStorage('localStorage',CLOUD_CACHE_KEY,JSON.stringify({url:c.url,colony:c.colonyId,user:session()?.user?.id,estimate:feeVisibility?.estimate,actual:feeVisibility?.actual,source_projection_version:SOURCE_PROJECTION_VERSION,...(writeId?{write_id:writeId}:{})}));}
 function remember(rows){versions=new Map(rows.map(r=>[recordKey(r),r.version]));baseline=new Map(rows.map(r=>[recordKey(r),r]));synced=true;}
 export async function pullFromCloud(){
-  await membership();
-  const rows=await allRecords();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
-  const data=await assemble(rows);await local('put',data);rememberCloudCache();remember(rows);setStorage('localStorage',DEMO_KEY,null);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
+  const generation=authGeneration,context=exportContext(),config=stable(configuration());
+  const check=()=>{if(generation!==authGeneration||config!==stable(configuration())||context!==exportContext())throw new Error('The account or colony changed during loading. Open the shared colony again.');};
+  await membership({check});check();
+  const rows=await allRecords();check();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
+  const data=await assemble(rows);check();
+  const c=configuration(),cacheWrite={id:crypto.randomUUID(),url:c.url,colony:c.colonyId,user:session().user.id};
+  try{
+    await local('put',data,{check,cacheWrite});check();
+    rememberCloudCache(cacheWrite.id);remember(rows);setStorage('localStorage',DEMO_KEY,null);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
+  }catch(error){await discardCloudWrite(cacheWrite.id).catch(()=>{});throw error;}
 }
 async function writeAtomic(pending){
   if(!pending.length)return [];

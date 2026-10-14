@@ -1,3 +1,4 @@
+import { isLegacySite, migrationNoticeHTML, movedAccountHTML } from '../web/site-migration.js';
 import { projectCageHistory, getCageHistoryDates } from '../web/cage-history.js';
 import { projectAnimalSheet } from '../web/animal-sheet-export.js';
 import { compareRooms, sortRooms } from '../web/room-order.js';
@@ -40,7 +41,7 @@ let saved=model.createSyntheticDataset();saved.demo=true;
 const store={loadDataset:async()=>structuredClone(saved),saveDataset:async next=>{saved=structuredClone(next)},clearDataset:async()=>{saved=null},getCloudStatus:()=>({mode:'local',configured:false,signedIn:false})};
 const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
 const labelRenders=[],cageSheetRenders=[],brainbotRenders=[];
-const context={console,brainbotRenders,renderBrainbot:async(container,hooks)=>{brainbotRenders.push({container,hooks});},brainbotHelpHTML:()=>'Brainbot',projectCageHistory,getCageHistoryDates,projectAnimalSheet,compareRooms,sortRooms,cageSheetHelpHTML,cageSheetRenders,renderCageSheet:(container,sheetDataset,hooks)=>{cageSheetRenders.push({container,sheetDataset,hooks});container.innerHTML="Animal Sheet cage view";},clearCageSheetDrafts:()=>{},hasCageSheetDrafts:()=>false,labelRenders,renderCageLabelEditor:(container,labelDataset,hooks)=>{labelRenders.push({container,labelDataset,hooks});container.innerHTML='Cage label editor';},renderLocobox,locoboxHelpHTML,renderIacuc,iacucHelpHTML,protocolsForEntity,renderAnimalSheetImport,animalSheetImportHelpHTML,lightClock,renderLacFees,lacFeeHelpHTML,userAcronymHelpHTML,setLabUserDirectory,normalizeManagerPermissions,renderLabMembers:async()=>{},renderAccountAcronym:async()=>{},renderAccountSetup:async()=>{},model,store,renderExperiments,experimentHelpHTML,experimentsForMouse,samplesForMouse,renderFamilyExplorer,familyHelpHTML,buildFamilyGenotypes,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeLitters,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
+const context={console,isLegacySite,migrationNoticeHTML,movedAccountHTML,brainbotRenders,renderBrainbot:async(container,hooks)=>{brainbotRenders.push({container,hooks});},brainbotHelpHTML:()=>'Brainbot',projectCageHistory,getCageHistoryDates,projectAnimalSheet,compareRooms,sortRooms,cageSheetHelpHTML,cageSheetRenders,renderCageSheet:(container,sheetDataset,hooks)=>{cageSheetRenders.push({container,sheetDataset,hooks});container.innerHTML="Animal Sheet cage view";},clearCageSheetDrafts:()=>{},hasCageSheetDrafts:()=>false,labelRenders,renderCageLabelEditor:(container,labelDataset,hooks)=>{labelRenders.push({container,labelDataset,hooks});container.innerHTML='Cage label editor';},renderLocobox,locoboxHelpHTML,renderIacuc,iacucHelpHTML,protocolsForEntity,renderAnimalSheetImport,animalSheetImportHelpHTML,lightClock,renderLacFees,lacFeeHelpHTML,userAcronymHelpHTML,setLabUserDirectory,normalizeManagerPermissions,renderLabMembers:async()=>{},renderAccountAcronym:async()=>{},renderAccountSetup:async()=>{},model,store,renderExperiments,experimentHelpHTML,experimentsForMouse,samplesForMouse,renderFamilyExplorer,familyHelpHTML,buildFamilyGenotypes,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeLitters,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
 vm.createContext(context);vm.runInContext(source,context);await new Promise(resolve=>setTimeout(resolve,10));
 vm.runInContext(`
 assert($('main').innerHTML.includes('Recently born'));
@@ -275,6 +276,40 @@ let passwordChanges=0;store.completePasswordRecovery=async()=>{passwordChanges++
 element('recovery-password').value='synthetic-password';element('recovery-confirm').value='different';submitHandler(submitEvent('password-recovery'));assert.equal(passwordChanges,0);assert.equal(element('password-recovery-status').textContent,'Passwords do not match.');
 element('recovery-confirm').value='synthetic-password';submitHandler(submitEvent('password-recovery'));await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(passwordChanges,1);assert(element('password-recovery-status').textContent.includes('expired'));assert.equal(element('recovery-password').value,'');assert.equal(element('recovery-confirm').value,'');assert(!submitButton.disabled);
+
+// The previous site retains local records and old callbacks while new account
+// entry points use the fixed new address.
+let legacySignedIn=false,legacyPulls=0,legacyClears=0;const legacySignIns=[];
+const legacyDataset=model.createSyntheticDataset();
+const legacyStore={getCloudStatus:()=>({mode:'local',configured:true,signedIn:legacySignedIn,role:legacySignedIn?'owner':null}),consumeAuthCallback:async()=>null,loadDataset:async()=>legacyDataset,signIn:async(email,password)=>{legacySignIns.push([email,password]);legacySignedIn=true;},pullFromCloud:async()=>{legacyPulls++;throw Error('Local migration must not replace records');},clearDataset:async()=>{legacyClears++;},getLabUserDirectory:async()=>({users:[]})};
+const legacyLocation=new URL('https://jihwanmyung.github.io/braintime-mouse-data/?next=https://untrusted.example/#settings');
+const legacyContext={...context,store:legacyStore,location:legacyLocation};
+vm.createContext(legacyContext);vm.runInContext(source,legacyContext);await new Promise(resolve=>setTimeout(resolve,10));
+assert.equal(element('site-migration-notice').hidden,false);
+assert(element('site-migration-notice').innerHTML.includes('https://braintimelab.github.io/mouse-data/'));
+assert(!element('site-migration-notice').innerHTML.includes('untrusted.example'));
+assert(element('main').innerHTML.includes('id="legacy-local-login"'));
+for(const id of ['cloud-login','password-reset-request','email-link-request','first-login-request','user-management'])assert(!element('main').innerHTML.includes('id="'+id+'"'));
+assert(element('main').innerHTML.includes('Export &amp; backup'));
+const legacySubmit=documentListeners.get('submit');
+legacySubmit(submitEvent('password-reset-request'));assert.equal(legacySignIns.length,0);
+element('legacy-login-email').value='member@example.org';element('legacy-login-password').value='synthetic-legacy-password';
+legacySubmit(submitEvent('legacy-local-login'));await new Promise(resolve=>setTimeout(resolve,10));
+assert.deepEqual(legacySignIns,[['member@example.org','synthetic-legacy-password']]);
+assert.equal(element('legacy-login-password').value,'');assert.equal(legacyPulls,0);assert.equal(legacyClears,0);
+assert.equal(vm.runInContext('dataset.tables.mice[0].mouse_sid',legacyContext),legacyDataset.tables.mice[0].mouse_sid);
+assert(!element('main').innerHTML.includes('id="user-management"'));
+
+const legacyRecoveryCalls=[];let legacyRecoveryComplete=false;
+const legacyRecoveryStore={getCloudStatus:()=>({mode:'local',configured:true,signedIn:!legacyRecoveryComplete,role:'owner',passwordRecovery:!legacyRecoveryComplete}),consumeAuthCallback:async()=>({signedIn:true,passwordRecovery:true,needsPasswordSetup:true}),loadDataset:async()=>null,completePasswordRecovery:async password=>{legacyRecoveryCalls.push(password);legacyRecoveryComplete=true;}};
+const legacyRecoveryContext={...context,store:legacyRecoveryStore,location:new URL('https://jihwanmyung.github.io/braintime-mouse-data/#access_token=PRIVATE_TOKEN&type=recovery')};
+vm.createContext(legacyRecoveryContext);vm.runInContext(source,legacyRecoveryContext);await new Promise(resolve=>setTimeout(resolve,10));
+assert(element('main').innerHTML.includes('id="password-recovery"'));assert(element('site-migration-notice').innerHTML.includes('Finish this password reset here'));assert(!element('site-migration-notice').innerHTML.includes('PRIVATE_TOKEN'));
+element('recovery-password').value='synthetic-new-password';element('recovery-confirm').value='synthetic-new-password';
+documentListeners.get('submit')(submitEvent('password-recovery'));await new Promise(resolve=>setTimeout(resolve,10));
+assert.deepEqual(legacyRecoveryCalls,['synthetic-new-password']);
+assert(!element('main').innerHTML.includes('id="cloud-login"'));assert(element('main').innerHTML.includes('https://braintimelab.github.io/mouse-data/'));
+assert.equal(element('recovery-password').value,'');
 
 const shell=fs.readFileSync(new URL('../web/sw.js',import.meta.url),'utf8');
 assert(shell.includes('!allowed.has(event.request.url)'),'service worker exact shell allowlist');

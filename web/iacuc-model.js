@@ -1,5 +1,5 @@
 /* Protocol records and auditable animal counts. No laboratory data is bundled. */
-import { sampleMouseSids } from './experiment-model.js?v=23';
+import { sampleMouseSids } from './experiment-model.js?v=24';
 const list=v=>Array.isArray(v)?v:[];
 const live=r=>r&&!r.app_archived_at&&r.archived!==true;
 const date=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(Date.parse(v))&&new Date(v+'T00:00:00Z').toISOString().slice(0,10)===v;

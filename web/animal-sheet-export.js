@@ -1,8 +1,8 @@
-import {compareRooms} from './room-order.js?v=23';
-import { lightClock } from './husbandry.js?v=23';
-import {mouseManager,cageManager} from './model.js?v=23';
-import {createWorkbookXlsx,columnName} from './workbook-export.js?v=23';
-export {createWorkbookXlsx} from './workbook-export.js?v=23';
+import {compareRooms} from './room-order.js?v=24';
+import { lightClock } from './husbandry.js?v=24';
+import {mouseManager,cageManager} from './model.js?v=24';
+import {createWorkbookXlsx,columnName} from './workbook-export.js?v=24';
+export {createWorkbookXlsx} from './workbook-export.js?v=24';
 
 const present=v=>v!==null&&v!==undefined&&v!=='';
 const id=v=>present(v)?String(v):'';

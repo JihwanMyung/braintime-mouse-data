@@ -9,11 +9,20 @@ import {normalizeDataset,createSyntheticDataset,validateRecord,ID_FIELDS} from '
 import {encodeArchive,decodeArchive,canonicalStringify,MAX_ARCHIVE_PAYLOAD_BYTES,MAX_RPC_BYTES,utf8Size,isArchiveChunk,partitionChanges} from '../web/archive-format.js';
 import * as store from '../web/data-store.js';
 import {buildCryoActivity} from '../web/cryopreservation-model.js';
+import {saveHistoryIndex,loadHistoryIndex} from '../web/history-index.js';
 
 class Storage { values=new Map();getItem(k){return this.values.get(k)??null;}setItem(k,v){this.values.set(k,String(v));}removeItem(k){this.values.delete(k);}clear(){this.values.clear();} }
 globalThis.localStorage=new Storage();globalThis.sessionStorage=new Storage();
 const idbData=new Map();
-const db={close(){},objectStoreNames:{contains:()=>true},transaction(){const tx={};tx.objectStore=()=>({get:k=>run(()=>idbData.get(k)),put:(v,k)=>run(()=>{idbData.set(k,structuredClone(v));return k;}),delete:k=>run(()=>idbData.delete(k))});function run(fn){const request={};queueMicrotask(()=>{request.result=structuredClone(fn());request.onsuccess?.();tx.oncomplete?.();});return request;}return tx;}};
+const idbHooks={beforeCommit:null,afterCommit:null,afterRead:null},deleted=Symbol('deleted');
+const db={close(){},objectStoreNames:{contains:()=>true},transaction(){
+ const changes=new Map(),tx={};let state='active',pending=0,scheduled=false;
+ tx.abort=()=>{if(state!=='active')throw Error('Transaction already finished');state='aborted';queueMicrotask(()=>tx.onabort?.());};
+ tx.objectStore=()=>({get:k=>run(()=>changes.has(k)?changes.get(k)===deleted?undefined:changes.get(k):idbData.get(k)),put:(v,k)=>run(()=>{changes.set(k,structuredClone(v));return k;}),delete:k=>run(()=>{changes.set(k,deleted);})});
+ function run(fn){const request={};pending++;queueMicrotask(()=>{if(state!=='active')return;request.result=structuredClone(fn());request.onsuccess?.();pending--;finish();});return request;}
+ function finish(){if(pending||scheduled||state!=='active')return;scheduled=true;queueMicrotask(async()=>{scheduled=false;if(pending||state!=='active')return;if(changes.size&&idbHooks.beforeCommit)await idbHooks.beforeCommit(changes);if(state!=='active')return;for(const [k,v]of changes)v===deleted?idbData.delete(k):idbData.set(k,v);state='finished';if(changes.size&&idbHooks.afterCommit)await idbHooks.afterCommit(changes);if(!changes.size&&idbHooks.afterRead)await idbHooks.afterRead();tx.oncomplete?.();});}
+ return tx;
+}};
 globalThis.indexedDB={open(){const request={};queueMicrotask(()=>{request.result=db;request.onsuccess?.();});return request;}};
 const cid='11111111-1111-4111-8111-111111111111',uid='22222222-2222-4222-8222-222222222222';
 const jwt=role=>`x.${btoa(JSON.stringify({role}))}.x`;
@@ -34,7 +43,7 @@ function installServer(){
     server.calls.push({url,options});const u=new URL(url);const body=options.body?JSON.parse(options.body):null;
     if(u.pathname.endsWith('/token')){
       if(u.searchParams.get('grant_type')==='refresh_token')server.refreshes++;
-      return response({access_token:'access',refresh_token:'refresh',expires_in:server.expires,user:{id:uid,email:'demo@example.test'}});
+      return response({access_token:'access',refresh_token:'refresh',expires_in:server.expires,user:{id:server.tokenUser??uid,email:'demo@example.test'}});
     }
     if(u.pathname.endsWith('/functions/v1/username-sign-in'))return response(server.recoveryReply??{accepted:true,message:'Request accepted'},server.recoveryStatus??202);
     if(u.pathname.endsWith('/otp'))return server.otpDenied?response({message:'Email request rate limit exceeded'},429):response({});
@@ -709,6 +718,70 @@ test('cloud cache is never reused across account contexts and fee policy changes
  await connected();server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};server.feeRows=[];
  server.feeReads=0;server.onFeeRead=n=>{if(n===2)server.feePolicy={...server.feePolicy,version:2,estimate:false};};await assert.rejects(store.pullFromCloud(),/visibility changed/i);assert.equal(store.getCloudStatus().readyForEdits,false);assert.equal(idbData.get('current'),undefined);
  server.onFeeRead=null;server.feePolicy={version:3,owner:false,estimate:true,actual:true,source_archive_allowed:true};await store.pullFromCloud();const s=JSON.parse(sessionStorage.getItem('mouse-colony.session.v1'));s.user.id='ffffffff-ffff-4fff-8fff-ffffffffffff';sessionStorage.setItem('mouse-colony.session.v1',JSON.stringify(s));assert.equal(await store.loadDataset(),null);assert.equal(idbData.get('current'),undefined);
+});
+test('sign-out during archive hashing prevents a first cloud pull from restoring private data or cloud mode',async()=>{
+ const data=createSyntheticDataset();data.tables.private_history=[{text:'OLD-ACCOUNT-PRIVATE'}];await connected(data);await store.clearDataset();
+ const digest=crypto.subtle.digest;let release,started;const waiting=new Promise(resolve=>started=resolve),gate=new Promise(resolve=>release=resolve);
+ crypto.subtle.digest=async function(...args){started();await gate;return digest.apply(this,args);};
+ try{
+  const pull=store.pullFromCloud(),rejected=assert.rejects(pull,/account or colony changed/);await waiting;await store.signOut();release();await rejected;
+  assert.equal(store.getCloudStatus().signedIn,false);assert.equal(store.getCloudStatus().mode,'local');assert.equal(idbData.get('current'),undefined);assert.equal(idbData.get('current-cloud-write'),undefined);assert.equal(await store.loadDataset(),null);
+ }finally{release();crypto.subtle.digest=digest;}
+});
+test('an account change aborts an uncommitted cloud-cache transaction without deleting the next account workspace',async()=>{
+ await connected();await store.clearDataset();let release,started,intercepted=false;const waiting=new Promise(resolve=>started=resolve),gate=new Promise(resolve=>release=resolve);
+ idbHooks.beforeCommit=async changes=>{if(!intercepted&&changes.get('current-cloud-write')?.id){intercepted=true;started();await gate;}};
+ try{
+  const pull=store.pullFromCloud(),rejected=assert.rejects(pull,/account or colony changed/);await waiting;await store.signOut();
+  server.tokenUser='33333333-3333-4333-8333-333333333333';await store.signIn('other@example.test','other-password');
+  const newer=createSyntheticDataset();newer.tables.mice[0].comment='NEW-ACCOUNT-WORKSPACE';await store.saveDataset(newer,{localOnly:true});release();await rejected;
+  assert.equal(idbData.get('current').tables.mice[0].comment,'NEW-ACCOUNT-WORKSPACE');assert.equal(idbData.get('current-cloud-write'),undefined);assert.equal(store.getCloudStatus().signedIn,true);assert.equal(store.getCloudStatus().mode,'local');
+ }finally{release();idbHooks.beforeCommit=null;}
+});
+test('a committed but unpublished cloud write is unreadable and stale cleanup preserves a newer workspace',async()=>{
+ await connected();await store.clearDataset();let release,started,intercepted=false;const waiting=new Promise(resolve=>started=resolve),gate=new Promise(resolve=>release=resolve);
+ idbHooks.afterCommit=async changes=>{if(!intercepted&&changes.get('current-cloud-write')?.id){intercepted=true;started();await gate;}};
+ try{
+  const pull=store.pullFromCloud(),rejected=assert.rejects(pull,/account or colony changed/);await waiting;
+  assert(idbData.get('current-cloud-write')?.id);assert.equal(await store.loadDataset(),null,'an unpublished sidecar cannot be treated as local user data');
+  await store.signOut();server.tokenUser='33333333-3333-4333-8333-333333333333';await store.signIn('other@example.test','other-password');
+  const newer=createSyntheticDataset();newer.tables.mice[0].comment='NEWER-WRITE-MUST-SURVIVE';await store.saveDataset(newer,{localOnly:true});release();await rejected;
+  assert.equal((await store.loadDataset()).tables.mice[0].comment,'NEWER-WRITE-MUST-SURVIVE');assert.equal(store.getCloudStatus().mode,'local');assert.equal(idbData.get('current-cloud-write'),undefined);
+ }finally{release();idbHooks.afterCommit=null;}
+});
+test('a stale restricted-data response cannot clear the next account workspace on its error path',async()=>{
+ await connected();await store.clearDataset();server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};
+ const originalFetch=globalThis.fetch;let release,started;const waiting=new Promise(resolve=>started=resolve),gate=new Promise(resolve=>release=resolve);
+ globalThis.fetch=async(url,options)=>{if(new URL(url).pathname.endsWith('/rpc/get_managed_locations')){started();await gate;}return originalFetch(url,options);};
+ try{
+  const pull=store.pullFromCloud(),rejected=assert.rejects(pull,/account or colony changed/);await waiting;await store.signOut();
+  server.tokenUser='33333333-3333-4333-8333-333333333333';await store.signIn('other@example.test','other-password');
+  const newer=createSyntheticDataset();newer.tables.mice[0].comment='KEEP-AFTER-OLD-REQUEST-FAILS';await store.saveDataset(newer,{localOnly:true});release();await rejected;
+  assert.equal(idbData.get('current').tables.mice[0].comment,'KEEP-AFTER-OLD-REQUEST-FAILS');assert.equal(store.getCloudStatus().signedIn,true);assert.equal(store.getCloudStatus().mode,'local');
+ }finally{release();globalThis.fetch=originalFetch;}
+});
+test('a restricted-policy cache read cannot delete a later account workspace',async()=>{
+ await connected();await store.clearDataset();server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};
+ let release,started,intercepted=false;const waiting=new Promise(resolve=>started=resolve),gate=new Promise(resolve=>release=resolve);
+ idbHooks.afterRead=async()=>{if(!intercepted){intercepted=true;started();await gate;}};
+ try{
+  const pull=store.pullFromCloud(),rejected=assert.rejects(pull,/account or colony changed/);await waiting;await store.signOut();
+  server.tokenUser='33333333-3333-4333-8333-333333333333';await store.signIn('other@example.test','other-password');
+  const newer=createSyntheticDataset();newer.tables.mice[0].comment='KEEP-AFTER-STALE-CACHE-READ';await store.saveDataset(newer,{localOnly:true});release();await rejected;
+  assert.equal(idbData.get('current').tables.mice[0].comment,'KEEP-AFTER-STALE-CACHE-READ');assert.equal(store.getCloudStatus().signedIn,true);assert.equal(store.getCloudStatus().mode,'local');
+ }finally{release();idbHooks.afterRead=null;}
+});
+test('a restricted-policy history clear aborts before deleting a later account archive',async()=>{
+ await connected();await store.clearDataset();server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};
+ let release,started,intercepted=false;const waiting=new Promise(resolve=>started=resolve),gate=new Promise(resolve=>release=resolve);
+ idbHooks.beforeCommit=async changes=>{if(!intercepted&&changes.get('active')===deleted){intercepted=true;started();await gate;}};
+ try{
+  const pull=store.pullFromCloud(),rejected=assert.rejects(pull,/account or colony changed/);await waiting;await store.signOut();
+  server.tokenUser='33333333-3333-4333-8333-333333333333';await store.signIn('other@example.test','other-password');
+  const newer=createSyntheticDataset();newer.tables.mice[0].comment='KEEP-AFTER-STALE-HISTORY-CLEAR';await store.saveDataset(newer,{localOnly:true});
+  const archive={sources:[{title:'NEW-ACCOUNT-ARCHIVE'}],sheets:[{source_index:0,title:'Synthetic'}],cells:[[0,'A1','NEW-ACCOUNT-HISTORY']]};await saveHistoryIndex(archive);release();await rejected;
+  assert.equal(idbData.get('current').tables.mice[0].comment,'KEEP-AFTER-STALE-HISTORY-CLEAR');assert.equal(idbData.get('active').index.cells[0][2],'NEW-ACCOUNT-HISTORY');assert.equal((await loadHistoryIndex()).index.cells[0][2],'NEW-ACCOUNT-HISTORY');
+ }finally{release();idbHooks.beforeCommit=null;}
 });
 function locationFixture(count=1){
  const data=createSyntheticDataset();data.tables.locations=Array.from({length:count},(_,i)=>({location_id:`position-${String(i).padStart(3,'0')}`,label:`Box ${i+1}`,room_id:'room-1',rack_id:'rack-1',row:i+1,column:1,capacity:1,active:true,manager:'Verified caretaker',notes:'Editable note',record_origin:'current_google_sheet_map',source_current:true,source_snapshot_date:'2026-10-15',source_manager_name:'Verified source user',source_observed_tags:['P123'],source_observed_mouse_sids:['SYN-M001'],source_block_text:'HIDDEN-FINANCIAL-CELL-97531',source_manager_evidence_refs:[{raw:'HIDDEN-FINANCIAL-CELL-97531'}],manager_source:{raw:'HIDDEN-FINANCIAL-CELL-97531'}}));return data;

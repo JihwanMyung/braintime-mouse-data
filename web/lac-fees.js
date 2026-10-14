@@ -1,4 +1,4 @@
-import {LAC_FEE_GROUPS,blankLacFeeOptions,blankLacFeeMonth,feeMonthBounds,getLacFeeOptions,listLacFeeMonths,buildLacFeeOptions,buildLacFeeMonth,calculateLacFeeMonth} from './lac-fee-model.js?v=23';
+import {LAC_FEE_GROUPS,blankLacFeeOptions,blankLacFeeMonth,feeMonthBounds,getLacFeeOptions,listLacFeeMonths,buildLacFeeOptions,buildLacFeeMonth,calculateLacFeeMonth} from './lac-fee-model.js?v=24';
 const mounts=new WeakMap(),esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const today=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const money=v=>v==null?'Unknown':new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(v);

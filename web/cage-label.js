@@ -1,8 +1,8 @@
 /** Editable print-only LAC label. Prefills never mutate colony records or create associations. */
-import {prefillLocoboxLabel,renderLocoboxLabelHTML,locoboxLabelPrintDocument,locoboxLabelCSS,validateLocoboxLabel,locoboxLabelHasOverflow} from './locobox-label.js?v=23';
-import {cageManager} from './model.js?v=23';
-import {protocolsForEntity,protocolDateStatus,taipeiToday} from './iacuc-model.js?v=23';
-import {getUserAcronyms} from './user-acronyms.js?v=23';
+import {prefillLocoboxLabel,renderLocoboxLabelHTML,locoboxLabelPrintDocument,locoboxLabelCSS,validateLocoboxLabel,locoboxLabelHasOverflow} from './locobox-label.js?v=24';
+import {cageManager} from './model.js?v=24';
+import {protocolsForEntity,protocolDateStatus,taipeiToday} from './iacuc-model.js?v=24';
+import {getUserAcronyms} from './user-acronyms.js?v=24';
 const list=v=>Array.isArray(v)?v:[],text=v=>typeof v==='string'?v.trim():'';
 const live=r=>r&&!r.app_archived_at&&r.archived!==true;
 const unique=values=>[...new Set(values.map(text).filter(Boolean))];

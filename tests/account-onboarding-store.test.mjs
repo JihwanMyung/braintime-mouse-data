@@ -101,3 +101,22 @@ await test('email callback may retain verified setup-only access but removes cre
  globalThis.location=new URL('https://app.example/#'+new URLSearchParams({access_token:token,refresh_token:'test-refresh',type:'signup'}));globalThis.history={state:null,replaceState(_s,_t,url){globalThis.location=new URL(url,globalThis.location);}};
  const result=await store.consumeAuthCallback();assert.equal(result.role,'pending');assert.equal(result.setupRequired,true);assert.equal(globalThis.location.hash,'');assert.equal(result.needsPasswordSetup,true);assert(!state.calls.some(c=>c.url.includes('/entity_records')));
 });
+
+await test('internal portal verifies Auth and current membership without loading colony records or roster',async()=>{
+ const state=fixture({members:[{role:'editor',active:true,export_level:'low'}]});await store.signIn('new@example.org','password');state.calls.length=0;
+ const status=await store.verifyCloudMembership();assert.equal(status.role,'editor');assert.equal(state.calls.length,2);
+ assert.equal(new URL(state.calls[0].url).pathname,'/auth/v1/user');assert.equal(state.calls[0].init.cache,'no-store');assert.equal(state.calls[0].init.redirect,'error');assert.equal(new URL(state.calls[1].url).pathname,'/rest/v1/memberships');
+ state.members=[{role:'editor',active:false,export_level:'low'}];await assert.rejects(store.verifyCloudMembership(),/not an active member/);
+});
+await test('internal portal rejects recovery, setup-only, forged cached identities and revoked sessions',async()=>{
+ fixture();await store.signIn('new@example.org','password');await assert.rejects(store.verifyCloudMembership(),/account setup/);
+ const state=fixture({members:[{role:'owner',active:true}]});await store.signIn('new@example.org','password');const key='mouse-colony.session.v1',saved=JSON.parse(sessionStorage.getItem(key));
+ sessionStorage.setItem(key,JSON.stringify({...saved,passwordRecovery:true}));state.calls.length=0;await assert.rejects(store.verifyCloudMembership(),/resetting your password/);assert.equal(state.calls.length,0);
+ sessionStorage.setItem(key,JSON.stringify({...saved,user:{...saved.user,id:other}}));await assert.rejects(store.verifyCloudMembership(),/could not be verified/);
+ sessionStorage.setItem(key,JSON.stringify(saved));const originalFetch=globalThis.fetch;globalThis.fetch=(url,init)=>new URL(url).pathname==='/auth/v1/user'?Promise.resolve(json({},401)):originalFetch(url,init);await assert.rejects(store.verifyCloudMembership(),/could not be verified/);
+});
+await test('portal access check cannot restore a session after sign-out while membership is in flight',async()=>{
+ fixture({members:[{role:'editor',active:true}]});await store.signIn('new@example.org','password');let release,started;const waiting=new Promise(resolve=>started=resolve),gate=new Promise(resolve=>release=resolve),originalFetch=globalThis.fetch;
+ globalThis.fetch=async(url,init)=>{if(new URL(url).pathname==='/rest/v1/memberships'){started();await gate;}return originalFetch(url,init);};
+ const check=store.verifyCloudMembership();await waiting;await store.signOut();release();await assert.rejects(check,/changed/);assert.equal(store.getCloudStatus().signedIn,false);
+});

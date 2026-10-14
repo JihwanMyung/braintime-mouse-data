@@ -2,9 +2,9 @@
 
 Installable mouse-colony management for desktop, iPhone, iPad and Android. The static app can be hosted on GitHub Pages; shared records use a private Supabase database.
 
-[Open Braintime Mouse Data](https://jihwanmyung.github.io/braintime-mouse-data/) · [Source repository](https://github.com/JihwanMyung/braintime-mouse-data)
+[Open Braintime Mouse Data](https://braintimelab.github.io/mouse-data/) · [Source repository](https://github.com/JihwanMyung/braintime-mouse-data)
 
-Choose **Sign in**, enter your invited lab email, and open the sign-in link from that email. An empty browser opens the shared colony after authentication. If this browser already contains local records, use **Load shared colony** when ready to replace that local copy. The header identifies **Local only** or **Cloud connected**. Use Help for installation and daily workflows.
+Open [Lab tools](https://braintimelab.github.io/internal/) or choose **Sign in** in Mouse Data. Use your ID or registered email and app password. Email links and **Forgot password** are alternatives. An empty browser opens the shared colony after authentication. If this browser already contains local records, use **Load shared colony** when ready to replace that local copy. The header identifies **Local only** or **Cloud connected**. Use Help for installation and daily workflows.
 
 The public app configuration points to Supabase project `njhetwortngnniyrhcfk` at `https://njhetwortngnniyrhcfk.supabase.co`. Access to records requires an authenticated colony membership; the public project address and publishable key grant no anonymous record access.
 
@@ -19,7 +19,7 @@ Features include animal, breeding, litter and cage records; pedigree views with 
 1. Create or select the lab's Supabase project. Apply `supabase/schema.sql`; create/invite lab users through Supabase Auth and establish the owner membership using `supabase/bootstrap.example.sql`.
 2. Configure the app with the project URL, **publishable/anon key**, colony UUID, and your lab sign-in. Never use the service-role/secret key in the browser.
 3. Import and inspect the reconstructed JSON locally, then use the explicit Upload to shared colony action. Existing different cloud records produce conflicts instead of silent replacement.
-4. Publish only the reviewed app assets on GitHub Pages using **Deploy from a branch → `gh-pages` → `/ (root)`**. Run the app tests and `node scripts/prepare-pages.mjs`, then commit only the contents of `_site` to the deployment branch. The preparation script rejects unexpected tracked files, extra web assets and private credential formats. Source code remains on `main`; private records never enter either branch.
+4. Publish only reviewed app assets into `mouse-data/` in `braintimelab/braintimelab.github.io` (Pages: `master`, root). Run the app tests, then use that repository's `node scripts/sync-mouse-app.mjs /path/to/colony-app` to package the explicit allowlist. Keep the personal-site `gh-pages` deployment updated as a migration and local-recovery surface. The preparation script rejects unexpected tracked files, extra web assets and private credential formats. Source code remains on `main`; private records never enter either branch.
 5. Set the production app URL as the Supabase Auth Site URL and an allowed redirect URL. The default email sign-in link and invitation link return to the app, which verifies the user and colony membership before saving a browser session. Email codes remain an optional alternative when the email template includes a code. Verify a second lab account and a second device before routine shared use.
 
 See [backend setup](supabase/README.md) and [separate Animal Sheet synchronization](SHEET_SYNC.md). The optional Sheets integration requires an output-workbook service account and deployed function; creating the workbook or writing this code alone does not activate synchronization.

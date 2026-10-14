@@ -206,3 +206,9 @@
 @media(max-width:650px){.exp-stats{display:flex;overflow-x:auto}.exp-stats article{flex:0 0 132px;padding:12px;border-bottom:0}.exp-stats article:last-child{flex-basis:150px}.exp-stats span{font-size:11px}.exp-stats strong{font-size:24px}}
 
 .mouse-summary-sex dd{font-size:clamp(14px,1.5vw,22px);letter-spacing:-.03em;white-space:nowrap}
+
+/* The previous address remains available for local records and old email links. */
+.site-migration-notice{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:18px 30px 0;padding:18px 20px;background:var(--blue-bg);border:1px solid var(--blue-line);border-left:4px solid var(--accent);border-radius:9px;font-size:13px;line-height:1.55}
+.site-migration-notice[hidden]{display:none}.site-migration-notice strong{font-size:15px}.site-migration-notice p{margin:5px 0 0;max-width:760px}.site-migration-notice .button{flex-shrink:0;text-decoration:none}.app-footer>a{color:var(--link)}
+@media(max-width:650px){.site-migration-notice{margin:14px 16px 0;padding:15px;align-items:flex-start;flex-direction:column}.site-migration-notice .button{align-self:flex-start}}
+@media print{.site-migration-notice{display:none}}
