@@ -1,4 +1,4 @@
-import { normalizeDataset, ID_FIELDS } from './model.js';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=7';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1';
@@ -65,7 +65,7 @@ export function configureCloud({url,anonKey,colonyId}){
 }
 export function getCloudStatus(){
   const c=configuration(),s=session();
-  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),email:s?.user?.email??null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:mode()==='local'||synced,colonyId:c?.colonyId??null,role:s?.role??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
+  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:mode()==='local'||synced,colonyId:c?.colonyId??null,role:s?.role??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
 }
 async function responseJSON(response){const text=await response.text();if(!text)return null;try{return JSON.parse(text);}catch{throw new Error('The cloud server returned an unreadable response.');}}
 function apiError(response,body){
@@ -104,8 +104,8 @@ async function request(route,{method='GET',body}={}){
 async function membership(){
   const c=configuration(),s=session();
   if(!s?.user?.id)throw new Error('The signed-in user is unavailable. Sign in again.');
-  const rows=await request(`memberships?select=role&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
-  if(!Array.isArray(rows)||rows.length!==1||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not a member of the configured colony.');
+  const rows=await request(`memberships?select=role,active&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
+  if(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not an active member of the configured colony.');
   saveSession({...session(),role:rows[0].role});return rows[0].role;
 }
 export async function signIn(email,password){
@@ -157,15 +157,15 @@ export async function consumeAuthCallback(){
     if(!verified.ok)throw new Error('The cloud project rejected this sign-in link. Request a new link.');
     const user=await responseJSON(verified);
     if(user?.id!==claims.sub||user.is_anonymous)throw new Error('The cloud project could not verify this account.');
-    const membershipResponse=await fetch(`${c.url}/rest/v1/memberships?select=role&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
+    const membershipResponse=await fetch(`${c.url}/rest/v1/memberships?select=role,active&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
     if(!membershipResponse.ok)throw new Error('Unable to verify colony membership. Sign in again or contact the colony owner.');
     const rows=await responseJSON(membershipResponse);
-    if(!Array.isArray(rows)||rows.length!==1||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not a member of the configured colony.');
+    if(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not an active member of the configured colony.');
     // A local JWT decode only checks scope; the current project's Auth endpoint
     // authenticates the token. Persist only after that and membership both pass.
     saveSession({access_token:access,refresh_token:refresh,token_type:'bearer',expires_at:claims.exp,user,role:rows[0].role});
     pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';
-    return getCloudStatus();
+    return {...getCloudStatus(),needsPasswordSetup:type==='invite'||type==='recovery'};
   }catch(error){
     saveSession(null);invalidate();
     statusMessage=error instanceof TypeError?'The sign-in link could not be verified because the cloud is unreachable. Request a new link when connected.':error.message;
@@ -184,6 +184,52 @@ export async function verifyEmailCode(email,token){
 export async function signOut(){
   const s=session();saveSession(null);pendingEmail=null;setMode('local');invalidate();statusMessage='Signed out. Local data is retained.';
   if(s?.access_token)try{await authRequest('logout',null,s.access_token);}catch{/* Local credentials are already removed even if the server is unreachable. */}
+}
+
+export async function updateAccountPassword(password) {
+  const c=configuration(),signedIn=session();
+  if(!c)throw new Error('Configure the cloud project first.');
+  if(!signedIn?.access_token||!signedIn.user?.id)throw new Error('Sign in before changing your account password.');
+  if(typeof password!=='string'||password.length<12||password.length>128)throw new Error('Use an account password between 12 and 128 characters.');
+  await membership();
+  const token=await accessToken(),current=configuration();
+  if(current?.url!==c.url||current.colonyId!==c.colonyId||session()?.user?.id!==signedIn.user.id)throw new Error('The cloud account or colony changed. Sign in again before changing your password.');
+  let response;
+  try {
+    response=await fetch(`${c.url}/auth/v1/user`,{method:'PUT',cache:'no-store',redirect:'error',headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({password})});
+  }catch{throw new Error('The account-password update was not confirmed. Check your connection before trying again.');}
+  const result=await responseJSON(response);
+  if(!response.ok) {
+    if(response.status===401||response.status===403)throw apiError(response,null);
+    // Do not echo an Auth error body, which could contain a rejected credential.
+    throw new Error('The account-password update was rejected. Use a different password or sign in again if a recent login is required.');
+  }
+  if(result?.id!==signedIn.user.id)throw new Error('The server did not confirm the account-password update for your signed-in user.');
+  // Auth responses are deliberately not persisted; only the existing session remains.
+  return {user_id:result.id,message:'Account password updated.'};
+}
+
+export async function updateAccountProfile(name) {
+  const c=configuration(),signedIn=session();
+  if(!c)throw new Error('Configure the cloud project first.');
+  if(!signedIn?.access_token||!signedIn.user?.id)throw new Error('Sign in before updating your account profile.');
+  if(typeof name!=='string'||!name.trim()||name.trim().length>120)throw new Error('Enter a name between 1 and 120 characters.');
+  const fullName=name.trim();
+  await membership();
+  const token=await accessToken(),current=configuration();
+  if(current?.url!==c.url||current.colonyId!==c.colonyId||session()?.user?.id!==signedIn.user.id)throw new Error('The cloud account or colony changed. Sign in again before updating your profile.');
+  let response;
+  try {
+    // GoTrue merges the supplied user metadata; no ownership or access role is sent.
+    response=await fetch(`${c.url}/auth/v1/user`,{method:'PUT',cache:'no-store',redirect:'error',headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({data:{full_name:fullName}})});
+  }catch{throw new Error('The profile update was not confirmed. Check your connection before trying again.');}
+  const result=await responseJSON(response);
+  if(!response.ok)throw apiError(response,result);
+  if(result?.id!==signedIn.user.id||result.user_metadata?.full_name!==fullName)throw new Error('The server did not confirm the new name for your signed-in user.');
+  const activeSession=session(),activeConfig=configuration();
+  if(activeSession?.user?.id!==signedIn.user.id||activeConfig?.url!==c.url||activeConfig.colonyId!==c.colonyId)throw new Error('Your account changed while saving. Sign in again to load the updated profile.');
+  saveSession({...activeSession,user:result});
+  return {user_id:result.id,name:fullName,message:'Account profile updated.'};
 }
 async function allRecords(){
   const c=configuration();const result=[];
@@ -283,6 +329,46 @@ export async function getAuditLog({limit=100,before=null}={}){
   const n=Math.max(1,Math.min(500,Math.floor(Number(limit)||100)));
   if(before!==null&&!/^\d+$/.test(String(before)))throw new Error('Invalid audit cursor.');
   return request(`audit_log?select=audit_id,colony_id,entity_type,entity_id,operation,actor_id,occurred_at,before_record,after_record&colony_id=eq.${encodeURIComponent(c.colonyId)}&order=audit_id.desc&limit=${n}${before===null?'':`&audit_id=lt.${before}`}`);
+}
+
+/** User administration is authenticated here and independently authorized by the Edge function. */
+export async function manageColonyUsers(action,payload={}) {
+  const c=configuration(),signedIn=session();
+  if(!c)throw new Error('Configure the cloud project first.');
+  if(!signedIn?.access_token||!signedIn.user?.id)throw new Error('Sign in before managing colony users.');
+  if(signedIn.role!=='owner')throw new Error('Only an active colony owner can manage users.');
+  const allowed={list:[],invite:['email','role'],update_access:['user_id','role','active']};
+  if(!Object.hasOwn(allowed,action))throw new Error('Unsupported user-management action.');
+  if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(k=>!allowed[action].includes(k)))throw new Error('Unexpected user-management fields. Colony and invitation return URLs are configured by the app and server.');
+  const fields={};
+  if(action==='invite')fields.email=emailAddress(payload.email);
+  if(action==='invite'||action==='update_access') {
+    if(!['viewer','editor'].includes(payload.role))throw new Error('Choose viewer or editor access. Owner accounts cannot be changed here.');
+    fields.role=payload.role;
+  }
+  if(action==='update_access') {
+    if(typeof payload.user_id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.user_id))throw new Error('Choose a valid colony user.');
+    if(payload.user_id===signedIn.user.id)throw new Error('You cannot change your own access here.');
+    if(typeof payload.active!=='boolean')throw new Error('User access must be explicitly enabled or disabled.');
+    fields.user_id=payload.user_id;fields.active=payload.active;
+  }
+  if(await membership()!=='owner')throw new Error('Only an active colony owner can manage users.');
+  const token=await accessToken(),current=configuration();
+  if(current?.url!==c.url||current.colonyId!==c.colonyId||session()?.user?.id!==signedIn.user.id)throw new Error('The cloud account or colony changed. Reload the user list before continuing.');
+  let response;
+  try {
+    response=await fetch(`${c.url}/functions/v1/manage-colony-users`,{method:'POST',cache:'no-store',redirect:'error',headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({...fields,action,colony_id:c.colonyId})});
+  }catch{throw new Error('The user-management request was not confirmed. Reload the user list before retrying.');}
+  const result=await responseJSON(response);
+  if(!response.ok) {
+    const partialMessage=result?.invitation_sent===true&&typeof result.message==='string';
+    const error=!partialMessage&&(response.status===401||response.status===403)?apiError(response,result):new Error(typeof result?.message==='string'?result.message:`User management failed (${response.status}).`);
+    if(typeof result?.code==='string')error.code=result.code;
+    if(result?.invitation_sent===true)error.invitationSent=true;
+    throw error;
+  }
+  if(!result||typeof result!=='object'||(action==='list'?!Array.isArray(result.users):!result.user||typeof result.user!=='object'))throw new Error('The server did not return a verifiable user-management result. Reload the user list before retrying.');
+  return result;
 }
 
 const HISTORY_BUCKET='colony-history';
