@@ -188,3 +188,15 @@ test('legacy archived flags exclude hierarchy choices while existing historical 
   assert.equal(h.element('housing-field-room_id').value,'R2');assert.equal(h.element('housing-field-rack_id').value,'K2');
   assert.equal(h.dataset.tables.locations[0].archived,true);
 });
+
+
+test('positions save a shared locobox identifier without changing their housing identity',async t=>{
+  const h=await harness(t,{rooms:[room('R1','Animal Beh')],racks:[rack('K1','R1','Rack 1')],locations:[{location_id:'P1',room_id:'R1',rack_id:'K1',label:'Cage slot 1',record_origin:'app_created'}]});
+  await h.click({housingEdit:'P1',type:'locations'});
+  assert.match(h.element('housing-dialog').innerHTML,/Locobox ID/);
+  h.setField('locobox_id','BOX-A');await h.submit();
+  assert.equal(h.saved.length,1);assert.equal(h.dataset.tables.locations[0].locobox_id,'BOX-A');
+  assert.equal(h.dataset.tables.locations[0].location_id,'P1');assert.equal(h.dataset.tables.locations[0].rack_id,'K1');
+  const next={...h.dataset.tables.locations[0],locobox_id:42};
+  assert.match(validateRecord('locations',next,h.dataset,'P1').errors.join(' '),/Locobox ID/);
+});

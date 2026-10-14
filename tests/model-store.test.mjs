@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { buildCageSummaryOptions, getCageSummaryOptions } from '../web/cage-summary-options.js';
 import { buildBreedingOptions, getBreedingOptions } from '../web/breeding-options.js';
 import { buildStrainDefinition, getStrainRegistry } from '../web/strain-registry.js';
 import {readFile} from 'node:fs/promises';
@@ -562,4 +563,22 @@ test('breeding options persist through versioned cloud saves and protect read-on
   await assert.rejects(store.saveDataset(buildBreedingOptions(latest,{...input,male_min_weeks:10}).dataset),/viewer/);
   assert.equal(getBreedingOptions(await store.loadDataset()).male_min_weeks,9);
   assert.equal(server.records.get('husbandry_events:BREEDING-OPTIONS').payload.breeding_options.male_min_weeks,9);
+});
+
+
+test('room capacity options persist through shared saves with stale and read-only protection',async()=>{
+  const d=await connected(),input=getCageSummaryOptions(d);input.groups.spf.capacity=120;
+  const built=buildCageSummaryOptions(d,input,{now:'2026-10-14T10:00:00Z'});
+  assert.deepEqual(validateRecord('husbandry_events',built.record,d).errors,[]);
+  await store.saveDataset(built.dataset);
+  const pulled=await store.pullFromCloud();assert.equal(getCageSummaryOptions(pulled).groups.spf.capacity,120);
+  assert.equal(server.records.get('husbandry_events:CAGE-SUMMARY-OPTIONS').version,1);
+  const changed=structuredClone(input);changed.groups.spf.capacity=150;
+  const edited=buildCageSummaryOptions(pulled,changed).dataset;
+  server.records.get('husbandry_events:CAGE-SUMMARY-OPTIONS').version++;
+  await assert.rejects(store.saveDataset(edited),/changed in another session/);
+  const latest=await store.pullFromCloud();server.role='viewer';
+  await assert.rejects(store.saveDataset(buildCageSummaryOptions(latest,changed).dataset),/viewer/);
+  assert.equal(getCageSummaryOptions(await store.loadDataset()).groups.spf.capacity,120);
+  assert.equal(server.records.get('husbandry_events:CAGE-SUMMARY-OPTIONS').payload.cage_summary_options.groups.spf.capacity,120);
 });

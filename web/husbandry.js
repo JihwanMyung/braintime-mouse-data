@@ -1,5 +1,5 @@
 /* Editable housing and recorded light history. No bundled laboratory data. */
-import { cageManager, buildCageLocationEvent } from './model.js?v=15';
+import { cageManager, buildCageLocationEvent } from './model.js?v=16';
 const esc = v => String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const clone = value => JSON.parse(JSON.stringify(value));
 const labels={rooms:'Rooms',racks:'Racks',locations:'Positions',light_events:'Light history',husbandry_events:'Husbandry history'};
@@ -7,7 +7,7 @@ const keys={rooms:'room_id',racks:'rack_id',locations:'location_id',light_events
 const definitions={
  rooms:[['room_id','Room ID'],['name','Name'],['notes','Notes','textarea']],
  racks:[['rack_id','Rack ID'],['room_id','Room','rooms'],['name','Name'],['notes','Notes','textarea']],
- locations:[['location_id','Position ID'],['room_id','Room','rooms'],['rack_id','Rack','racks'],['label','Position label'],['row','Row','number'],['column','Column','number']],
+ locations:[['location_id','Position ID'],['room_id','Room','rooms'],['rack_id','Rack','racks'],['label','Position label'],['locobox_id','Locobox ID (shared by positions in one box)'],['row','Row','number'],['column','Column','number']],
  light_events:[['event_id','Event ID'],['location_id','Position','locations'],['cage_sid','Cage SID'],['start_date','Start date','date'],['end_date','End date','date'],['protocol','Light regime','protocol'],['cycle_hours','Cycle duration (hours)','number'],['light_hours','Light duration (hours)','number'],['lights_on','Lights on','time'],['lights_off','Lights off','time'],['transition_minutes','Transition duration (minutes)','number'],['intensity_lux','Illuminance (lux)','number'],['timezone','Time zone'],['evidence_status','Evidence status','evidence'],['notes','Notes','textarea']],
  husbandry_events:[['event_id','Event ID'],['mouse_sid','Mouse SID'],['old_cage_sid','From cage SID'],['cage_sid','Cage SID'],['location_id','Position','locations'],['event_date','Event date','date'],['event_type','Event type'],['notes','Notes','textarea']]
 };

@@ -92,3 +92,7 @@ web/breeding-options.js
 web/breeding-summary.js
 tests/breeding-options.test.mjs
 tests/breeding-summary.test.mjs
+web/cage-summary.js
+web/cage-summary-options.js
+tests/cage-summary.test.mjs
+tests/cage-summary-options.test.mjs

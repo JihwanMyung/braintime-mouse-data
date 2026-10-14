@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import * as model from '../web/model.js';
 import { MOUSE_LINE_GROUPS, summarizeMice, mouseLineAssignments } from '../web/mouse-summary.js';
+import { summarizeCages } from '../web/cage-summary.js';
+import { CAGE_SUMMARY_GROUPS, getCageSummaryOptionsStatus } from '../web/cage-summary-options.js';
 import { summarizeBreeding } from '../web/breeding-summary.js';
 import { getBreedingOptions, getBreedingOptionsStatus } from '../web/breeding-options.js';
 import { getStrainRegistry } from '../web/strain-registry.js';
@@ -19,7 +21,7 @@ assert(!scheduleApplies({start_date:'2026-10-01',end_date:'2026-10-14',interval_
 let saved=model.createSyntheticDataset();saved.demo=true;
 const store={loadDataset:async()=>structuredClone(saved),saveDataset:async next=>{saved=structuredClone(next)},clearDataset:async()=>{saved=null},getCloudStatus:()=>({mode:'local',configured:false,signedIn:false})};
 const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
-const context={console,model,store,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
+const context={console,model,store,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
 vm.createContext(context);vm.runInContext(source,context);await new Promise(resolve=>setTimeout(resolve,10));
 vm.runInContext(`
 assert($('main').innerHTML.includes('Recently born'));
@@ -42,7 +44,19 @@ for(const key of ['alive','male','female','P','E','B','F','V'])assert(colonySumm
 filters={state:'Ended',archived:true};query='no matching animal';renderTable();assert(currentRows.length===0);assert($('main').innerHTML.includes(colonySummary),'colony totals stay independent of table filters');
 query='';filters={state:'Stock'};renderTable();assert(currentRows.every(r=>r.state==='Stock'));
 const priorState=dataset.tables.mice[0].state;dataset.tables.mice[0].state='Ended';renderTable();assert(!$('main').innerHTML.includes(colonySummary),'current totals update after records change');dataset.tables.mice[0].state=priorState;
-route='cages';renderTable();assert(!$('main').innerHTML.includes('mouse-summary-heading'));route='mice';filters={};renderTable();
+route='cages';query='';filters={};renderTable();assert(!$('main').innerHTML.includes('id="mouse-summary-heading"'));
+const cageHTML=cageSummaryHTML();
+assert($('main').innerHTML.indexOf('cage-summary-heading')<$('main').innerHTML.indexOf('table-search'));
+for(const key of ['cages','beh','rat','clean','spf'])assert(cageHTML.includes('data-cage-count="'+key+'"'));
+assert(cageHTML.includes('data-action="cage-summary-options"'));assert(cageHTML.includes('Set total capacity')||cageHTML.includes('Choose room in Options'));
+filters={state:'Inactive'};query='no matching cage';renderTable();assert(currentRows.length===0);assert($('main').innerHTML.includes(cageHTML));
+const cageMouseState=dataset.tables.mice[2].state;dataset.tables.mice[2].state='Ended';renderTable();assert(!$('main').innerHTML.includes(cageHTML));dataset.tables.mice[2].state=cageMouseState;
+const assignedCages=dataset.tables.mice.map(mouse=>mouse.cage_sid);dataset.tables.mice.forEach(mouse=>{mouse.cage_sid=null});
+assert(/data-cage-count="cages"[\\s\\S]*?<dd>— \\/ [0-9]+<\\/dd>/.test(cageSummaryHTML()),'unknown cage assignments are not zero use');
+dataset.tables.mice[0].cage_sid=assignedCages[0];assert(/data-cage-count="cages"[\\s\\S]*?<dd>≥1 \\/ [0-9]+<\\/dd>/.test(cageSummaryHTML()),'partly known occupancy is a minimum');
+dataset.tables.mice.forEach((mouse,i)=>{mouse.cage_sid=assignedCages[i]});
+showHelp(false,false,true);assert($('help-dialog').innerHTML.includes('class="source-disclosure" open><summary>Cage usage &amp; capacity'));assert($('help-dialog').innerHTML.includes('confirmed minimum'));$('help-dialog').close();
+route='mice';filters={};query='';renderTable();assert(!$('main').innerHTML.includes('cage-summary-heading'));
 route='matings';query='';filters={};renderTable();const breedingHTML=breedingSummaryHTML();
 assert($('main').innerHTML.indexOf('breeding-summary-heading')<$('main').innerHTML.indexOf('table-search'));
 for(const key of ['total','male','female','maleFertile','femaleFertile','genotyped'])assert(breedingHTML.includes('data-breeding-count="'+key+'"'));

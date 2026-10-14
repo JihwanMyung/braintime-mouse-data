@@ -161,3 +161,25 @@
 .breeding-options .alert,.breeding-options .banner{margin:12px}
 .breeding-options th{padding:12px}
 @media(max-width:480px){.breeding-options td,.breeding-options th{padding:10px 7px}.breeding-options input{padding:8px 6px}}
+
+.cage-summary .mouse-summary-heading{flex-wrap:wrap}
+.cage-summary .actions{flex-wrap:wrap}
+.cage-summary-grid{grid-template-columns:repeat(5,minmax(0,1fr))}
+.cage-summary-grid .mouse-summary-item dt{min-height:42px}
+.cage-summary-grid .mouse-summary-item dd{font-size:27px;white-space:nowrap}
+.cage-count-note{display:block;margin-top:5px;font-size:10px;color:var(--muted)}
+.cage-summary-note{margin:9px 0 0;color:var(--amber);font-size:11px}
+#cage-summary-dialog{width:min(850px,calc(100vw - 30px));max-width:850px}
+.cage-summary-options-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.cage-summary-options-grid fieldset{min-width:0;padding:16px;border:1px solid var(--line);border-radius:9px}
+.cage-summary-options-grid legend{font-weight:600;font-size:14px;padding:0 5px}
+.cage-summary-room-list{display:grid;gap:8px;max-height:190px;overflow:auto;margin-bottom:14px}
+.cage-summary-room-choice{display:flex;align-items:flex-start;gap:8px;font-size:12px;line-height:1.5}
+.cage-summary-room-choice input{flex-shrink:0;margin:3px 0 0}
+.cage-summary-options-grid input[type=number],.cage-summary-options-grid select{width:100%;max-width:100%;border:1px solid var(--control-line);border-radius:6px;padding:8px;background:var(--surface);color:var(--ink)}
+.cage-summary-options-grid .field{margin-top:12px}
+.cage-summary-options .form-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+.cage-summary-options .alert,.cage-summary-options .banner{margin:0 0 16px}
+@media(max-width:1150px){.cage-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.cage-summary-grid .mouse-summary-item{border:0;border-left:1px solid var(--line)}.cage-summary-grid .mouse-summary-item:nth-child(3n+1){border-left:0}.cage-summary-grid .mouse-summary-item:nth-child(n+4){border-top:1px solid var(--line)}}
+@media(max-width:600px){.cage-summary-options-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:480px){.cage-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.cage-summary-grid .mouse-summary-item:nth-child(n){border:0;border-left:1px solid var(--line)}.cage-summary-grid .mouse-summary-item:nth-child(odd){border-left:0}.cage-summary-grid .mouse-summary-item:nth-child(n+3){border-top:1px solid var(--line)}.cage-summary-grid .mouse-summary-item:last-child{grid-column:1/-1}}
