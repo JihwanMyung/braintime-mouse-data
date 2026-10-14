@@ -81,3 +81,4 @@ supabase/export-permissions.sql
 supabase/EXPORTS.md
 supabase/tests/export-permissions.test.mjs
 docs/animal-sheet-exports.md
+supabase/tests/export-performance.test.mjs

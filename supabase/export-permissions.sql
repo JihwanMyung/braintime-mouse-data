@@ -101,16 +101,16 @@ begin
 end $$;
 revoke all on function colony_private.export_domain_date(text,jsonb) from public,anon,authenticated;
 
-create or replace function colony_private.export_light_current(p jsonb)
+-- Resolve the timezone catalog once per export, never once per light record.
+drop function if exists colony_private.export_light_current(jsonb);
+create or replace function colony_private.export_light_current(p jsonb,p_today date)
 returns boolean language plpgsql stable set search_path='' as $$
-declare zone text:=p->>'timezone'; today date; starts date; ends date;
+declare starts date; ends date;
 begin
-  if zone is null or not exists(select 1 from pg_catalog.pg_timezone_names where name=zone) then zone:='Asia/Taipei'; end if;
-  today:=(current_timestamp at time zone zone)::date;
   starts:=colony_private.export_date(p->'start_date');ends:=colony_private.export_date(p->'end_date');
-  return coalesce(starts<=today and (p->>'end_date' is null or case when lower(coalesce(p->>'interval_semantics','')) ~ 'next phase start|exclusive' then ends>today else ends>=today end),false);
+  return coalesce(starts<=p_today and (p->>'end_date' is null or case when lower(coalesce(p->>'interval_semantics','')) ~ 'next phase start|exclusive' then ends>p_today else ends>=p_today end),false);
 end $$;
-revoke all on function colony_private.export_light_current(jsonb) from public,anon,authenticated;
+revoke all on function colony_private.export_light_current(jsonb,date) from public,anon,authenticated;
 
 -- Scalar/ID-list projection rejects nested data and caps cell size. There is no
 -- source*, notes, comment, audit, genotype-profile or archive pass-through.
@@ -165,7 +165,7 @@ create or replace function public.export_records(
   p_colony_id uuid,p_scope text default 'current_housing',p_from_date date default null,p_to_date date default null,
   p_entity_types text[] default null,p_offset integer default 0,p_limit integer default 250
 ) returns jsonb language plpgsql stable security definer set search_path='' as $$
-declare permission jsonb; today date; cutoff date; start_at date; end_at date; kinds text[]; result jsonb; omitted integer; more boolean; include_undated boolean; revision text;
+declare permission jsonb; today date; cutoff date; start_at date; end_at date; kinds text[]; result jsonb; omitted integer; more boolean; include_undated boolean; revision text; zone_days jsonb:='{}';
 begin
   permission:=public.get_export_permission(p_colony_id);today:=(permission->>'as_of_date')::date;cutoff:=(permission->>'cutoff_date')::date;
   if p_scope is null or p_scope not in ('current_housing','history') or p_offset is null or p_offset<0 or p_offset>1000000 or p_limit is null or p_limit not between 1 and 250 then
@@ -182,18 +182,25 @@ begin
     raise exception using errcode='42501',message='The requested dates exceed your export permission'; end if;
   include_undated:=(permission->>'level'='max' and p_from_date is null);
   select coalesce(max(audit_id),0)::text into revision from public.audit_log where colony_id=p_colony_id;
-  with current_mice as (
-    select payload from public.entity_records where colony_id=p_colony_id and entity_type='mice' and not archived and coalesce(payload->>'app_archived_at','')='' and coalesce(payload->>'archived','false')<>'true' and payload->>'state'='Stock'
-  ), current_locations as (
+  if p_scope='current_housing' and 'light_events'=any(kinds) then
+    select coalesce(jsonb_object_agg(name,(current_timestamp at time zone name)::date),'{}') into zone_days
+    from pg_catalog.pg_timezone_names where name=any(array(
+      select distinct payload->>'timezone' from public.entity_records
+      where colony_id=p_colony_id and entity_type='light_events' and not archived
+    ));
+  end if;
+  with current_mice as materialized (
+    select distinct payload->>'cage_sid' cage_sid from public.entity_records where colony_id=p_colony_id and entity_type='mice' and not archived and coalesce(payload->>'app_archived_at','')='' and coalesce(payload->>'archived','false')<>'true' and payload->>'state'='Stock'
+  ), current_locations as materialized (
     select entity_id from public.entity_records where colony_id=p_colony_id and entity_type='locations' and not archived and coalesce(payload->>'app_archived_at','')='' and coalesce(payload->>'archived','false')<>'true'
   ), eligible as (
     select r.entity_type,r.entity_id,r.payload,colony_private.export_domain_date(r.entity_type,r.payload) domain_date
     from public.entity_records r where r.colony_id=p_colony_id and r.entity_type=any(kinds)
     and (p_scope='history' or (not r.archived and coalesce(r.payload->>'app_archived_at','')='' and coalesce(r.payload->>'archived','false')<>'true' and (
       (r.entity_type='mice' and r.payload->>'state'='Stock') or
-      (r.entity_type='cages' and (lower(r.payload->>'state') in ('active','occupied') or exists(select 1 from current_mice m where m.payload->>'cage_sid'=r.entity_id) or exists(select 1 from current_locations l where l.entity_id=r.payload->>'location_id'))) or
+      (r.entity_type='cages' and (lower(r.payload->>'state') in ('active','occupied') or r.entity_id in(select cage_sid from current_mice) or r.payload->>'location_id' in(select entity_id from current_locations))) or
       r.entity_type in ('rooms','racks','locations') or
-      (r.entity_type='light_events' and colony_private.export_light_current(r.payload))
+      (r.entity_type='light_events' and colony_private.export_light_current(r.payload,coalesce((zone_days->>(r.payload->>'timezone'))::date,today)))
     )))
   ), selected as (
     select * from eligible where p_scope='current_housing' or (domain_date between coalesce(start_at,'0001-01-01'::date) and end_at) or (domain_date is null and include_undated)

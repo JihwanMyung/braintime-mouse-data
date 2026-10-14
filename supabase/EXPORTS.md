@@ -57,6 +57,8 @@ Every report payload uses a bounded field allowlist. Source fields, raw snapshot
 
 Pages contain at most 250 rows and 800,000 bytes of projected row JSON, plus small metadata. Follow `next_offset`, which advances by actual returned rows. Compare `snapshot_revision`, `export_level`, `cutoff_date` and `as_of_date` across every page; abort and regenerate the preview if they change. The revision is the largest colony audit ID serialized as text. This detects committed changes between pages without holding a database transaction open during file generation.
 
+The current-housing query resolves named timezones once per RPC and materializes scalar current-cage and position sets. It never enumerates the timezone catalog separately for each light record or repeatedly scans mouse payloads for each cage. When inspecting an RPC result in SQL, use a `MATERIALIZED` CTE before extracting multiple JSON fields so the inspector does not evaluate the RPC repeatedly.
+
 ## Boundary
 
 These controls govern supported export workflows, not existing viewing rights. Member RLS reads, pedigree views, private-history viewing and local working copies remain available. Authorized users can inspect or copy data already delivered for those views, and permissions cannot retract earlier files. Restricting historical reads would require a separate access-control and application redesign. Keep viewing helpers distinct from explicit export actions.
@@ -66,7 +68,9 @@ Anonymous, inactive and cross-colony callers cannot use export RPCs. Direct memb
 ## Tests
 
 ```sh
-node --test supabase/tests/export-permissions.test.mjs supabase/tests/user-management.test.mjs
+node --test supabase/tests/export-permissions.test.mjs supabase/tests/user-management.test.mjs supabase/tests/export-performance.test.mjs
 ```
 
 These execute the migration in PostgreSQL through PGlite and cover defaults/reruns, role separation, calendar cutoffs, domain-date filtering, unknown dates, current old-born animals, source stripping, page limits/revisions, downgrade/revocation, cross-colony/anonymous denial, metadata spoofing, helper grants, retained viewing access, invitation failures and partial outcomes.
+
+The scale fixture verifies all pages from 9,028 synthetic records, including 1,347 light events, and reports elapsed time. It uses no production data. On Node 23 runtimes with a concurrent Maglev compilation stall, run the tests with `node --no-maglev --test` or a maintained Node runtime.
