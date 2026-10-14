@@ -88,3 +88,7 @@ web/strain-registry.js
 web/strain-management.js
 tests/strain-registry.test.mjs
 tests/strain-management.test.mjs
+web/breeding-options.js
+web/breeding-summary.js
+tests/breeding-options.test.mjs
+tests/breeding-summary.test.mjs

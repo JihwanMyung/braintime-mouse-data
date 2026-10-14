@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import * as model from '../web/model.js';
 import { MOUSE_LINE_GROUPS, summarizeMice, mouseLineAssignments } from '../web/mouse-summary.js';
+import { summarizeBreeding } from '../web/breeding-summary.js';
+import { getBreedingOptions, getBreedingOptionsStatus } from '../web/breeding-options.js';
 import { getStrainRegistry } from '../web/strain-registry.js';
 import { renderHousing, sourceListedAnimals, scheduleApplies } from '../web/husbandry.js';
 const elements=new Map();
@@ -17,7 +19,7 @@ assert(!scheduleApplies({start_date:'2026-10-01',end_date:'2026-10-14',interval_
 let saved=model.createSyntheticDataset();saved.demo=true;
 const store={loadDataset:async()=>structuredClone(saved),saveDataset:async next=>{saved=structuredClone(next)},clearDataset:async()=>{saved=null},getCloudStatus:()=>({mode:'local',configured:false,signedIn:false})};
 const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
-const context={console,model,store,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
+const context={console,model,store,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
 vm.createContext(context);vm.runInContext(source,context);await new Promise(resolve=>setTimeout(resolve,10));
 vm.runInContext(`
 assert($('main').innerHTML.includes('Recently born'));
@@ -41,6 +43,15 @@ filters={state:'Ended',archived:true};query='no matching animal';renderTable();a
 query='';filters={state:'Stock'};renderTable();assert(currentRows.every(r=>r.state==='Stock'));
 const priorState=dataset.tables.mice[0].state;dataset.tables.mice[0].state='Ended';renderTable();assert(!$('main').innerHTML.includes(colonySummary),'current totals update after records change');dataset.tables.mice[0].state=priorState;
 route='cages';renderTable();assert(!$('main').innerHTML.includes('mouse-summary-heading'));route='mice';filters={};renderTable();
+route='matings';query='';filters={};renderTable();const breedingHTML=breedingSummaryHTML();
+assert($('main').innerHTML.indexOf('breeding-summary-heading')<$('main').innerHTML.indexOf('table-search'));
+for(const key of ['total','male','female','maleFertile','femaleFertile','genotyped'])assert(breedingHTML.includes('data-breeding-count="'+key+'"'));
+assert(breedingHTML.includes('8–52 weeks'));assert(breedingHTML.includes('8–32 weeks'));assert(breedingHTML.includes('data-action="breeding-options"'));
+filters={state:'Inactive'};query='no matching group';renderTable();assert(currentRows.length===0);assert($('main').innerHTML.includes(breedingHTML));
+breedingScope='active';renderTable();assert($('main').innerHTML.includes('<option value="active" selected>'));assert($('main').innerHTML.includes('Active breeders'));breedingScope='living';
+showHelp(false,true);assert($('help-dialog').innerHTML.includes('class="source-disclosure" open><summary>Breeding counts &amp; age options'));assert($('help-dialog').innerHTML.includes('not a fertility diagnosis'));$('help-dialog').close();
+route='mice';query='';filters={};renderTable();assert(!$('main').innerHTML.includes('breeding-summary-heading'));
+
 const previousDataset=dataset;dataset=structuredClone(dataset);dataset.tables.mice[0].physical_tag="P(')B'(V)-M001";dataset.tables.mice[0].genotype=null;
 filters={_strain_code:'recorded:P'};renderTable();assert(currentRows.some(row=>row.mouse_sid===dataset.tables.mice[0].mouse_sid));
 filters={_strain_code:'uncertain:V'};renderTable();assert(currentRows.length===1);assert($('main').innerHTML.includes('title="Vip-Cre · Undetermined until genotyping"'));

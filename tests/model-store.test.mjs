@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { buildBreedingOptions, getBreedingOptions } from '../web/breeding-options.js';
 import { buildStrainDefinition, getStrainRegistry } from '../web/strain-registry.js';
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
@@ -544,4 +545,21 @@ test('strain metadata uses versioned cloud records, rejects stale edits and resp
   await assert.rejects(store.saveDataset(buildStrainDefinition(latest,{...input,notes:'Viewer cannot edit'}).dataset),/viewer/);
   assert.equal(getStrainRegistry(await store.loadDataset()).find(row=>row.key==='E').notes,input.notes);
   assert.equal(server.records.get('husbandry_events:STRAIN-E').payload.strain_definition.notes,input.notes);
+});
+
+
+test('breeding options persist through versioned cloud saves and protect read-only and stale sessions',async()=>{
+  const d=await connected(),input={...getBreedingOptions(d),male_min_weeks:9,female_max_weeks:30};
+  const built=buildBreedingOptions(d,input,{now:'2026-10-14T10:00:00Z'});
+  assert.deepEqual(validateRecord('husbandry_events',built.record,d).errors,[]);
+  await store.saveDataset(built.dataset);
+  const pulled=await store.pullFromCloud();assert.equal(getBreedingOptions(pulled).male_min_weeks,9);assert.equal(getBreedingOptions(pulled).female_max_weeks,30);
+  assert.equal(server.records.get('husbandry_events:BREEDING-OPTIONS').version,1);
+  const edited=buildBreedingOptions(pulled,{...input,male_min_weeks:10}).dataset;
+  server.records.get('husbandry_events:BREEDING-OPTIONS').version++;
+  await assert.rejects(store.saveDataset(edited),/changed in another session/);
+  const latest=await store.pullFromCloud();server.role='viewer';
+  await assert.rejects(store.saveDataset(buildBreedingOptions(latest,{...input,male_min_weeks:10}).dataset),/viewer/);
+  assert.equal(getBreedingOptions(await store.loadDataset()).male_min_weeks,9);
+  assert.equal(server.records.get('husbandry_events:BREEDING-OPTIONS').payload.breeding_options.male_min_weeks,9);
 });
