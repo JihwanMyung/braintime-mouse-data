@@ -66,3 +66,46 @@
 .nav-subitem{margin-left:17px;font-size:12px;padding-top:9px;padding-bottom:9px;border-left:1px solid var(--blue-line)}.nav-subitem .nav-icon{width:16px}.cryo-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}.cryo-tabs button{padding:10px 15px;border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--muted);font-size:12px}.cryo-tabs button[aria-selected=true],.cryo-tabs .active{background:var(--blue-bg);color:var(--link);border-color:var(--blue-line);font-weight:600}.cryo-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}.cryo-summary>article,.cryo-summary>.stat{padding:18px;background:var(--surface);border:1px solid var(--line);border-radius:10px}.cryo-summary strong{display:block;font-size:26px;font-weight:500}.cryopreservation th{padding:12px 15px}.cryopreservation .table-scroll{max-width:100%;overflow:auto}.cryopreservation .table-scroll>table{min-width:720px}.cryopreservation{min-width:0}.cryopreservation .settings-actions{flex-wrap:wrap}.cryopreservation button{white-space:normal}.cryopreservation details>summary{cursor:pointer;padding:12px 0;color:var(--link);font-size:12px}.cryopreservation details.panel>summary{padding:15px 20px}.cryo-detail .keyvals{grid-template-columns:150px minmax(0,1fr)}.cryo-source-details pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto;font-size:11px}.cryo-editor .form-grid{margin-bottom:18px}.cryo-editor textarea{min-height:80px}.cryo-detail h3{font-size:15px}.cryo-history-row{border-top:1px solid var(--line);padding:12px 0}.cryopreservation .alert{overflow-wrap:anywhere}.cryo-source-note{color:var(--muted);font-size:11px}
 @media(max-width:760px){.cryo-tabs button{flex:1 1 28%}.cryo-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.cryo-detail .keyvals{grid-template-columns:112px minmax(0,1fr)}}
 @media(max-width:620px){.sidebar .nav-subitem{margin:0;border-left:0;padding-top:9px;padding-bottom:9px;font-size:8px}}
+
+/* Export controls share the same compact layout on desktop and phones. */
+.housing-export-action{display:flex;justify-content:flex-end;margin-bottom:12px}
+#export-dialog{width:min(900px,calc(100vw - 28px))}
+#export-dialog .dialog-content{max-height:calc(100dvh - 200px)}
+.export-center{min-width:0}
+.export-center .form-grid{margin-bottom:16px}
+.export-center .field label{display:grid;gap:6px;min-width:0}
+.export-center .field select,.export-center .field input{min-width:0;max-width:100%;min-height:42px}
+.export-entities{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 16px;min-width:0;border:1px solid var(--line);border-radius:8px;margin:16px 0;padding:10px 14px}
+.export-entities legend{font-size:12px;color:var(--muted);padding:0 5px}
+.export-center .checkbox-label{white-space:normal;min-height:36px;gap:8px;font-size:12px}
+.export-center .checkbox-label input{flex:none}
+.export-preview{padding:15px;background:var(--surface-soft);border:1px solid var(--line);border-radius:8px;margin:18px 0;font-size:12px}
+.export-preview h3{font-size:14px;margin:0 0 8px}
+.export-preview p{margin:7px 0}
+.export-preview>p>strong{font-size:25px;font-weight:550;color:var(--link)}
+.export-preview table{background:var(--surface);margin-top:12px}
+.export-preview th,.export-preview td{padding:8px 12px}
+.export-preview th:last-child,.export-preview td:last-child{text-align:right}
+.export-center details{margin-top:15px;overflow-wrap:anywhere}
+.export-center summary{cursor:pointer;color:var(--link);font-size:12px}
+#export-dialog .dialog-actions{flex-wrap:wrap}
+#export-dialog .dialog-actions .button{min-height:40px}
+#export-print-dialog{width:min(1200px,calc(100vw - 20px));height:calc(100dvh - 28px)}
+#export-print-dialog[open]{display:flex;flex-direction:column}
+#export-print-dialog .dialog-heading,#export-print-dialog .dialog-actions{flex:none}
+#export-print-dialog .dialog-actions{align-items:center;flex-wrap:wrap}
+#export-print-dialog .dialog-actions .small{margin-right:auto}
+#export-print-frame{display:block;width:100%;height:auto;min-height:0;flex:1;border:0;background:var(--print-paper)}
+.user-management td select{max-width:190px}
+@media(max-width:620px){
+ #export-dialog .dialog-content{padding:15px;max-height:calc(100dvh - 250px)}
+ #export-dialog .dialog-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:12px;gap:8px}
+ #export-dialog .dialog-actions .button{white-space:normal}
+ #export-dialog .dialog-actions .button:last-child{grid-column:1/-1}
+ .export-center .form-grid{grid-template-columns:1fr;gap:12px}
+ .export-entities{grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 10px;padding:10px}
+ .export-preview{padding:12px}
+ .export-center .checkbox-label{min-height:40px}
+ #export-print-dialog .dialog-heading{padding:14px 16px}
+ #export-print-dialog .dialog-actions{padding:12px 16px}
+}

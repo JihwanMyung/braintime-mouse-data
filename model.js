@@ -1,6 +1,6 @@
-import { validateGeneticProfile } from './genotype-schema.js?v=11';
-import { validateScenario } from './genetics.js?v=11';
-import { validateCryoRecord } from './cryopreservation-model.js?v=11';
+import { validateGeneticProfile } from './genotype-schema.js?v=12';
+import { validateScenario } from './genetics.js?v=12';
+import { validateCryoRecord } from './cryopreservation-model.js?v=12';
 export const ID_FIELDS = Object.freeze({mice:'mouse_sid',matings:'mating_sid',litters:'litter_sid',cages:'cage_sid',rooms:'room_id',racks:'rack_id',locations:'location_id',light_events:'event_id',husbandry_events:'event_id'});
 const copy = value => structuredClone(value);
 const ids = value => Array.isArray(value) ? value : (typeof value==='string' ? value.split(/[\n,]/).map(s=>s.trim()).filter(Boolean) : []);

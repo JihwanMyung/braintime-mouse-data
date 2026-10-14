@@ -1,7 +1,7 @@
-import { normalizeDataset, ID_FIELDS } from './model.js?v=11';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=12';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
-const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1';
+const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
 const MANAGED=Object.keys(ID_FIELDS);
 const clone=value=>structuredClone(value);
 let versions=new Map(),baseline=null,synced=false,refreshPromise=null,statusMessage='',pendingEmail=null;
@@ -42,7 +42,7 @@ async function local(action,value){
   });
 }
 export async function loadDataset(){const d=await local('get');return d?normalizeDataset(d):null;}
-export async function clearDataset(){await local('delete');setMode('local');invalidate();statusMessage='Local dataset cleared.';}
+export async function clearDataset(){await local('delete');setStorage('localStorage',DEMO_KEY,null);setMode('local');invalidate();statusMessage='Local dataset cleared.';}
 
 function publicKey(key){
   if(typeof key!=='string'||!key.trim())throw new Error('A Supabase publishable or anon key is required.');
@@ -61,11 +61,11 @@ export function configureCloud({url,anonKey,colonyId}){
   if(u.username||u.password||u.search||u.hash||u.pathname!=='/')throw new Error('Enter the Supabase project URL without credentials or a path.');
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(colonyId??''))throw new Error('A valid colony UUID is required.');
   const config={url:u.origin,anonKey:publicKey(anonKey.trim()),colonyId};
-  setStorage('localStorage',CONFIG_KEY,JSON.stringify(config));saveSession(null);pendingEmail=null;setMode('local');invalidate();statusMessage='Cloud configured. Sign in to connect.';
+  setStorage('localStorage',DEMO_KEY,null);setStorage('localStorage',CONFIG_KEY,JSON.stringify(config));saveSession(null);pendingEmail=null;setMode('local');invalidate();statusMessage='Cloud configured. Sign in to connect.';
 }
 export function getCloudStatus(){
   const c=configuration(),s=session();
-  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:mode()==='local'||synced,colonyId:c?.colonyId??null,role:s?.role??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
+  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:mode()==='local'||synced,colonyId:c?.colonyId??null,role:s?.role??null,exportLevel:s?.role==='owner'?'max':s?.exportLevel??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
 }
 async function responseJSON(response){const text=await response.text();if(!text)return null;try{return JSON.parse(text);}catch{throw new Error('The cloud server returned an unreadable response.');}}
 function apiError(response,body){
@@ -90,7 +90,7 @@ function normalizeSession(s){if(!s?.access_token||!s?.refresh_token)throw new Er
 async function accessToken(){
   let s=session();if(!s?.access_token)throw new Error('Sign in before using cloud data.');
   if(s.expires_at<=Date.now()/1000+60){
-    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{const next={...normalizeSession(result),role:s.role};saveSession(next);return next;}).catch(e=>{saveSession(null);invalidate();throw e;}).finally(()=>{refreshPromise=null;});
+    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{const next={...normalizeSession(result),role:s.role,exportLevel:s.exportLevel};saveSession(next);return next;}).catch(e=>{saveSession(null);invalidate();throw e;}).finally(()=>{refreshPromise=null;});
     s=await refreshPromise;
   }
   return s.access_token;
@@ -104,9 +104,9 @@ async function request(route,{method='GET',body}={}){
 async function membership(){
   const c=configuration(),s=session();
   if(!s?.user?.id)throw new Error('The signed-in user is unavailable. Sign in again.');
-  const rows=await request(`memberships?select=role,active&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
+  const rows=await request(`memberships?select=role,active,export_level&user_id=eq.${encodeURIComponent(s.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`);
   if(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not an active member of the configured colony.');
-  saveSession({...session(),role:rows[0].role});return rows[0].role;
+  saveSession({...session(),role:rows[0].role,exportLevel:rows[0].role==='owner'?'max':rows[0].export_level||'low'});return rows[0].role;
 }
 export async function signIn(email,password){
   if(typeof email!=='string'||typeof password!=='string'||!email.trim()||!password)throw new Error('Enter your email and password.');
@@ -157,13 +157,13 @@ export async function consumeAuthCallback(){
     if(!verified.ok)throw new Error('The cloud project rejected this sign-in link. Request a new link.');
     const user=await responseJSON(verified);
     if(user?.id!==claims.sub||user.is_anonymous)throw new Error('The cloud project could not verify this account.');
-    const membershipResponse=await fetch(`${c.url}/rest/v1/memberships?select=role,active&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
+    const membershipResponse=await fetch(`${c.url}/rest/v1/memberships?select=role,active,export_level&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
     if(!membershipResponse.ok)throw new Error('Unable to verify colony membership. Sign in again or contact the colony owner.');
     const rows=await responseJSON(membershipResponse);
     if(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','editor','viewer'].includes(rows[0].role))throw new Error('This account is not an active member of the configured colony.');
     // A local JWT decode only checks scope; the current project's Auth endpoint
     // authenticates the token. Persist only after that and membership both pass.
-    saveSession({access_token:access,refresh_token:refresh,token_type:'bearer',expires_at:claims.exp,user,role:rows[0].role});
+    saveSession({access_token:access,refresh_token:refresh,token_type:'bearer',expires_at:claims.exp,user,role:rows[0].role,exportLevel:rows[0].role==='owner'?'max':rows[0].export_level||'low'});
     pendingEmail=null;statusMessage='Signed in. Pull the shared colony to continue.';
     return {...getCloudStatus(),needsPasswordSetup:type==='invite'||type==='recovery'};
   }catch(error){
@@ -276,7 +276,7 @@ function remember(rows){versions=new Map(rows.map(r=>[recordKey(r),r.version]));
 export async function pullFromCloud(){
   await membership();
   const rows=await allRecords();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
-  const data=await assemble(rows);await local('put',data);remember(rows);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
+  const data=await assemble(rows);await local('put',data);remember(rows);setStorage('localStorage',DEMO_KEY,null);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
 }
 async function writeAtomic(pending){
   if(!pending.length)return [];
@@ -303,10 +303,10 @@ export async function pushToCloud(dataset){
   catch(e){throw new Error(`${e.message} Initial upload confirmed ${completed} records before this batch. Retry upload to skip identical records; no local import was replaced.`);}
   return pullFromCloud();
 }
-export async function saveDataset(dataset,{localOnly=false}={}){
+export async function saveDataset(dataset,{localOnly=false,localKind=null}={}){
   const data=normalizeDataset(dataset);
   if(localOnly||mode()==='local'){
-    await local('put',data);if(localOnly){setMode('local');invalidate();}statusMessage='Saved on this device.';return;
+    await local('put',data);if(localOnly){setStorage('localStorage',DEMO_KEY,localKind==='demo'?'true':null);setMode('local');invalidate();}statusMessage='Saved on this device.';return;
   }
   if(!synced||!baseline)throw new Error('Pull the latest cloud data before editing.');
   await requireEditor();
@@ -331,13 +331,127 @@ export async function getAuditLog({limit=100,before=null}={}){
   return request(`audit_log?select=audit_id,colony_id,entity_type,entity_id,operation,actor_id,occurred_at,before_record,after_record&colony_id=eq.${encodeURIComponent(c.colonyId)}&order=audit_id.desc&limit=${n}${before===null?'':`&audit_id=lt.${before}`}`);
 }
 
+const exportDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&!Number.isNaN(Date.parse(value))&&new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value;
+function checkedExportPermission(value){
+  if(!value||!['low','high','max'].includes(value.level)||!exportDate(value.as_of_date)||value.full_history!==(value.level==='max')||(value.level==='max'?value.cutoff_date!==null:!exportDate(value.cutoff_date)))throw new Error('Export permission could not be verified. Reload and try again.');
+  return value;
+}
+function exportContext(){const c=configuration();return stable({url:c?.url,colony:c?.colonyId,user:session()?.user?.id,mode:mode(),demo:getStorage('localStorage',DEMO_KEY)});}
+function checkExportContext(context){if(exportContext()!==context)throw new Error('Your account or colony changed. Reopen Export.');}
+async function localExportDataset(){
+  const data=await loadDataset();
+  // A configured real colony always rechecks server permission, including after
+  // sign-out. Demo and unconfigured private workspaces contain user-owned data.
+  return mode()==='local'&&data&&(!configuration()||getStorage('localStorage',DEMO_KEY)==='true')?data:null;
+}
+function localExportPermission(){return {level:'max',cutoff_date:null,as_of_date:new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()),full_history:true,local:true};}
+export async function getExportPermission(){
+  const context=exportContext(),localData=await localExportDataset();checkExportContext(context);
+  if(localData)return localExportPermission();
+  const c=configuration();if(!c)throw new Error('Open a workspace before exporting.');
+  const value=checkedExportPermission(await request('rpc/get_export_permission',{method:'POST',body:{p_colony_id:c.colonyId}}));
+  checkExportContext(context);if(session())saveSession({...session(),exportLevel:value.level});
+  return {...value,local:false};
+}
+export async function assertFullExportPermission(){
+  const context=exportContext(),localData=await localExportDataset();checkExportContext(context);
+  if(localData)return localExportPermission();
+  const c=configuration();if(!c)throw new Error('Open a workspace before exporting.');
+  const value=checkedExportPermission(await request('rpc/assert_full_export_permission',{method:'POST',body:{p_colony_id:c.colonyId}}));
+  checkExportContext(context);if(value.level!=='max')throw new Error('Max export level is required for a full backup or source archive.');
+  return {...value,local:false};
+}
+function exportRecordDate(type,row){
+  const keys={mice:['end_date','date_of_birth'],matings:['disbanded_date','set_up_date'],litters:['end_date','wean_date','date_of_birth'],cages:['end_date','set_up_date'],light_events:['end_date','start_date'],husbandry_events:['event_date']}[type]||[];
+  if(type==='husbandry_events'&&row.event_type==='cryopreservation_lot')return [row.cryopreservation?.quantity_as_of_date,row.cryopreservation?.frozen_date].find(exportDate)||null;
+  return keys.map(key=>row[key]).find(exportDate)||null;
+}
+function currentExportRecord(type,row,data){
+  const present=r=>!r.app_archived_at&&r.archived!==true;
+  if(!present(row))return false;
+  if(type==='mice')return row.state==='Stock';
+  if(['rooms','racks','locations'].includes(type))return true;
+  if(type==='cages')return ['active','occupied'].includes(String(row.state).toLowerCase())||data.tables.mice.some(r=>present(r)&&r.state==='Stock'&&r.cage_sid===row.cage_sid)||data.tables.locations.some(r=>present(r)&&row.location_id&&r.location_id===row.location_id);
+  if(type==='light_events'){
+    let today;try{today=new Intl.DateTimeFormat('en-CA',{timeZone:row.timezone||'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());}catch{today=localExportPermission().as_of_date;}
+    return exportDate(row.start_date)&&row.start_date<=today&&(row.end_date==null||exportDate(row.end_date)&&(/next phase start|exclusive/i.test(row.interval_semantics||'')?row.end_date>today:row.end_date>=today));
+  }
+  return false;
+}
+export async function getExportRecords({scope='current_housing',fromDate=null,toDate=null,entityTypes=null}={}){
+  if(!['current_housing','history'].includes(scope))throw new Error('Choose current housing or historical records.');
+  if(entityTypes!==null&&(!Array.isArray(entityTypes)||!entityTypes.length||entityTypes.some(type=>!MANAGED.includes(type))))throw new Error('Choose supported record types to export.');
+  for(const value of [fromDate,toDate])if(value!==null&&!exportDate(value))throw new Error('Choose valid export dates.');
+  const context=exportContext(),permission=await getExportPermission();checkExportContext(context);
+  const end=toDate||permission.as_of_date,start=fromDate||permission.cutoff_date;
+  if(end>permission.as_of_date||start&&start>end)throw new Error('The export date range is invalid.');
+  if(scope==='history'&&permission.cutoff_date&&start<permission.cutoff_date)throw new Error('This date range exceeds your export level.');
+  const localData=permission.local?await localExportDataset():null;
+  checkExportContext(context);
+  if(permission.local){
+    if(!localData)throw new Error('The workspace changed. Reopen Export.');
+    const data=normalizeDataset({tables:{}});let excluded=0;
+    for(const type of MANAGED){data.tables[type]=(entityTypes&&!entityTypes.includes(type)?[]:localData.tables[type]||[]).filter(row=>{
+      if(scope!=='history')return currentExportRecord(type,row,localData);const date=exportRecordDate(type,row);
+      if(!date){if(start){excluded++;return false}return true}
+      return (!start||date>=start)&&date<=end;
+    }).map(clone);}
+    return {dataset:data,metadata:{...permission,export_level:permission.level,scope,from_date:scope==='history'?start:null,to_date:scope==='history'?end:null,excluded_undated:excluded,snapshot_revision:'local',captured_at:new Date().toISOString()}};
+  }
+  const c=configuration(),rows=[],seen=new Set();let offset=0,metadata=null;
+  while(true){
+    const page=await request('rpc/export_records',{method:'POST',body:{p_colony_id:c.colonyId,p_scope:scope,p_from_date:scope==='history'?start:null,p_to_date:scope==='history'?end:null,p_entity_types:entityTypes,p_offset:offset,p_limit:250}});
+    if(!page||!Array.isArray(page.rows)||page.rows.length>250||!['low','high','max'].includes(page.export_level)||!exportDate(page.as_of_date)||typeof page.snapshot_revision!=='string')throw new Error('The server returned an unverifiable export page.');
+    if(page.export_level!==permission.level||page.cutoff_date!==permission.cutoff_date||page.as_of_date!==permission.as_of_date)throw new Error('Your export permission changed. Reopen Export and try again.');
+    if(metadata&&page.snapshot_revision!==metadata.snapshot_revision)throw new Error('Colony data changed while exporting. Try again for a consistent snapshot.');
+    checkExportContext(context);
+    metadata??={...page,rows:undefined,local:false,scope};
+    for(const row of page.rows){
+      const key=recordKey(row);
+      if(!MANAGED.includes(row.entity_type)||typeof row.entity_id!=='string'||!row.payload||row.payload[ID_FIELDS[row.entity_type]]!==row.entity_id||seen.has(key))throw new Error('The export contains an invalid or duplicate record.');
+      seen.add(key);rows.push(row);
+    }
+    if(page.next_offset===null)break;
+    if(!Number.isSafeInteger(page.next_offset)||page.next_offset!==offset+page.rows.length||page.next_offset<=offset||page.next_offset>100000)throw new Error('Export pagination could not be verified. Narrow the selected records.');
+    offset=page.next_offset;
+  }
+  const final=await getExportPermission();checkExportContext(context);
+  if(final.local||final.level!==permission.level||final.cutoff_date!==permission.cutoff_date||final.as_of_date!==permission.as_of_date)throw new Error('Your export permission changed. Reopen Export and try again.');
+  const data=normalizeDataset({tables:{}});for(const row of rows)data.tables[row.entity_type].push({...clone(row.payload),export_record_date:row.record_date??null});
+  return {dataset:data,metadata:{...metadata,row_count:rows.length}};
+}
+export async function getFullExportBackup(){
+  const context=exportContext(),permission=await assertFullExportPermission();checkExportContext(context);
+  let data;
+  if(permission.local)data=await localExportDataset();
+  else {const rows=await allRecords();checkExportContext(context);data=await assemble(rows);}
+  checkExportContext(context);if(!data)throw new Error('No workspace is available to back up.');
+  const final=await assertFullExportPermission();checkExportContext(context);
+  if(final.local!==permission.local)throw new Error('The workspace changed. Reopen Export.');
+  return {...data,app_backup_at:new Date().toISOString(),export_permission:{level:permission.level,as_of_date:permission.as_of_date}};
+}
+export async function getFullSourceExport(localLoader){
+  const context=exportContext(),c=configuration();
+  // Source history has separate storage and must never inherit a demo's grant.
+  const authorize=async()=>{
+    if(!c)return assertFullExportPermission();
+    const value=checkedExportPermission(await request('rpc/assert_full_export_permission',{method:'POST',body:{p_colony_id:c.colonyId}}));
+    checkExportContext(context);if(value.level!=='max')throw new Error('Max export level is required for a full source archive.');
+    return value;
+  };
+  await authorize();checkExportContext(context);
+  const index=c?await downloadHistoryIndex():await localLoader();checkExportContext(context);
+  if(!index)throw new Error('No full source archive is loaded. Open Source archive to load it first.');
+  await authorize();checkExportContext(context);return index;
+}
+
 /** User administration is authenticated here and independently authorized by the Edge function. */
 export async function manageColonyUsers(action,payload={}) {
   const c=configuration(),signedIn=session();
   if(!c)throw new Error('Configure the cloud project first.');
   if(!signedIn?.access_token||!signedIn.user?.id)throw new Error('Sign in before managing colony users.');
   if(signedIn.role!=='owner')throw new Error('Only an active colony owner can manage users.');
-  const allowed={list:[],invite:['email','role'],update_access:['user_id','role','active']};
+  const allowed={list:[],invite:['email','role','export_level'],update_access:['user_id','role','active','export_level']};
   if(!Object.hasOwn(allowed,action))throw new Error('Unsupported user-management action.');
   if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(k=>!allowed[action].includes(k)))throw new Error('Unexpected user-management fields. Colony and invitation return URLs are configured by the app and server.');
   const fields={};
@@ -345,6 +459,7 @@ export async function manageColonyUsers(action,payload={}) {
   if(action==='invite'||action==='update_access') {
     if(!['viewer','editor'].includes(payload.role))throw new Error('Choose viewer or editor access. Owner accounts cannot be changed here.');
     fields.role=payload.role;
+    if(payload.export_level!==undefined){if(!['low','high','max'].includes(payload.export_level))throw new Error('Choose Low, High or Max export access.');fields.export_level=payload.export_level;}
   }
   if(action==='update_access') {
     if(typeof payload.user_id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.user_id))throw new Error('Choose a valid colony user.');
