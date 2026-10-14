@@ -23,12 +23,29 @@ begin
 end $$;
 
 -- One SQL statement gives a consistent database snapshot, regardless of paging limits.
+-- Return only the fields used by the five managed Sheet tabs. Full source/history
+-- payloads remain in entity_records; serializing them here can exceed REST timeouts.
 create or replace function public.sheet_sync_snapshot(p_colony_id uuid, p_token uuid)
 returns jsonb language sql security definer set search_path=public,pg_temp as $$
+  with projection_fields(entity_type,keys) as (values
+    ('mice',array['mouse_sid','state','physical_tag','sex','genotype','date_of_birth','cage_sid','cage_tag','status','sire_sids','dam_sids','protocol','comment']),
+    ('cages',array['cage_sid','cage_tag','state','room_id','rack_id','location_id','room','rack','location','cage_type','capacity','comment']),
+    ('rooms',array['room_id','name','label']),
+    ('racks',array['rack_id','room_id','name','label']),
+    ('locations',array['location_id','room_id','rack_id','label','source_label','row','column','source_observed_mouse_sids','source_candidate_mouse_sids','source_observed_tags','source_observed_cage_sids','source_candidate_cage_sids','evidence_status','notes','source_block_text','source_snapshot_date']),
+    ('light_events',array['event_id','location_id','cage_sid','room_id','start_date','end_date','protocol','cycle_hours','light_hours','lights_on','lights_off','transition_minutes','intensity_lux','timezone','evidence_status','actual_exposure_verified','notes','interval_semantics'])
+  )
   select jsonb_build_object('captured_at',now(),'records',coalesce((
     select jsonb_agg(jsonb_build_object('entity_type',r.entity_type,'entity_id',r.entity_id,
-      'payload',r.payload,'version',r.version,'archived',r.archived) order by r.entity_type,r.entity_id)
-    from public.entity_records r where r.colony_id=p_colony_id and r.entity_type <> 'archive'
+      'payload',(select coalesce(jsonb_object_agg(k,r.payload->k),'{}'::jsonb)
+        from unnest(f.keys || array['app_archived_at','source_url','source_file','source_filename']) k
+        where r.payload ? k),
+      'version',r.version,'archived',r.archived) order by r.entity_type,r.entity_id)
+    from public.entity_records r join projection_fields f using(entity_type)
+    where r.colony_id=p_colony_id
+      -- Every projection path uses Stock mice. Keep all cages, including ended
+      -- cages linked to a position or Stock mouse, and all light observations.
+      and (r.entity_type <> 'mice' or r.payload->>'state'='Stock')
   ),'[]'::jsonb))
   where exists(select 1 from public.sheet_sync_state where colony_id=p_colony_id and lock_token=p_token);
 $$;
