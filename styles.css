@@ -144,3 +144,20 @@
  .strain-management input,.strain-management textarea,.strain-management select{min-width:0}
  .strain-management td:last-child .button{width:100%}
 }
+
+.breeding-summary-grid{grid-template-columns:repeat(6,minmax(0,1fr))}
+.breeding-summary .mouse-summary-heading{flex-wrap:wrap}
+.breeding-summary .mouse-summary-heading h2 span{font-weight:400;white-space:nowrap}
+.breeding-summary .actions{flex-wrap:wrap}
+.breeding-summary select{font:inherit;font-size:12px;border:1px solid var(--control-line);background:var(--surface);color:var(--ink);border-radius:6px;padding:6px 9px;max-width:100%}
+.breeding-summary-grid .mouse-summary-item dt{min-height:48px}
+.breeding-summary-grid .mouse-summary-item dd{font-size:27px;white-space:nowrap}
+#breeding-options-dialog{width:min(600px,calc(100vw - 30px))}
+.breeding-options input{width:100%;min-width:0;border:1px solid var(--control-line);border-radius:6px;padding:9px;background:var(--surface);color:var(--ink)}
+@media(max-width:1150px){.breeding-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.breeding-summary-grid .mouse-summary-item{border:0;border-left:1px solid var(--line)}.breeding-summary-grid .mouse-summary-item:nth-child(3n+1){border-left:0}.breeding-summary-grid .mouse-summary-item:nth-child(n+4){border-top:1px solid var(--line)}}
+@media(max-width:480px){.breeding-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.breeding-summary-grid .mouse-summary-item:nth-child(n){border:0;border-left:1px solid var(--line)}.breeding-summary-grid .mouse-summary-item:nth-child(odd){border-left:0}.breeding-summary-grid .mouse-summary-item:nth-child(n+3){border-top:1px solid var(--line)}.breeding-summary-grid .mouse-summary-item dt{min-height:38px}.breeding-summary .mouse-summary-heading .actions{width:100%;justify-content:space-between}}
+
+.breeding-options .form-actions{display:flex;gap:10px;flex-wrap:wrap}
+.breeding-options .alert,.breeding-options .banner{margin:12px}
+.breeding-options th{padding:12px}
+@media(max-width:480px){.breeding-options td,.breeding-options th{padding:10px 7px}.breeding-options input{padding:8px 6px}}
