@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { buildStrainDefinition, getStrainRegistry } from '../web/strain-registry.js';
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {normalizeDataset,createSyntheticDataset,validateRecord,ID_FIELDS} from '../web/model.js';
@@ -526,4 +527,21 @@ test('local current snapshots exclude historical animals and events while Max hi
 test('trusted demo cannot export a retained real source archive with Low permission',async()=>{
   await connected(createSyntheticDataset());server.exportLevel='low';await store.saveDataset(createSyntheticDataset(),{localOnly:true,localKind:'demo'});
   let loaded=false;await assert.rejects(store.getFullSourceExport(async()=>{loaded=true;return {private:true};}),/permission/);assert.equal(loaded,false);
+});
+
+test('strain metadata uses versioned cloud records, rejects stale edits and respects read-only membership',async()=>{
+  const d=await connected();
+  const input={code:'E',insertion_type:'transgenic',stock_reference:'Synthetic stock',notes:'Synthetic strain note'};
+  const built=buildStrainDefinition(d,input,{now:'2026-10-14T10:00:00Z'});
+  assert.deepEqual(validateRecord('husbandry_events',built.record,d).errors,[]);
+  await store.saveDataset(built.dataset);
+  const pulled=await store.pullFromCloud();assert.equal(getStrainRegistry(pulled).find(row=>row.key==='E').notes,input.notes);
+  assert.equal(server.records.get('husbandry_events:STRAIN-E').version,1);
+  const edited=buildStrainDefinition(pulled,{...input,notes:'Uncommitted note'},{now:'2026-10-14T11:00:00Z'}).dataset;
+  server.records.get('husbandry_events:STRAIN-E').version++;
+  await assert.rejects(store.saveDataset(edited),/changed in another session/);
+  const latest=await store.pullFromCloud();server.role='viewer';
+  await assert.rejects(store.saveDataset(buildStrainDefinition(latest,{...input,notes:'Viewer cannot edit'}).dataset),/viewer/);
+  assert.equal(getStrainRegistry(await store.loadDataset()).find(row=>row.key==='E').notes,input.notes);
+  assert.equal(server.records.get('husbandry_events:STRAIN-E').payload.strain_definition.notes,input.notes);
 });

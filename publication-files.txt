@@ -82,3 +82,9 @@ supabase/EXPORTS.md
 supabase/tests/export-permissions.test.mjs
 docs/animal-sheet-exports.md
 supabase/tests/export-performance.test.mjs
+web/mouse-summary.js
+tests/mouse-summary.test.mjs
+web/strain-registry.js
+web/strain-management.js
+tests/strain-registry.test.mjs
+tests/strain-management.test.mjs
