@@ -106,3 +106,16 @@ web/family-targets.js
 tests/family-explorer.test.mjs
 tests/family-genotypes.test.mjs
 tests/family-targets.test.mjs
+web/experiment-model.js
+web/experiment-sources.js
+web/experiments.js
+tests/experiment-model.test.mjs
+supabase/experiment-export.sql
+tests/experiments.test.mjs
+tests/experiment-sources.test.mjs
+scripts/import-experiment-sources.py
+tests/test_import_experiment_sources.py
+scripts/prepare-experiment-import.mjs
+docs/experiment-records.md
+docs/experiment-source-import.md
+supabase/tests/experiment-import.test.mjs

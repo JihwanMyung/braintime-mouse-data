@@ -103,6 +103,20 @@ test('CSV guards formula-looking strings and retains exact text identifiers',asy
   const csv=await text(calls.downloads[0]);assert.match(csv,/"000123"/);assert.match(csv,/"'=HYPERLINK/);assert.match(csv,/"'\t\+attack"/);assert.match(csv,/"-2"/);assert.match(calls.downloads[0].filename,/\.csv$/);assert.equal(calls.prints.length,0);
 });
 
+test('experiment CSV exposes readable assay, animal, tissue and freezer columns; JSON preserves structured associations',async()=>{
+  const {container,calls,state}=await mount({scope:'records',format:'csv',entityTypes:['husbandry_events']});
+  state.fresh.tables.husbandry_events=[
+    {event_id:'EXP-01',event_type:'experiment',event_date:'2026-10-01',experiment:{title:'=Example study',assays:['LumiCycle','IMG'],participants:[{mouse_sid:'0001',link_status:'confirmed'},{raw_identifier:'TAG-X',link_status:'unresolved',candidate_sids:['0002']}],sample_usages:[{sample_id:'SAMPLE-1',amount:2,unit:'µL'}],participants_truncated:true,participant_count:101}},
+    {event_id:'SAMPLE-1',event_type:'experiment_sample',event_date:'2026-10-01',experiment_sample:{label:'SCN aliquot',tissue:'SCN',donors:[{mouse_sid:'0001',link_status:'confirmed'}],storage:{temperature_c:-70,freezer:'F1',box:'B2',position:'A3'}}}
+  ];
+  await click(container,'preview');assert.match(container.innerHTML,/Experiments &amp; husbandry/);assert.match(container.innerHTML,/1 experiment or specimen records contain more/);
+  await click(container,'export');const csv=await text(calls.downloads[0]);
+  for(const column of ['experiment_title','experiment_assays','confirmed_mouse_sids','unresolved_animal_identifiers','experiment_sample_tissue','storage_temperature_c','storage_freezer','storage_position'])assert(csv.includes(column),column);
+  assert.match(csv,/"'=Example study"/);assert.match(csv,/0001/);assert.match(csv,/TAG-X/);assert.match(csv,/"-70"/);
+  change(container,'format','json');await click(container,'preview');await click(container,'export');
+  const json=JSON.parse(await text(calls.downloads[1]));assert.equal(json.tables.husbandry_events[0].experiment.participants[0].mouse_sid,'0001');assert.equal(json.tables.husbandry_events[1].experiment_sample.storage.temperature_c,-70);
+});
+
 test('XLSX is a workbook for both scopes and scope changes invalidate previous previews',async()=>{
   const {container,calls}=await mount({scope:'animal-sheet',format:'xlsx'});
   await click(container,'preview');await click(container,'export');

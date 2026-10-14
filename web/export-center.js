@@ -1,4 +1,4 @@
-import { projectAnimalSheet, createAnimalSheetXlsx, createWorkbookXlsx, animalSheetPrintHTML } from './animal-sheet-export.js?v=19';
+import { projectAnimalSheet, createAnimalSheetXlsx, createWorkbookXlsx, animalSheetPrintHTML } from './animal-sheet-export.js?v=20';
 
 const mounts=new WeakMap();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -6,7 +6,7 @@ const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value)
 const validDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value;
 const active=row=>!row.app_archived_at&&row.archived!==true;
 const scopeNames={'animal-sheet':'Current Animal Sheet',records:'Records and history',backup:'Full workspace backup','source-archive':'Full source archive'};
-const typeNames={mice:'Mice',matings:'Matings',litters:'Litters',cages:'Cages',rooms:'Rooms',racks:'Racks',locations:'Positions',light_events:'Light history',husbandry_events:'Husbandry history'};
+const typeNames={mice:'Mice',matings:'Matings',litters:'Litters',cages:'Cages',rooms:'Rooms',racks:'Racks',locations:'Positions',light_events:'Light history',husbandry_events:'Experiments & husbandry'};
 const idFields={mice:'mouse_sid',matings:'mating_sid',litters:'litter_sid',cages:'cage_sid',rooms:'room_id',racks:'rack_id',locations:'location_id',light_events:'event_id',husbandry_events:'event_id'};
 const levelNames={low:'Low (past 3 years)',high:'High (past 6 years)',max:'Max (full history)'};
 const formatNames={xlsx:'Excel workbook (.xlsx)',csv:'CSV (.csv)',json:'JSON (.json)',pdf:'PDF (print / save)'};
@@ -20,6 +20,26 @@ const permissionKey=permission=>JSON.stringify([permission.level,permission.cuto
 const countsFor=dataset=>Object.entries(dataset?.tables||{}).filter(([,rows])=>Array.isArray(rows)).map(([type,rows])=>({label:typeNames[type]||type,count:rows.length}));
 const sumCounts=counts=>counts.reduce((sum,row)=>sum+row.count,0);
 const scalarRows=rows=>{const headers=[...new Set(rows.flatMap(row=>Object.keys(row)))].sort();return [headers,...rows.map(row=>headers.map(key=>textValue(row[key]))) ]};
+function experimentColumns(record) {
+  const type=record.event_type;
+  if(!['experiment','experiment_sample'].includes(type)||!object(record[type]))return record;
+  const {[type]:payload,...result}=record;
+  for(const [key,value] of Object.entries(payload)) {
+    if(key==='storage'&&object(value))for(const [field,item] of Object.entries(value))result['storage_'+field]=item;
+    else result[type+'_'+key]=value;
+  }
+  const references=type==='experiment'?payload.participants:payload.donors;
+  result.confirmed_mouse_sids=(Array.isArray(references)?references:[]).filter(row=>row.link_status==='confirmed'&&typeof row.mouse_sid==='string').map(row=>row.mouse_sid);
+  result.unresolved_animal_identifiers=(Array.isArray(references)?references:[]).filter(row=>row.link_status!=='confirmed'&&typeof row.raw_identifier==='string').map(row=>row.raw_identifier);
+  return result;
+}
+function experimentProjectionWarnings(tables) {
+  const count=(tables.husbandry_events||[]).filter(row=>{
+    const p=row.experiment||row.experiment_sample;
+    return p&&(p.participants_truncated||p.sample_usages_truncated||p.donors_truncated||p.parent_samples_truncated||[...(p.participants||[]),...(p.donors||[])].some(link=>link.candidates_truncated));
+  }).length;
+  return count?[`${count} experiment or specimen records contain more animal/sample links than this bounded report includes. Exported lists show their total and truncation flags. Full preservation backups require Max.`]:[];
+}
 
 function checkedPermission(value) {
   if(!object(value)||!Object.hasOwn(levelNames,value.level)||!validDate(value.as_of_date))throw new Error('Export permission could not be verified. Reconnect and try again.');
@@ -110,14 +130,14 @@ export async function renderExportCenter(container,dataset,hooks,options={}) {
       const total=Number.isFinite(projection.counts?.mice)?projection.counts.mice:0;
       return {projection,counts,total,unit:state.selectedOnly?'selected current animals':'current animals',warnings:Array.isArray(projection.warnings)?projection.warnings:[],range:(state.selectedOnly?'Selected animals · ':'')+'Current housing · birth date unrestricted'};
     }
-    const payload=historyPayload(result,grant),counts=countsFor({tables:payload.tables});return {payload,counts,total:sumCounts(counts),unit:'records',warnings:[...(Array.isArray(result.metadata?.warnings)?result.metadata.warnings:[]),...(Number(result.metadata?.excluded_undated)>0?[`${Number(result.metadata.excluded_undated).toLocaleString()} undated records were excluded from this date-limited export.`]:[])],range:`${state.fromDate||'Earliest permitted date'} to ${state.toDate}, inclusive`};
+    const payload=historyPayload(result,grant),counts=countsFor({tables:payload.tables});return {payload,counts,total:sumCounts(counts),unit:'records',warnings:[...(Array.isArray(result.metadata?.warnings)?result.metadata.warnings:[]),...experimentProjectionWarnings(payload.tables),...(Number(result.metadata?.excluded_undated)>0?[`${Number(result.metadata.excluded_undated).toLocaleString()} undated records were excluded from this date-limited export.`]:[])],range:`${state.fromDate||'Earliest permitted date'} to ${state.toDate}, inclusive`};
   }
   function historySheets(payload) {
     const metadata=[['Export scope','Records and history'],['From date',payload.metadata.from_date||'Full permitted history'],['To date',payload.metadata.to_date],['Export level',payload.metadata.export_level],['As of date',payload.metadata.as_of_date]];
-    return [{name:'Export information',rows:[['Field','Value'],...metadata],frozenRows:1},...Object.entries(payload.tables).map(([type,records])=>({name:typeNames[type],rows:records.length?scalarRows(records):[['No matching records']],frozenRows:1,autoFilter:records.length>0}))];
+    return [{name:'Export information',rows:[['Field','Value'],...metadata],frozenRows:1},...Object.entries(payload.tables).map(([type,records])=>({name:typeNames[type],rows:records.length?scalarRows(records.map(experimentColumns)):[['No matching records']],frozenRows:1,autoFilter:records.length>0}))];
   }
   function historyCSV(payload) {
-    const combined=Object.entries(payload.tables).flatMap(([type,records])=>records.map(record=>({entity_type:type,record_id:record[idFields[type]]??'',...record})));
+    const combined=Object.entries(payload.tables).flatMap(([type,records])=>records.map(record=>({entity_type:type,record_id:record[idFields[type]]??'',...experimentColumns(record)})));
     if(!combined.length)return '"entity_type","record_id"\r\n';
     const keys=['entity_type','record_id',...[...new Set(combined.flatMap(record=>Object.keys(record)))].filter(key=>!['entity_type','record_id'].includes(key)).sort()];
     return '\uFEFF'+[keys.map(csvCell).join(','),...combined.map(record=>keys.map(key=>csvCell(record[key])).join(','))].join('\r\n')+'\r\n';

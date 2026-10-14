@@ -1,0 +1,151 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {buildExperiment,buildExperimentSample} from '../web/experiment-model.js';
+
+let serial=0;
+const clone=structuredClone;
+const confirmed=id=>({mouse_sid:id,raw_identifier:id,link_status:'confirmed',candidate_sids:[],role:null,notes:null});
+const base=()=>({tables:{mice:[{mouse_sid:'M1',physical_tag:'P1',genotype:'P',state:'Stock'},{mouse_sid:'M2',physical_tag:'B1',genotype:'B',state:'Stock'}],husbandry_events:[],experiment_sources:[{source_id:'SOURCE-1',date:'2024-01-10',assays:['LumiCycle'],raw_identifiers:['P1','Old tag'],tissue:'SCN',storage:'-80 °C',workbook_title:'Experiment Sheet 2024',sheet_name:'LumiCycle',range:'A2:F2',source_url:'https://example.test/sheet',raw_values:{A2:'P1',B2:'<script>raw source</script>'},provenance:[{source_url:'https://example.test/sheet',sheet_name:'LumiCycle',range:'A2:F2',snapshot_date:'2024-06-01'}]}]}});
+const decode=s=>String(s??'').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+function fakeContainer(){
+  let html='',controls=[];
+  const attrs=s=>Object.fromEntries([...s.matchAll(/([\w-]+)="([^"]*)"/g)].map(m=>[m[1],decode(m[2])]));
+  const matches=(c,selector)=>selector.startsWith('#')?c.id===selector.slice(1):selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/)?(()=>{const [,k,v]=selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);return Object.hasOwn(c.attributes,k)&&(v===undefined||c.attributes[k]===v)})():false;
+  const form={id:'experiment-form',get controls(){return controls},querySelectorAll:selector=>controls.filter(c=>matches(c,selector))};
+  return {get innerHTML(){return html},set innerHTML(value){html=value;controls=[...html.matchAll(/<input\b([^>]*)>|<(select|textarea)\b([^>]*)>([\s\S]*?)<\/\2>/g)].map(m=>{const tag=m[2]||'input',a=attrs(m[1]||m[3]),options=tag==='select'?[...m[4].matchAll(/<option\b([^>]*)>([\s\S]*?)<\/option>/g)].map(o=>({...attrs(o[1]),selected:/\sselected(?:\s|$)/.test(o[1])})):[];return {attributes:a,id:a.id,name:a.name,type:a.type||'text',tagName:tag.toUpperCase(),value:tag==='select'?(options.find(x=>x.selected)?.value??options[0]?.value??''):tag==='textarea'?decode(m[4]):a.value??'',checked:/\schecked(?:\s|$)/.test(m[1]||''),dataset:Object.fromEntries(Object.entries(a).filter(([k])=>k.startsWith('data-')).map(([k,v])=>[k.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase()),v])),selectionStart:0,focus(){},setSelectionRange(){}}})},querySelector(selector){return selector==='#experiment-form'?(html.includes('id="experiment-form"')?form:null):controls.find(c=>matches(c,selector))??null},querySelectorAll:selector=>controls.filter(c=>matches(c,selector)),get controls(){return controls}};
+}
+class FakeFormData {
+  constructor(form){this.values=form.controls.filter(c=>c.name&&(!(c.type==='checkbox')||c.checked)).map(c=>[c.name,c.value]);}
+  has(key){return this.values.some(([name])=>name===key)}get(key){return this.values.find(([name])=>name===key)?.[1]??null}getAll(key){return this.values.filter(([name])=>name===key).map(([,value])=>value)}
+}
+async function harness(t,dataset=base(),overrides={}) {
+  const original=globalThis.FormData;globalThis.FormData=FakeFormData;t.after(()=>{globalThis.FormData=original});
+  const {renderExperiments}=await import(`../web/experiments.js?test=${++serial}`),container=fakeContainer(),saves=[],messages=[];
+  let current=dataset;
+  const hooks={canEdit:()=>true,toast:(message,error)=>messages.push({message,error}),openMouse:id=>messages.push({mouse:id}),save:async next=>{current=clone(next);saves.push(current);renderExperiments(container,current,hooks)},...overrides};
+  renderExperiments(container,current,hooks);
+  return {container,hooks,saves,messages,get dataset(){return current},
+    async click(action,id=''){await container.onclick({preventDefault(){},target:{closest:()=>({dataset:{expAction:action,id}})}})},
+    set(name,value){const c=container.querySelector(`[name="${name}"]`);assert(c,`Missing field ${name}`);c.value=value},
+    check(name,values){for(const c of container.controls.filter(x=>x.name===name))c.checked=c.type==='checkbox'&&(Array.isArray(values)?values.includes(c.value):values)},
+    input(selector,value){const c=container.querySelector(selector);assert(c,`Missing input ${selector}`);c.value=value},
+    async save(){await container.onsubmit({preventDefault(){},target:{id:'experiment-form'}})},
+    filter(name,value){container.onchange({target:{name,value}})},
+    render(next=current){current=next;renderExperiments(container,current,hooks)}
+  };
+}
+
+test('new experiment preserves fields across participant controls and saves confirmed links',async t=>{
+  const h=await harness(t);await h.click('new');h.set('title','SCN qPCR');h.check('assays',['qPCR']);h.set('event_date','2026-10-14');h.set('operator','Researcher A');h.input('#exp-add-mouse','M1');await h.click('add-mouse');
+  assert.match(h.container.innerHTML,/value="SCN qPCR"/);assert.match(h.container.innerHTML,/value="Researcher A"/);await h.save();
+  assert.equal(h.saves.length,1);const record=h.dataset.tables.husbandry_events[0];assert.deepEqual(record.experiment.assays,['qPCR']);assert.equal(record.experiment.participants[0].mouse_sid,'M1');assert.equal(record.experiment.status,'planned');
+});
+
+test('source review retains original values and candidate identities until explicitly confirmed',async t=>{
+  const h=await harness(t);await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/&lt;script&gt;raw source&lt;\/script&gt;/);await h.click('review','SOURCE-1');
+  assert.match(h.container.innerHTML,/Possible matches, verify before confirming/);h.input('[data-resolve="0"]','M1');await h.click('resolve','0');await h.save();
+  assert.equal(h.saves.length,1);const record=h.dataset.tables.husbandry_events[0];assert.equal(record.event_date,'2024-01-10');assert.equal(record.source_id,'SOURCE-1');assert.deepEqual(record.source_raw_values,h.dataset.tables.experiment_sources[0].raw_values);
+  assert.equal(record.experiment.participants[0].link_status,'confirmed');assert.equal(record.experiment.participants[1].link_status,'unresolved');assert.match(record.experiment.notes,/-80/);assert.equal(record.experiment.status,'unreviewed');
+  await h.click('review','SOURCE-1');assert.match(h.container.innerHTML,/already has a reviewed experiment/);assert.equal(h.saves.length,1);
+});
+
+test('editing retains source provenance and appends dated before and after revisions',async t=>{
+  const h=await harness(t);await h.click('review','SOURCE-1');await h.save();const old=clone(h.dataset.tables.husbandry_events[0]);
+  await h.click('edit',old.event_id);h.set('title','Reviewed clock experiment');h.set('revision_date','2026-10-14');h.set('revision_notes','Checked notebook');await h.save();
+  assert.equal(h.saves.length,2);const record=h.dataset.tables.husbandry_events.find(r=>r.event_id===old.event_id),revision=h.dataset.tables.husbandry_events.find(r=>r.event_type==='experiment_revision');
+  assert.equal(record.experiment.title,'Reviewed clock experiment');assert.deepEqual(record.source_raw_values,old.source_raw_values);assert.equal(revision.experiment_revision.before.payload.title,old.experiment.title);assert.equal(revision.experiment_revision.after.payload.title,record.experiment.title);assert.match(h.container.innerHTML,/Checked notebook/);
+});
+
+test('read-only users can inspect sources but cannot open or submit record edits',async t=>{
+  const h=await harness(t,base(),{canEdit:()=>false});assert.doesNotMatch(h.container.innerHTML,/data-exp-action="new"/);await h.click('source','SOURCE-1');assert.doesNotMatch(h.container.innerHTML,/data-exp-action="review"/);
+  await h.click('new');assert.match(h.container.innerHTML,/Read &amp; write access is required/);await h.click('review','SOURCE-1');await h.save();assert.equal(h.saves.length,0);
+});
+
+test('save failure keeps entered fields available and prevents success claims',async t=>{
+  const h=await harness(t,base(),{save:async()=>{throw new Error('Version conflict, reload')}});await h.click('new');h.set('title','Unsaved assay');h.check('assays',['WB']);await h.save();
+  assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/Version conflict, reload/);assert.match(h.container.innerHTML,/value="Unsaved assay"/);assert.match(h.container.innerHTML,/id="experiment-form"/);assert.equal(h.messages.length,0);
+});
+
+test('refreshing dataset closes stale draft and a forged save cannot write it',async t=>{
+  const h=await harness(t);await h.click('new');h.set('title','Stale assay');h.render(clone(h.dataset));assert.match(h.container.innerHTML,/Records refreshed/);await h.save();assert.equal(h.saves.length,0);
+});
+
+test('collect sample does not infer pooling from a multi-animal experiment',async t=>{
+  const first=buildExperiment({title:'Many animals',assays:['CSF'],participants:[confirmed('M1'),confirmed('M2')],event_date:'2026-10-14'},base());
+  const h=await harness(t,first.dataset);await h.click('sample-from',first.record.event_id);h.set('label','CSF specimen');await h.save();
+  assert.equal(h.saves.length,1);const specimen=h.dataset.tables.husbandry_events.find(r=>r.event_type==='experiment_sample');assert.equal(specimen.experiment_sample.pooled,false);assert.deepEqual(specimen.experiment_sample.donors,[]);assert.equal(specimen.experiment_sample.experiment_id,first.record.event_id);assert.equal(specimen.experiment_sample.storage.temperature_c,-70);
+});
+
+test('collecting from a historical reviewed experiment retains its date and leaves temperature unasserted',async t=>{
+  const d=base();d.tables.experiment_sources[0].operator='Recorded operator';d.tables.experiment_sources[0].project='Clock project';d.tables.experiment_sources[0].protocol='LD12:12';const h=await harness(t,d);
+  await h.click('review','SOURCE-1');assert.match(h.container.innerHTML,/value="Recorded operator"/);assert.match(h.container.innerHTML,/value="Clock project"/);await h.save();const exp=h.dataset.tables.husbandry_events[0];
+  await h.click('sample-from',exp.event_id);h.set('label','Historical specimen');await h.save();const specimen=h.dataset.tables.husbandry_events.find(r=>r.event_type==='experiment_sample');assert.equal(specimen.event_date,'2024-01-10');assert.equal(specimen.experiment_sample.storage.temperature_c,null);assert.equal(specimen.experiment_sample.operator,'Recorded operator');
+});
+
+test('source history labels observations and displays recovered coverage without counting them as experiments',async t=>{
+  const d=base();d.tables.experiment_sources[0].kind='instrument_channel';d.tables.experiment_source_coverage=[{total_source_workbooks:52,sheets:698,preparation_contexts:821}];const h=await harness(t,d);await h.click('tab','sources');assert.match(h.container.innerHTML,/52 source workbooks/);assert.match(h.container.innerHTML,/698 Experiment Sheet tabs/);assert.match(h.container.innerHTML,/Instrument channel/);assert.match(h.container.innerHTML,/Observations require review/);assert.match(h.container.innerHTML,/<span>Experiments<\/span><strong>0<\/strong>/);
+});
+
+test('source history starts with newest valid event dates, leaves unknown dates last, and preserves stable ties and source order',async t=>{
+  const d=base(),template=d.tables.experiment_sources[0];d.tables.experiment_sources=[
+    {...clone(template),source_id:'UNKNOWN',date:null,raw_identifiers:['Unknown row']},
+    {...clone(template),source_id:'OLDER',date:'2022-01-01',raw_identifiers:['Older row']},
+    {...clone(template),source_id:'NEWER-FIRST',date:'2026-01-01',raw_identifiers:['Newer first row']},
+    {...clone(template),source_id:'NEWER-SECOND',date:'2026-01-01',raw_identifiers:['Newer second row']},
+    {...clone(template),source_id:'INVALID',date:'2026-02-30',raw_identifiers:['Invalid date row']}];
+  const before=clone(d.tables.experiment_sources),h=await harness(t,d);await h.click('tab','sources');const html=h.container.innerHTML,labels=['Newer first row','Newer second row','Older row','Unknown row','Invalid date row'];
+  for(let i=1;i<labels.length;i++)assert(html.indexOf(labels[i-1])<html.indexOf(labels[i]),`${labels[i-1]} should precede ${labels[i]}`);
+  assert.deepEqual(h.dataset.tables.experiment_sources,before);
+});
+
+test('source inspection shows extracted sampling date, phase and time without interpreting or changing them',async t=>{
+  const d=base(),s=d.tables.experiment_sources[0];s.sampling_date='2024-01-09';s.phase='ZT 6 (recorded)';s.time='10:30 approximate';const before=clone(d);const h=await harness(t,d);await h.click('source','SOURCE-1');
+  assert.match(h.container.innerHTML,/<dt>Sampling date<\/dt><dd>2024-01-09<\/dd>/);assert.match(h.container.innerHTML,/<dt>Phase as recorded<\/dt><dd>ZT 6 \(recorded\)<\/dd>/);assert.match(h.container.innerHTML,/<dt>Time as recorded<\/dt><dd>10:30 approximate<\/dd>/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
+});
+
+test('WB and IHC specimen names are presented as sample labels without inventing animal participants',async t=>{
+  const d=base(),s=d.tables.experiment_sources[0];s.identifier_kind='sample_label';s.kind='assay_run';s.assays=['WB'];s.raw_identifiers=['P1'];const h=await harness(t,d);
+  await h.click('tab','sources');assert.match(h.container.innerHTML,/Sample label/);await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/Sample identifiers \(not animal IDs\)/);
+  await h.click('review','SOURCE-1');assert.doesNotMatch(h.container.innerHTML,/Possible matches, verify/);assert.match(h.container.innerHTML,/Source sample labels \(link reviewed specimens\): P1/);await h.save();
+  const record=h.dataset.tables.husbandry_events[0];assert.deepEqual(record.experiment.participants,[]);assert.deepEqual(record.source_observation.raw_identifiers,['P1']);
+});
+
+test('collecting a historical assay specimen uses its sampling date, not its later assay date',async t=>{
+  const d=base(),s=d.tables.experiment_sources[0];s.identifier_kind='sample_label';s.kind='assay_run';s.assays=['IF/IHC'];s.date='2024-03-10';s.sampling_date='2024-01-20';const h=await harness(t,d);
+  await h.click('review','SOURCE-1');await h.save();const exp=h.dataset.tables.husbandry_events[0];assert.equal(exp.event_date,'2024-03-10');await h.click('sample-from',exp.event_id);h.set('label','Earlier tissue');await h.save();
+  assert.equal(h.dataset.tables.husbandry_events.find(r=>r.event_type==='experiment_sample').event_date,'2024-01-20');
+});
+
+test('historical assay specimens without sampling dates keep collection date unknown',async t=>{
+  const d=base(),s=d.tables.experiment_sources[0];s.kind='assay_run';s.identifier_kind='sample_label';s.assays=['WB'];const h=await harness(t,d);await h.click('review','SOURCE-1');await h.save();const exp=h.dataset.tables.husbandry_events[0];
+  await h.click('sample-from',exp.event_id);h.set('label','Undated tissue');await h.save();assert.equal(h.dataset.tables.husbandry_events.find(r=>r.event_type==='experiment_sample').event_date,null);
+});
+
+test('Other method filter includes source spelling and review retains the normalized method',async t=>{
+  const d=base();d.tables.experiment_sources[0].assays=['Other'];const h=await harness(t,d);await h.click('tab','sources');h.filter('assay','other');assert.match(h.container.innerHTML,/SOURCE-1/);await h.click('review','SOURCE-1');await h.save();assert.deepEqual(h.dataset.tables.husbandry_events[0].experiment.assays,['other']);
+});
+
+test('specimens and derived aliquots retain lineage and later assays trace to donor mice',async t=>{
+  const parent=buildExperimentSample({label:'SCN parent',donors:[confirmed('M1')],event_date:'2026-10-14'},base());const h=await harness(t,parent.dataset);
+  await h.click('new-sample');h.set('label','RNA aliquot');h.set('event_date','2026-10-14');h.input('#exp-parent',parent.record.event_id);await h.click('add-parent');await h.save();
+  const child=h.dataset.tables.husbandry_events.find(r=>r.experiment_sample?.label==='RNA aliquot');assert(child);assert.match(h.container.innerHTML,/Confirmed donors through parent samples/);assert.match(h.container.innerHTML,/P1 · M1/);
+  await h.click('new');h.set('title','RNA qPCR');h.set('event_date','2026-10-14');h.check('assays',['qPCR']);h.input('#exp-use-sample',child.event_id);await h.click('add-use');await h.save();
+  assert.equal(h.saves.length,2);assert.match(h.container.innerHTML,/Confirmed donors through samples/);assert.match(h.container.innerHTML,/P1 · M1/);
+});
+
+test('storage edits preserve an auditable previous freezer and inventory stays unknown',async t=>{
+  const parent=buildExperimentSample({label:'Stored tissue',donors:[confirmed('M1')],event_date:'2026-10-14',storage:{temperature_c:-70,freezer:'F1'}},base());const h=await harness(t,parent.dataset);
+  await h.click('edit',parent.record.event_id);h.set('storage_freezer','F2');h.set('revision_date','2026-10-14');await h.save();
+  const specimen=h.dataset.tables.husbandry_events.find(r=>r.event_id===parent.record.event_id),revision=h.dataset.tables.husbandry_events.find(r=>r.event_type==='experiment_revision');assert.equal(specimen.experiment_sample.quantity,null);assert.equal(revision.experiment_revision.before.payload.storage.freezer,'F1');assert.equal(revision.experiment_revision.after.payload.storage.freezer,'F2');
+});
+
+test('source review cannot duplicate an archived managed experiment',async t=>{
+  const parent=buildExperiment({title:'Previously reviewed',assays:['LumiCycle'],event_date:null},base(),null,{sourceRecord:{source_id:'SOURCE-1'}});parent.record.archived=true;
+  const h=await harness(t,parent.dataset);await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/Open reviewed experiment/);await h.click('open',parent.record.event_id);assert.match(h.container.innerHTML,/Archived record/);await h.click('review','SOURCE-1');assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/already has a reviewed experiment/);
+});
+
+test('filters compare confirmed mouse associations and source matches stay labelled as candidates',async t=>{
+  const first=buildExperiment({title:'Known assay',assays:['IMG'],participants:[confirmed('M1')],event_date:'2026-10-14'},base());const h=await harness(t,first.dataset);
+  h.filter('mouse','M2');assert.match(h.container.innerHTML,/No matching records/);h.filter('mouse','M1');assert.match(h.container.innerHTML,/Known assay/);
+  await h.click('tab','sources');assert.match(h.container.innerHTML,/Possible source matches, not confirmed participation/);assert.match(h.container.innerHTML,/SOURCE-1/);
+});

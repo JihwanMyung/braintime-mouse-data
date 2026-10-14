@@ -531,6 +531,38 @@ test('trusted demo cannot export a retained real source archive with Low permiss
   let loaded=false;await assert.rejects(store.getFullSourceExport(async()=>{loaded=true;return {private:true};}),/permission/);assert.equal(loaded,false);
 });
 
+test('experiment reports preserve animal and specimen associations without source or revision snapshots',async()=>{
+  await fresh();const data=createSyntheticDataset(),longUrl='https://example.test/results/'+ 'a'.repeat(250);
+  data.tables.husbandry_events=[
+    {event_id:'EXP-REPORT',event_type:'experiment',event_date:'2025-02-01',source_rows:['PRIVATE SOURCE'],experiment:{schema_version:1,title:'Clock recording',assays:['LumiCycle','IMG'],status:'completed',participants:[{mouse_sid:'001',link_status:'confirmed',candidate_sids:[],notes:'PRIVATE NOTE'},{mouse_sid:null,raw_identifier:'OLD-01',link_status:'unresolved',candidate_sids:['002']}],sample_usages:[{sample_id:'SAMPLE-REPORT',amount:2,unit:'µL',disposition:'partial',notes:'PRIVATE NOTE'}],result_urls:[longUrl],notes:'PRIVATE NOTE'}},
+    {event_id:'SAMPLE-REPORT',event_type:'experiment_sample',event_date:'2025-01-31',experiment_sample:{schema_version:1,label:'SCN aliquot',donors:[{mouse_sid:'001',link_status:'confirmed',candidate_sids:[]}],parent_sample_ids:[],pooled:false,tissue:'SCN',status:'stored',quantity:3,quantity_unit:'aliquots',quantity_as_of_date:'2025-02-01',storage:{temperature_c:-70,freezer:'F1',box:'B2',position:'A3',notes:'PRIVATE NOTE'},source_rows:['PRIVATE SOURCE'],notes:'PRIVATE NOTE'}},
+    {event_id:'REV-REPORT',event_type:'experiment_revision',event_date:'2025-02-02',experiment_revision:{before:{notes:'PRIVATE HISTORY'},after:{notes:'PRIVATE HISTORY'}}}
+  ];
+  await store.saveDataset(data,{localOnly:true,localKind:'demo'});
+  const result=await store.getExportRecords({scope:'history',fromDate:'2025-01-01',entityTypes:['husbandry_events']}),rows=result.dataset.tables.husbandry_events;
+  const experiment=rows.find(r=>r.event_id==='EXP-REPORT').experiment,sample=rows.find(r=>r.event_id==='SAMPLE-REPORT').experiment_sample;
+  assert.deepEqual(experiment.assays,['LumiCycle','IMG']);assert.equal(experiment.participants[0].mouse_sid,'001');assert.equal(experiment.participants[1].link_status,'unresolved');assert.deepEqual(experiment.participants[1].candidate_sids,['002']);assert.equal(experiment.sample_usages[0].sample_id,'SAMPLE-REPORT');assert.equal(experiment.result_urls[0],longUrl);
+  assert.equal(sample.storage.temperature_c,-70);assert.equal(sample.storage.position,'A3');assert.equal(sample.donors[0].mouse_sid,'001');assert(!JSON.stringify(rows).includes('PRIVATE'));
+  assert(!rows.find(r=>r.event_id==='REV-REPORT').experiment_revision);
+  assert(JSON.stringify(await store.getFullExportBackup()).includes('PRIVATE HISTORY'),'Max backup retains full history');
+});
+
+test('experiment collection dates control exports; bounded link lists declare omissions',async()=>{
+  await fresh();const data=createSyntheticDataset();
+  data.tables.husbandry_events=[
+    {event_id:'OLD-SAMPLE',event_type:'experiment_sample',event_date:'2001-01-01',app_modified_at:'2026-10-14',experiment_sample:{quantity_as_of_date:'2026-10-14',storage:{temperature_c:-70}}},
+    {event_id:'UNDATED-EXPERIMENT',event_type:'experiment',event_date:null,source_snapshot_date:'2026-10-14',experiment:{title:'Undated',participants:[]}},
+    {event_id:'MANY-LINKS',event_type:'experiment',event_date:'2025-01-01',experiment:{title:'Large study',participants:Array.from({length:101},(_,i)=>({mouse_sid:String(i),link_status:'confirmed',candidate_sids:[]})),sample_usages:[]}},
+    {event_id:'CANDIDATES',event_type:'experiment_sample',event_date:'2025-01-01',experiment_sample:{donors:[{raw_identifier:'Repeated tag',link_status:'unresolved',candidate_sids:Array.from({length:101},(_,i)=>String(i))}],parent_sample_ids:Array.from({length:101},(_,i)=>'S'+i)}}
+  ];
+  await store.saveDataset(data,{localOnly:true,localKind:'demo'});
+  const result=await store.getExportRecords({scope:'history',fromDate:'2025-01-01',entityTypes:['husbandry_events']});
+  assert.equal(result.metadata.excluded_undated,1);assert(!result.dataset.tables.husbandry_events.some(r=>['OLD-SAMPLE','UNDATED-EXPERIMENT'].includes(r.event_id)));
+  const p=result.dataset.tables.husbandry_events.find(r=>r.event_id==='MANY-LINKS').experiment;assert.equal(p.participant_count,101);assert.equal(p.participants.length,100);assert.equal(p.participants_truncated,true);
+  const s=result.dataset.tables.husbandry_events.find(r=>r.event_id==='CANDIDATES').experiment_sample;assert.equal(s.donors[0].candidate_count,101);assert.equal(s.donors[0].candidate_sids.length,100);assert.equal(s.donors[0].candidates_truncated,true);assert.equal(s.parent_samples_truncated,true);
+  const all=await store.getExportRecords({scope:'history',entityTypes:['husbandry_events']});assert(all.dataset.tables.husbandry_events.some(r=>r.event_id==='UNDATED-EXPERIMENT'));
+});
+
 test('strain metadata uses versioned cloud records, rejects stale edits and respects read-only membership',async()=>{
   const d=await connected();
   const input={code:'E',insertion_type:'transgenic',stock_reference:'Synthetic stock',notes:'Synthetic strain note'};

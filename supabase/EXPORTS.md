@@ -2,6 +2,8 @@
 
 Apply `export-permissions.sql` after `schema.sql` and `functions/manage-colony-users/membership.sql`, then deploy the updated user-management handler. The bundle builder includes both numbered migrations. If the original membership migration is reapplied later, reapply the export migration last: it removes the old five-argument membership overload to avoid ambiguous PostgREST calls.
 
+For an already configured project, `experiment-export.sql` upgrades only the private report-payload projector for experiments and specimens. Its function is kept identical to the full migration by a regression test. It does not change membership, date windows, write RPCs, or existing records.
+
 The migration defaults existing and new nonowners to **Low**. Owners are **Max**. Export permission is independent of owner/editor/viewer access. Owner management requests accept `export_level: low|high|max`. Omission retains an existing level on updates; invitations default to Low. Owner rows remain protected. Changes retain the authenticated audit actor.
 
 | Level | Historical window |
@@ -49,11 +51,16 @@ The cutoff is inclusive and uses calendar-year arithmetic, including leap-day ad
 | Light event | end date, start date |
 | Husbandry event | effective event date |
 | Cryopreservation lot | inventory assessment date, freezing date |
+| Experiment / specimen | experiment date / specimen collection date (`event_date`) |
 | Room/rack/position | Undated |
 
 Undated rows are included only for Max with no lower-date constraint, and retain `record_date: null`. Otherwise `excluded_undated` counts them. Future-dated rows are excluded. Import, application update and source snapshot dates never make old rows eligible. A cryopreservation review's registration date does not replace its freezing/stock date.
 
 Every report payload uses a bounded field allowlist. Source fields, raw snapshots, comments, notes, arbitrary nested values, audit history and archive chunks are excluded, including for Max. Cryopreservation nested fields have a separate projection. Raw genotype text remains a bounded scalar; structured genetic profiles are not included. Preservation backups use the separate Max workflow.
+
+Experiment reports include assay names, recorded timing, explicit animal links (including unresolved identifiers and candidate IDs), specimen usages, and result URLs. Specimen reports include tissue, material, donor links, parent specimens, stock assessment, and storage temperature/location. Stock or storage edits do not replace the original collection date for eligibility. Revision rows contain event metadata only; before/after snapshots remain available through the Max backup workflow.
+
+Animal, specimen-usage and donor object lists are capped at 100 entries per record. Candidate IDs and parent specimen IDs follow the existing 100-item ID-list cap. Total counts and explicit truncation flags accompany these lists, and the export preview warns when entries are omitted. Result links retain up to 2,048 characters (30 links); other scalar text follows the standard 2,048-character report limit. CSV/XLSX exports flatten experiment and storage fields into columns while preserving structured associations as JSON cells. JSON reports keep the nested schema. Full backups retain complete records.
 
 Pages contain at most 250 rows and 800,000 bytes of projected row JSON, plus small metadata. Follow `next_offset`, which advances by actual returned rows. Compare `snapshot_revision`, `export_level`, `cutoff_date` and `as_of_date` across every page; abort and regenerate the preview if they change. The revision is the largest colony audit ID serialized as text. This detects committed changes between pages without holding a database transaction open during file generation.
 

@@ -108,4 +108,40 @@ await test('report page bytes are bounded and primitive allowlists reject nested
 await test('direct permissions and helper ACLs remain closed while everyday member reads are unchanged',async()=>{
   await as('low',async()=>{await assert.rejects(()=>db.query("update public.memberships set export_level='max'"),e=>e.code==='42501');await assert.rejects(()=>db.query("select colony_private.export_payload('mice','{}')"),e=>e.code==='42501');assert((await db.query('select count(*) from public.entity_records where colony_id=$1',[ids.colony])).rows[0].count>0);});
 });
+
+await test('experiment and specimen projections retain explicit associations, storage and valid long results URLs',async()=>{
+  const url='https://example.test/results/'+'a'.repeat(250);
+  await insert('husbandry_events','EXPERIMENT-REPORT',{event_type:'experiment',event_date:dates.today,source_rows:['EXPERIMENT SECRET'],experiment:{schema_version:1,title:'Synthetic study',assays:['LumiCycle','IMG'],status:'completed',participants:[{mouse_sid:'OLD-STOCK',link_status:'confirmed',candidate_sids:[],notes:'EXPERIMENT SECRET'},{raw_identifier:'Historical tag',link_status:'unresolved',candidate_sids:['RECENT-END']}],sample_usages:[{sample_id:'SPECIMEN-REPORT',purpose:'qPCR',amount:2,unit:'µL',disposition:'partial',notes:'EXPERIMENT SECRET'}],result_urls:[url],notes:'EXPERIMENT SECRET',unexpected:{secret:'EXPERIMENT SECRET'}}});
+  await insert('husbandry_events','SPECIMEN-REPORT',{event_type:'experiment_sample',event_date:dates.today,experiment_sample:{schema_version:1,label:'SCN aliquot',experiment_id:'EXPERIMENT-REPORT',donors:[{mouse_sid:'OLD-STOCK',link_status:'confirmed',candidate_sids:[]}],parent_sample_ids:[],pooled:false,tissue:'SCN',status:'stored',quantity:3,quantity_unit:'aliquots',quantity_as_of_date:dates.today,storage:{temperature_c:-70,freezer:'F1',box:'B2',position:'A3',notes:'EXPERIMENT SECRET'},notes:'EXPERIMENT SECRET'}});
+  await insert('husbandry_events','EXPERIMENT-REVISION',{event_type:'experiment_revision',event_date:dates.today,experiment_revision:{before:{secret:'EXPERIMENT SECRET'},after:{secret:'EXPERIMENT SECRET'}}});
+  const page=await as('low',()=>exportRows({types:['husbandry_events']})),e=page.rows.find(r=>r.entity_id==='EXPERIMENT-REPORT').payload.experiment,s=page.rows.find(r=>r.entity_id==='SPECIMEN-REPORT').payload.experiment_sample;
+  assert.deepEqual(e.assays,['LumiCycle','IMG']);assert.equal(e.participants[0].mouse_sid,'OLD-STOCK');assert.equal(e.participants[1].link_status,'unresolved');assert.deepEqual(e.participants[1].candidate_sids,['RECENT-END']);assert.equal(e.sample_usages[0].sample_id,'SPECIMEN-REPORT');assert.equal(e.result_urls[0],url);
+  assert.equal(s.storage.temperature_c,-70);assert.equal(s.storage.position,'A3');assert.equal(s.donors[0].mouse_sid,'OLD-STOCK');assert(!JSON.stringify(page).includes('EXPERIMENT SECRET'));
+  assert(!page.rows.find(r=>r.entity_id==='EXPERIMENT-REVISION').payload.experiment_revision);
+});
+
+await test('sample stock updates and archive snapshots do not bring old or unknown experiments inside export windows',async()=>{
+  await insert('husbandry_events','SPECIMEN-OLD',{event_type:'experiment_sample',event_date:dates.old,app_modified_at:dates.today,experiment_sample:{quantity_as_of_date:dates.today,storage:{temperature_c:-70}}});
+  await insert('husbandry_events','EXPERIMENT-UNKNOWN',{event_type:'experiment',event_date:null,source_snapshot_date:dates.today,app_created_at:dates.today,experiment:{title:'Unknown date'}});
+  const low=await as('low',()=>exportRows({types:['husbandry_events']}));assert(!low.rows.some(r=>['SPECIMEN-OLD','EXPERIMENT-UNKNOWN'].includes(r.entity_id)));
+  const full=await as('max',()=>exportRows({types:['husbandry_events']}));assert(full.rows.some(r=>r.entity_id==='EXPERIMENT-UNKNOWN'&&r.record_date===null));
+});
+
+await test('experiment nested projections reject object substitution and disclose truncated links',async()=>{
+  const payload={event_type:'experiment',event_date:dates.today,experiment:{title:{secret:'EXPERIMENT SECRET'},participants:[...Array.from({length:101},(_,i)=>({mouse_sid:String(i),link_status:'confirmed',candidate_sids:[]})),{secret:'EXPERIMENT SECRET'}],sample_usages:{secret:'EXPERIMENT SECRET'},notes:'EXPERIMENT SECRET'}};
+  await insert('husbandry_events','EXPERIMENT-BOUNDED',payload);
+  await insert('husbandry_events','SPECIMEN-CANDIDATES',{event_type:'experiment_sample',event_date:dates.today,experiment_sample:{donors:[{raw_identifier:'Repeated tag',link_status:'unresolved',candidate_sids:Array.from({length:101},(_,i)=>String(i))}],parent_sample_ids:Array.from({length:101},(_,i)=>'S'+i),storage:{temperature_c:{secret:'EXPERIMENT SECRET'}}}});
+  const page=await as('low',()=>exportRows({types:['husbandry_events']})),e=page.rows.find(r=>r.entity_id==='EXPERIMENT-BOUNDED').payload.experiment,s=page.rows.find(r=>r.entity_id==='SPECIMEN-CANDIDATES').payload.experiment_sample;
+  assert(!e.title);assert.equal(e.participants.length,100);assert.equal(e.participant_count,102);assert.equal(e.participants_truncated,true);assert.deepEqual(e.sample_usages,[]);assert(!JSON.stringify(page).includes('EXPERIMENT SECRET'));
+  assert.equal(s.donors[0].candidate_count,101);assert.equal(s.donors[0].candidate_sids.length,100);assert.equal(s.donors[0].candidates_truncated,true);assert.equal(s.parent_samples_truncated,true);assert.equal(s.parent_sample_count,101);assert.equal(s.storage.temperature_c,undefined);
+});
+
+await test('supplemental experiment export migration replaces only the exact maintained projector and keeps private ACLs',async()=>{
+  const supplemental=await readFile(new URL('../experiment-export.sql',import.meta.url),'utf8');
+  const projector=source=>source.match(/create or replace function colony_private\.export_payload\(kind text,p jsonb\)[\s\S]*?revoke all on function colony_private\.export_payload\(text,jsonb\) from public,anon,authenticated;/)?.[0];
+  assert.equal(projector(supplemental),projector(migration));assert.equal((supplemental.match(/create or replace function/g)||[]).length,1);
+  await db.exec(supplemental);await db.exec(supplemental);
+  await as('low',()=>assert.rejects(()=>db.query("select colony_private.export_payload('husbandry_events','{}')"),e=>e.code==='42501'));
+  assert((await as('low',()=>exportRows({types:['husbandry_events']}))).rows.some(r=>r.entity_id==='EXPERIMENT-REPORT'&&r.payload.experiment));
+});
 await db.close();

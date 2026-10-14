@@ -1,4 +1,4 @@
-import { normalizeDataset, ID_FIELDS } from './model.js?v=19';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=20';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
@@ -366,6 +366,37 @@ function exportRecordDate(type,row){
   if(type==='husbandry_events'&&row.event_type==='cryopreservation_lot')return [row.cryopreservation?.quantity_as_of_date,row.cryopreservation?.frozen_date].find(exportDate)||null;
   return keys.map(key=>row[key]).find(exportDate)||null;
 }
+// Match the server's bounded experiment report projection. Full preservation
+// backups use a different, Max-only path and retain provenance and revisions.
+function experimentExportFields(value,keys){
+  if(!value||typeof value!=='object'||Array.isArray(value))return {};
+  const result={};
+  for(const key of keys){const v=value[key];
+    if(typeof v==='string')result[key]=[...v].slice(0,2048).join('');
+    else if(v===null||typeof v==='boolean'||typeof v==='number'&&Number.isFinite(v))result[key]=v;
+    else if(Array.isArray(v))result[key]=v.filter(item=>typeof item==='string').slice(0,100).map(item=>[...item].slice(0,200).join(''));
+  }
+  return result;
+}
+function experimentExportRows(value,keys){
+  const rows=Array.isArray(value)?value:[],items=rows.filter(item=>item&&typeof item==='object'&&!Array.isArray(item)).slice(0,100).map(item=>experimentExportFields(item,keys));
+  if(keys.includes('candidate_sids'))for(const [i,item] of rows.filter(item=>item&&typeof item==='object'&&!Array.isArray(item)).slice(0,100).entries()){const candidates=Array.isArray(item.candidate_sids)?item.candidate_sids:[];items[i].candidate_count=candidates.length;items[i].candidates_truncated=(items[i].candidate_sids||[]).length<candidates.length;}
+  return {items,total:rows.length,truncated:items.length<rows.length};
+}
+function projectExperimentExport(row){
+  if(!['experiment','experiment_sample','experiment_revision'].includes(row.event_type))return clone(row);
+  const result=experimentExportFields(row,['event_id','event_type','event_date']);
+  const referenceFields=['mouse_sid','raw_identifier','link_status','candidate_sids','role'];
+  if(row.event_type==='experiment'){
+    const p=row.experiment||{},participants=experimentExportRows(p.participants,referenceFields),usages=experimentExportRows(p.sample_usages,['sample_id','purpose','amount','unit','disposition']);
+    result.experiment={...experimentExportFields(p,['schema_version','title','assays','status','project','operator','protocol','started_at','ended_at','timezone','circadian_time','time_basis','result_urls']),participants:participants.items,participant_count:participants.total,participants_truncated:participants.truncated,sample_usages:usages.items,sample_usage_count:usages.total,sample_usages_truncated:usages.truncated};
+    result.experiment.result_urls=(Array.isArray(p.result_urls)?p.result_urls:[]).filter(url=>typeof url==='string').slice(0,30).map(url=>[...url].slice(0,2048).join(''));
+  }else if(row.event_type==='experiment_sample'){
+    const p=row.experiment_sample||{},donors=experimentExportRows(p.donors,referenceFields);
+    result.experiment_sample={...experimentExportFields(p,['schema_version','label','experiment_id','parent_sample_ids','pooled','tissue','material','collection_at','timezone','circadian_time','time_basis','status','quantity','quantity_unit','quantity_as_of_date','operator','project','protocol']),donors:donors.items,donor_count:donors.total,donors_truncated:donors.truncated,parent_sample_count:Array.isArray(p.parent_sample_ids)?p.parent_sample_ids.length:0,parent_samples_truncated:Array.isArray(p.parent_sample_ids)&&p.parent_sample_ids.length>(experimentExportFields(p,['parent_sample_ids']).parent_sample_ids||[]).length,storage:experimentExportFields(p.storage,['temperature_c','facility','freezer','rack','box','position'])};
+  }
+  return result;
+}
 function currentExportRecord(type,row,data){
   const present=r=>!r.app_archived_at&&r.archived!==true;
   if(!present(row))return false;
@@ -395,7 +426,7 @@ export async function getExportRecords({scope='current_housing',fromDate=null,to
       if(scope!=='history')return currentExportRecord(type,row,localData);const date=exportRecordDate(type,row);
       if(!date){if(start){excluded++;return false}return true}
       return (!start||date>=start)&&date<=end;
-    }).map(clone);}
+    }).map(row=>type==='husbandry_events'?projectExperimentExport(row):clone(row));}
     return {dataset:data,metadata:{...permission,export_level:permission.level,scope,from_date:scope==='history'?start:null,to_date:scope==='history'?end:null,excluded_undated:excluded,snapshot_revision:'local',captured_at:new Date().toISOString()}};
   }
   const c=configuration(),rows=[],seen=new Set();let offset=0,metadata=null;
