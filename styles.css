@@ -187,3 +187,7 @@
 /* Current activity counters on Overview. */
 .overview-stats{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:12px}.overview-stats .stat{min-width:0}.overview-stats .stat-note{overflow-wrap:anywhere}
 @media(max-width:620px){.overview-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Mouse age cohorts above the litter table. */
+.litter-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.litter-summary-grid .mouse-summary-item{min-width:0}.litter-summary-grid .mouse-summary-item:nth-child(n){border-top:0;border-right:1px solid var(--line)}.litter-summary-grid .mouse-summary-item:last-child{border-right:0}.litter-status-note{display:block;font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5}
+@media(max-width:620px){.litter-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.litter-summary-grid .mouse-summary-item:nth-child(2){border-right:0}.litter-summary-grid .mouse-summary-item:last-child{grid-column:1/-1;border-top:1px solid var(--line)}}
