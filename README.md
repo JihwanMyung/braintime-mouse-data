@@ -36,6 +36,8 @@ Run `node scripts/prepare-pages.mjs` to verify and create a fresh `_site` packag
 
 `web/icons/braintime-mark.png` is the unchanged [Braintime Lab header mark](https://braintime.tmu.edu.tw/assets/images/braintime-121x138.png), retrieved on 2026-10-14 (121 × 138 pixels). The website and printed cards preserve its aspect ratio. Install icons place the same artwork on a white square; the separate maskable icon keeps the complete mark within the central 80% safe circle. Larger icon files resize the supplied raster image and do not add detail.
 
+The interface palette uses the mark’s blue (`#3374B6`), dark blue (`#1F4C7D`), and warm cream (`#F0ECD1`), with charcoal text. Theme tokens in `web/styles.css` also color the pedigree and card views; the manifest and browser theme use the same dark blue.
+
 ## Validation
 
 Run `node --test tests/*.test.mjs`. The separate SQL suite runs with `npm ci --prefix supabase/tests` followed by `npm test --prefix supabase/tests`. The SQL suite uses an isolated local PostgreSQL-compatible runtime; it does not alter the shared scientific Python/R/Julia environments.
