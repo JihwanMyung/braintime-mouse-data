@@ -154,3 +154,28 @@ test('direct mouse review rejects malformed chromosome objects without coercing 
   const h=await harness(t,{mice:[broken]},{initialMouseId:'M1'});
   assert.match(h.container.innerHTML,/Add loci in Cross planner/);assert.equal(h.saves.length,0);assert.deepEqual(h.dataset.tables.mice[0].genetic_profile.loci[0].chromosome,{toString:null});
 });
+
+test('Family tree target draft opens Cross planner with unknown parents and no record writes',async t=>{
+  const draft={loci:[structuredClone(locus)],targets:{[locus.id]:{mode:'exact',alleles:['fl','fl']}},notice:'Family tree target: two floxed alleles.',errors:[]};
+  const original=structuredClone(draft),h=await harness(t,{}, {initialTargetDraft:draft,canEdit:()=>false});
+  assert.match(h.container.innerHTML,/aria-selected="true"[^>]*data-tab="cross"/);assert.match(h.container.innerHTML,/Family tree target: two floxed alleles/);
+  assert.doesNotMatch(h.container.innerHTML,/Illustrative example/);assert.doesNotMatch(h.container.innerHTML,/<option value="M1" selected>/);
+  await h.click('calculate');assert.match(h.container.innerHTML,/Sire, Assay locus: genotype evidence is unknown/);assert.match(h.container.innerHTML,/Dam, Assay locus: genotype evidence is unknown/);
+  assert.deepEqual(draft,original);assert.equal(h.saves.length,0);
+  h.hooks.initialTargetDraft=null;h.change('parent','M1',{role:'sire'});h.change('parent','F1',{role:'dam'});await h.click('calculate');assert.match(h.container.innerHTML,/>25%<\/strong>/);
+});
+
+test('Family tree target replaces a saved scenario without retaining parents, probability, plan name or independent-assortment assumption',async t=>{
+  const h=await harness(t);await h.load();h.change('independent',true);h.input('plan-name','Old saved plan');
+  const second={...locus,id:'second',name:'Second assay',chromosome:'2'};
+  h.hooks.initialTargetDraft={loci:[locus,second],targets:{[locus.id]:{mode:'carrier',allele:'fl'},second:{mode:'exact',alleles:['+','fl']}}};h.render();
+  assert.doesNotMatch(h.container.innerHTML,/Old saved plan|25%<\/strong>|data-planner-field="independent" checked/);
+  await h.click('calculate');assert.match(h.container.innerHTML,/Explicitly confirm independent assortment/);assert.match(h.container.innerHTML,/genotype evidence is unknown/);assert.equal(h.saves.length,0);
+});
+
+test('invalid Family tree draft preserves the current scenario and reports errors',async t=>{
+  const h=await harness(t);await h.load();h.input('plan-name','Keep my draft');
+  h.hooks.initialTargetDraft={loci:[{...locus,chromosome:'X'}],targets:{[locus.id]:{mode:'carrier',allele:'fl'}}};h.render();
+  assert.match(h.container.innerHTML,/Family tree target needs review/);assert.match(h.container.innerHTML,/only autosomes/);assert.match(h.container.innerHTML,/Keep my draft/);assert.match(h.container.innerHTML,/>25%<\/strong>/);
+  h.hooks.initialTargetDraft=null;await h.savePlan('Preserved target');assert.deepEqual(h.dataset.tables.husbandry_events.at(-1).breeding_plan.scenario,scenario());
+});

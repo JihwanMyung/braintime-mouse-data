@@ -100,3 +100,9 @@ web/overview-summary.js
 tests/overview-summary.test.mjs
 web/litter-summary.js
 tests/litter-summary.test.mjs
+web/family-explorer.js
+web/family-genotypes.js
+web/family-targets.js
+tests/family-explorer.test.mjs
+tests/family-genotypes.test.mjs
+tests/family-targets.test.mjs

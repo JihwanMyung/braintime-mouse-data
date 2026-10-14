@@ -1,5 +1,6 @@
-import { predictCross, validateScenario, rankPairs } from './genetics.js?v=18';
-import { discoverGenotypes, sourceProfile } from './genotype-catalog.js?v=18';
+import { predictCross, validateScenario, rankPairs } from './genetics.js?v=19';
+import { discoverGenotypes, sourceProfile } from './genotype-catalog.js?v=19';
+import { validateFamilyTargetDraft } from './family-targets.js?v=19';
 
 const mounts=new WeakMap();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -68,7 +69,17 @@ export function renderBreedingPlanner(container,dataset,hooks) {
     state.profileCalls=object(record?.genetic_profile?.calls)?clone(record.genetic_profile.calls):{};state.profileNotes=typeof record?.genetic_profile?.notes==='string'?record.genetic_profile.notes:'';state.sourceWarnings=[];
     for(const locus of state.scenario.loci){const checked=reviewedCall(record,locus);state.profileCalls[locus.id]=checked.call;if(record?.genetic_profile&&checked.reason)state.sourceWarnings.push(checked.reason)}
   }
-  if(hooks.initialMouseId){
+  if(hooks.initialTargetDraft!==undefined&&hooks.initialTargetDraft!==null){
+    const draft=hooks.initialTargetDraft,errors=validateFamilyTargetDraft(draft);
+    if(errors.length)state.error='Family tree target needs review: '+errors.join(' ');
+    else{
+      invalidate();
+      state.scenario={loci:clone(draft.loci),targets:clone(draft.targets),sire:{sex:'Male',calls:{}},dam:{sex:'Female',calls:{}},sex:'Any',independentAssortment:false,desiredCount:1,confidence:0.95,litterSize:6};
+      for(const role of ['sire','dam'])state.scenario[role].calls=Object.fromEntries(state.scenario.loci.map(locus=>[locus.id,unknown()]));
+      state.tab='cross';state.illustrative=false;state.catalogueOpen=false;state.sourceWarnings=[];state.planName='';state.profileId='';state.profileCalls={};state.profileNotes='';state.candidateSearch='';
+      state.notice=typeof draft.notice==='string'&&draft.notice.trim()?draft.notice:'Target draft from Family tree. Choose parents and review their allele calls before calculating.';
+    }
+  } else if(hooks.initialMouseId){
     const profile=mouse(hooks.initialMouseId)?.genetic_profile;
     const loci=profile?.schema_version===1&&Array.isArray(profile.loci)?profile.loci.filter(locus=>object(locus)&&typeof locus.id==='string'&&typeof locus.name==='string'&&['cre','flox','reporter','other'].includes(locus.kind)&&typeof locus.chromosome==='string'&&/^(?:unknown|[1-9]|1[0-9])$/.test(locus.chromosome)&&Array.isArray(locus.alleles)&&locus.alleles.length>0&&locus.alleles.length<=6&&locus.alleles.every(allele=>typeof allele==='string'&&allele.trim()===allele&&allele)):[];
     state.scenario.loci=clone(loci.slice(0,6));state.scenario.targets=Object.fromEntries(state.scenario.loci.map(locus=>[locus.id,{mode:'any'}]));for(const role of ['sire','dam'])state.scenario[role]={sex:role==='sire'?'Male':'Female',calls:Object.fromEntries(state.scenario.loci.map(locus=>[locus.id,unknown()]))};state.illustrative=false;state.catalogueOpen=!loci.length;invalidate();
