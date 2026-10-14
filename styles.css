@@ -212,3 +212,6 @@
 .site-migration-notice[hidden]{display:none}.site-migration-notice strong{font-size:15px}.site-migration-notice p{margin:5px 0 0;max-width:760px}.site-migration-notice .button{flex-shrink:0;text-decoration:none}.app-footer>a{color:var(--link)}
 @media(max-width:650px){.site-migration-notice{margin:14px 16px 0;padding:15px;align-items:flex-start;flex-direction:column}.site-migration-notice .button{align-self:flex-start}}
 @media print{.site-migration-notice{display:none}}
+
+.workspace-links{display:flex;align-items:center;flex-wrap:wrap;gap:4px 14px}.lab-home-link{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:550;color:var(--link);text-decoration:none}.lab-home-link:hover{text-decoration:underline}.lab-home-link svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+@media print{.lab-home-link{display:none}}
