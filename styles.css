@@ -109,3 +109,38 @@
  #export-print-dialog .dialog-heading{padding:14px 16px}
  #export-print-dialog .dialog-actions{padding:12px 16px}
 }
+.mouse-summary{margin-bottom:20px}
+.mouse-summary-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
+.mouse-summary-heading h2{margin:0;font-size:12px;font-weight:550;color:var(--muted)}
+.mouse-summary-heading .text-button{padding:5px 0 5px 12px}
+.mouse-summary-heading .actions{display:flex;align-items:center;gap:9px}
+.mouse-summary-heading .button{padding:5px 10px}
+.strain-legend th,.strain-management th{padding:10px 12px}
+#strain-dialog{width:min(1100px,calc(100vw - 30px));max-width:1100px}
+.strain-management input,.strain-management select,.strain-management textarea{width:100%;border:1px solid var(--control-line);border-radius:6px;padding:8px;background:var(--surface);color:var(--ink);font-size:12px}
+.strain-management select{min-width:185px}
+.strain-management input,.strain-management textarea{min-width:150px}
+.strain-management td:first-child{min-width:110px}
+.strain-management .alert,.strain-management .banner{margin:12px}
+.mouse-summary-grid{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));margin:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--surface)}
+.mouse-summary-item{min-width:0;padding:14px 12px;border-left:1px solid var(--line)}
+.mouse-summary-item:first-child{border-left:0}
+.mouse-summary-item dt{font-size:12px;font-weight:600;min-height:37px}
+.mouse-summary-item dt span{display:block;color:var(--muted);font-size:10px;font-weight:400;overflow-wrap:anywhere}
+.mouse-summary-item dd{margin:4px 0 0;font-size:28px;line-height:1.2;font-weight:550;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+.mouse-summary-total{background:var(--blue-bg);color:var(--link)}
+.mouse-count-uncertain{display:block;margin-top:5px;font-size:10px;color:var(--amber)}
+@media(max-width:1150px){.mouse-summary-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.mouse-summary-item:nth-child(5){border-left:0}.mouse-summary-item:nth-child(n+5){border-top:1px solid var(--line)}}
+@media(max-width:420px){.mouse-summary-item{padding:12px 9px}.mouse-summary-item dd{font-size:25px}.mouse-summary-item dt{min-height:40px}}
+@media(max-width:620px){
+ .strain-management table,.strain-management tbody{display:block}
+ .strain-management thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+ .strain-management tr{display:grid;grid-template-columns:minmax(0,1fr);padding:12px 16px;border-bottom:1px solid var(--line)}
+ .strain-management td{display:block;max-width:none;padding:6px 0;border:0}
+ .strain-management td:nth-child(2)::before{content:'Modification'}
+ .strain-management td:nth-child(3)::before{content:'Stock reference'}
+ .strain-management td:nth-child(4)::before{content:'Notes'}
+ .strain-management td::before{display:block;font-size:10px;color:var(--muted);margin-bottom:4px}
+ .strain-management input,.strain-management textarea,.strain-management select{min-width:0}
+ .strain-management td:last-child .button{width:100%}
+}
