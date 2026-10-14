@@ -61,3 +61,10 @@ Housing & light supports adding rooms, racks and named positions as the laborato
 The Breeding planner discovers candidate locus labels from the loaded mouse records and Animal Sheet archive. Imported text stays intact. Explicit source allele calls can be reviewed as provisional suggestions; absent or ambiguous calls never become wild type. Confirmed structured profiles are stored on their existing mouse records and use the same access rules, audit trail and version checks.
 
 Plan up to six independent autosomal loci, including Cre drivers, floxed targets and reporter alleles. The calculator shows Mendelian outcome probabilities, a target sex filter, mean offspring counts and binomial attainment counts. Pair ranking compares eligible, confirmed parent profiles by expected target frequency. It does not optimize viability, breeding time, background or experimental validity. Same-locus reporter alleles are represented together; known linkage and sex-linked models are blocked. Saved plans are dated `breeding_plan` husbandry records containing scenario snapshots, and create no animals or actual matings. See the in-app Help and [research comparison](docs/colony-planner-research.md) for sources and limitations.
+
+
+## Cryopreservation
+
+Housing & light → Cryopreservation presents case and batch information from the private Animal Sheet source-cell archive. Repeated historical sheets are retained as dated observations rather than added together. Source straw balances remain separate from reviewed current stock, and transfer wish lists are separate from frozen material. The source archive is loaded locally or downloaded from the configured colony's private cloud storage when needed; no laboratory data is bundled in the website.
+
+Reviewed cases can record manager, material, storage location and donor references. Dated stocktakes, usage, transfers and recovery attempts create activity records and update the lot in the same version-checked save. Recovery records do not create live animals or infer successful revival. These records use the existing husbandry-event storage, access controls and audit trail.

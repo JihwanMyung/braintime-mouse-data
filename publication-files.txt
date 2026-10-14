@@ -66,3 +66,9 @@ tests/genotype-records.test.mjs
 tests/genotype-catalog.test.mjs
 tests/breeding-planner.test.mjs
 docs/colony-planner-research.md
+web/cryo-sources.js
+web/cryopreservation-model.js
+web/cryopreservation.js
+tests/cryo-sources.test.mjs
+tests/cryopreservation-model.test.mjs
+tests/cryopreservation.test.mjs

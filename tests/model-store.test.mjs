@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import {normalizeDataset,createSyntheticDataset,validateRecord,ID_FIELDS} from '../web/model.js';
 import {encodeArchive,decodeArchive,canonicalStringify,MAX_ARCHIVE_PAYLOAD_BYTES,MAX_RPC_BYTES,utf8Size,isArchiveChunk,partitionChanges} from '../web/archive-format.js';
 import * as store from '../web/data-store.js';
+import {buildCryoActivity} from '../web/cryopreservation-model.js';
 
 class Storage { values=new Map();getItem(k){return this.values.get(k)??null;}setItem(k,v){this.values.set(k,String(v));}removeItem(k){this.values.delete(k);}clear(){this.values.clear();} }
 globalThis.localStorage=new Storage();globalThis.sessionStorage=new Storage();
@@ -422,4 +423,21 @@ test('structured genotypes and saved breeding plans round-trip as versioned mana
   assert.deepEqual(pulled.tables.matings,d.tables.matings);assert.equal(pulled.tables.mice.length,d.tables.mice.length);assert.equal(pulled.tables.mice[0].genotype,d.tables.mice[0].genotype);
   const stale=structuredClone(pulled);stale.tables.mice[0].genetic_profile.notes='Conflicting edit';server.records.get('mice:SYN-M001').version++;
   await assert.rejects(store.saveDataset(stale),/changed in another session/);assert.equal((await store.loadDataset()).tables.mice[0].genetic_profile.notes,'Synthetic confirmation');
+});
+
+test('cryopreservation balance and activity save atomically and a stale withdrawal creates no event',async()=>{
+  const d=createSyntheticDataset(),lot={event_id:'CRYO-TEST',event_type:'cryopreservation_lot',record_origin:'app_created',cryopreservation:{schema_version:1,label:'Synthetic cryo lot',case_id:'TEST',batch_ids:['TEST-A','TEST-B'],material:'unknown',status:'unreviewed',manager:null,storage_location:{},donor_mouse_sids:[],frozen_date:'2025-01-01',quantity:null,quantity_unit:'straws',quantity_as_of_date:null,activity_revision:0,last_activity_id:null}};
+  d.tables.husbandry_events.push(lot);await connected(d);
+  const first=await store.loadDataset(),pair=buildCryoActivity(first.tables.husbandry_events.find(r=>r.event_id===lot.event_id),{activity_type:'stocktake',event_date:'2026-10-14',quantity:10,quantity_unit:'straws',notes:'Synthetic stocktake'},first);
+  const next=structuredClone(first);next.tables.husbandry_events=next.tables.husbandry_events.map(r=>r.event_id===lot.event_id?pair.lot:r);next.tables.husbandry_events.push(pair.event);
+  const before=server.calls.length;await store.saveDataset(next);
+  const writes=server.calls.slice(before).filter(c=>c.url.endsWith('/rpc/save_records'));
+  assert.equal(writes.length,1);assert.deepEqual(JSON.parse(writes[0].options.body).p_changes.filter(r=>r.entity_type==='husbandry_events').map(r=>r.entity_id).sort(),[pair.lot.event_id,pair.event.event_id].sort());
+  const pulled=await store.pullFromCloud();assert.equal(pulled.tables.husbandry_events.find(r=>r.event_id===lot.event_id).cryopreservation.quantity,10);assert.equal(pulled.tables.mice.length,d.tables.mice.length);
+  const stalePair=buildCryoActivity(pulled.tables.husbandry_events.find(r=>r.event_id===lot.event_id),{activity_type:'use',event_date:'2026-10-14',quantity:1,quantity_unit:'straws'},pulled),stale=structuredClone(pulled);
+  stale.tables.husbandry_events=stale.tables.husbandry_events.map(r=>r.event_id===lot.event_id?stalePair.lot:r);stale.tables.husbandry_events.push(stalePair.event);
+  server.records.get('husbandry_events:CRYO-TEST').version++;
+  await assert.rejects(store.saveDataset(stale),/changed in another session/);
+  assert(!server.records.has('husbandry_events:'+stalePair.event.event_id));assert.equal(server.records.get('husbandry_events:CRYO-TEST').payload.cryopreservation.quantity,10);
+  assert.equal((await store.loadDataset()).tables.husbandry_events.find(r=>r.event_id===lot.event_id).cryopreservation.quantity,10);
 });
