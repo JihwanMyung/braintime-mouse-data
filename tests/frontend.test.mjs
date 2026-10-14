@@ -272,10 +272,26 @@ const submitEvent=id=>({target:{id,querySelector:()=>submitButton},preventDefaul
 let recoveryRequests=[];store.requestPasswordReset=async identifier=>{recoveryRequests.push(identifier);return {message:'If this ID or email has an active account, a reset link will be sent to its registered email.'}};
 element('reset-identifier').value='  unknown-id  ';submitHandler(submitEvent('password-reset-request'));await new Promise(resolve=>setTimeout(resolve,0));
 assert.deepEqual(recoveryRequests,['unknown-id']);assert(element('password-reset-status').textContent.startsWith('If this ID or email'));assert(!submitButton.disabled);
+const beforeRecoveryStatus=store.getCloudStatus;store.getCloudStatus=()=>({mode:'cloud',configured:true,signedIn:true,role:'owner',passwordRecovery:true,email:'member@example.test'});vm.runInContext('cloud=store.getCloudStatus();renderPasswordRecovery();',context);
+assert(element('main').innerHTML.includes('id="recovery-account"'));assert(element('main').innerHTML.includes('Save password &amp; sign in'));assert(element('main').innerHTML.includes('id="recovery-show-password" type="checkbox"'));assert(!element('main').innerHTML.includes(' checked'));
+const changeHandler=documentListeners.get('change');element('recovery-password').type='password';element('recovery-confirm').type='password';
+changeHandler({target:{id:'recovery-show-password',checked:true}});assert.equal(element('recovery-password').type,'text');assert.equal(element('recovery-confirm').type,'text');
+changeHandler({target:{id:'recovery-show-password',checked:false}});assert.equal(element('recovery-password').type,'password');
 let passwordChanges=0;store.completePasswordRecovery=async()=>{passwordChanges++;throw new Error('Reset link has expired. Request a new reset link.');};
 element('recovery-password').value='synthetic-password';element('recovery-confirm').value='different';submitHandler(submitEvent('password-recovery'));assert.equal(passwordChanges,0);assert.equal(element('password-recovery-status').textContent,'Passwords do not match.');
 element('recovery-confirm').value='synthetic-password';submitHandler(submitEvent('password-recovery'));await new Promise(resolve=>setTimeout(resolve,0));
 assert.equal(passwordChanges,1);assert(element('password-recovery-status').textContent.includes('expired'));assert.equal(element('recovery-password').value,'');assert.equal(element('recovery-confirm').value,'');assert(!submitButton.disabled);
+
+// Saved-but-unverified retries change only the verification UI, remain concealed,
+// and never load data until the normal sign-in path confirms success.
+store.getCloudStatus=()=>({mode:'cloud',configured:true,signedIn:true,role:'owner',passwordRecovery:true,passwordRecoveryUpdated:true,email:'member@example.test'});
+vm.runInContext('cloud=store.getCloudStatus();renderPasswordRecovery();',context);
+assert(element('main').innerHTML.includes('Verify password &amp; sign in'));assert(!element('main').innerHTML.includes('id="recovery-confirm"'));assert(element('main').innerHTML.includes('autocomplete="current-password"'));
+let resolveRecovery;store.completePasswordRecovery=()=>{passwordChanges++;return new Promise(resolve=>resolveRecovery=resolve);};
+element('recovery-password').value='saved-new-password';submitHandler(submitEvent('password-recovery'));submitHandler(submitEvent('password-recovery'));await new Promise(resolve=>setTimeout(resolve,0));assert.equal(passwordChanges,2,'duplicate submit is ignored while pending');
+let verifiedPulls=0;store.getCloudStatus=()=>({mode:'cloud',configured:true,signedIn:true,role:'owner',passwordRecovery:false,email:'member@example.test'});store.pullFromCloud=async()=>{verifiedPulls++;return model.createSyntheticDataset()};
+resolveRecovery({updated:true,signedIn:true});await new Promise(resolve=>setTimeout(resolve,10));assert.equal(verifiedPulls,1);assert.equal(vm.runInContext('route',context),'overview');assert.equal(element('recovery-password').value,'');assert.equal(element('recovery-password').type,'password');assert(!element('recovery-show-password').checked);assert(!submitButton.disabled);
+store.getCloudStatus=beforeRecoveryStatus;delete store.pullFromCloud;
 
 // The previous site retains local records and old callbacks while new account
 // entry points use the fixed new address.

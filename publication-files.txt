@@ -220,3 +220,4 @@ supabase/PASSWORD_RECOVERY.md
 supabase/tests/password-recovery.test.mjs
 web/site-migration.js
 tests/site-migration.test.mjs
+tests/reagents-store.test.mjs

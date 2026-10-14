@@ -43,7 +43,8 @@ function installServer(){
     server.calls.push({url,options});const u=new URL(url);const body=options.body?JSON.parse(options.body):null;
     if(u.pathname.endsWith('/token')){
       if(u.searchParams.get('grant_type')==='refresh_token')server.refreshes++;
-      return response({access_token:'access',refresh_token:'refresh',expires_in:server.expires,user:{id:server.tokenUser??uid,email:'demo@example.test'}});
+      else {if(server.passwordGrantNetworkFailure)throw new TypeError('Network unavailable');if(server.passwordGrantReply)return response(server.passwordGrantReply,server.passwordGrantStatus??200);}
+      return response({access_token:'access',refresh_token:'refresh',expires_in:server.expires,user:{id:server.tokenUser??uid,email:'demo@example.test',email_confirmed_at:'2026-01-01T00:00:00Z'}});
     }
     if(u.pathname.endsWith('/functions/v1/username-sign-in'))return response(server.recoveryReply??{accepted:true,message:'Request accepted'},server.recoveryStatus??202);
     if(u.pathname.endsWith('/otp'))return server.otpDenied?response({message:'Email request rate limit exceeded'},429):response({});
@@ -70,7 +71,8 @@ function installServer(){
     }
     if(u.pathname.endsWith('/rpc/save_lac_fee_visibility')){if(server.role!=='owner')return response({code:'42501'},403);if(body.p_version!==(server.feePolicy?.version||0))return response({code:'40001'},409);server.feePolicy={version:body.p_version+1,owner:true,estimate:true,actual:true,source_archive_allowed:true,levels:body.p_levels};return response(server.feePolicy);}
     if(['/rpc/get_brainbot_status','/rpc/save_brainbot_settings','/rpc/run_brainbot','/rpc/review_brainbot_issue'].some(p=>u.pathname.endsWith(p))){if(server.onBrainbot)server.onBrainbot();return response(server.brainbotReply);}
-    if(u.pathname.endsWith('/memberships'))return response([{role:server.role,active:server.active}]);
+    if(u.pathname.endsWith('/memberships'))return response(server.memberships??[{role:server.role,active:server.active}]);
+    if(u.pathname.endsWith('/rpc/get_my_lab_member'))return response(server.myProfile??{eligible:false});
     if(u.pathname.endsWith('/rpc/get_export_permission')||u.pathname.endsWith('/rpc/assert_full_export_permission')){
       server.exportPermissionReads=(server.exportPermissionReads||0)+1;
       if(server.onExportPermission)server.onExportPermission(server.exportPermissionReads);
@@ -864,12 +866,13 @@ test('password reset requests use only the configured gateway and return no reso
  server.recoveryStatus=429;await assert.rejects(store.requestPasswordReset('name@example.org'),/Wait one hour/);server.recoveryStatus=503;await assert.rejects(store.requestPasswordReset('name@example.org'),/temporarily unavailable/);
  const n=server.calls.length;for(const id of ['',null,'bad id','x'.repeat(300)])await assert.rejects(store.requestPasswordReset(id),/valid username or email/);assert.equal(server.calls.length,n);
 });
-test('recovery callback remains isolated after reload, permits only password update, then signs out and removes secrets',async()=>{
+test('recovery stays isolated until the exact new password and fresh membership verify; no global logout or stored password',async()=>{
  await connected();idbData.set('active',{index:{cells:['private source']}});callbackPage(callbackHash(callbackToken(),'recovery'));
  const status=await store.consumeAuthCallback();assert.equal(status.passwordRecovery,true);assert.equal(status.readyForEdits,false);assert.equal(store.getCloudStatus().passwordRecovery,true);assert.equal(idbData.get('current'),undefined);assert.equal(idbData.get('active'),undefined);assert.equal(await store.loadDataset(),null);
  assert.equal(JSON.parse(sessionStorage.getItem('mouse-colony.session.v1')).passwordRecovery,true);const n=server.calls.length;await assert.rejects(store.pullFromCloud(),/Finish resetting/);await assert.rejects(store.updateAccountPassword('long-password-for-recovery'),/recovery form/);assert.equal(server.calls.length,n);
- const password=' New private recovery password 71! ';const result=await store.completePasswordRecovery(password);assert.equal(result.updated,true);assert.equal(store.getCloudStatus().signedIn,false);assert.equal(store.getCloudStatus().passwordRecovery,false);assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),null);
- const update=server.calls.findLast(c=>c.options.method==='PUT');assert.deepEqual(JSON.parse(update.options.body),{password});assert.equal(update.options.redirect,'error');assert.equal(update.options.cache,'no-store');assert(!JSON.stringify(result).includes(password));assert(!JSON.stringify([...localStorage.values,...sessionStorage.values]).includes(password));assert(server.calls.some(c=>c.url.endsWith('/auth/v1/logout')));
+ const password=' New private recovery password 71! ';const before=server.calls.length,result=await store.completePasswordRecovery(password);assert.equal(result.updated,true);assert.equal(result.signedIn,true);assert.equal(store.getCloudStatus().signedIn,true);assert.equal(store.getCloudStatus().passwordRecovery,false);assert.equal(store.getCloudStatus().passwordRecoveryUpdated,false);assert.equal(store.getCloudStatus().role,'owner');assert.equal(store.getCloudStatus().readyForEdits,false);
+ const calls=server.calls.slice(before);assert.equal(calls.length,3);assert(calls[0].url.endsWith('/user'));assert(calls[1].url.includes('grant_type=password'));assert.deepEqual(JSON.parse(calls[1].options.body),{email:'demo@example.test',password});assert.equal(calls[1].options.cache,'no-store');assert.equal(calls[1].options.redirect,'error');assert(calls[2].url.includes('/memberships?'));assert.equal(calls[2].options.headers.Authorization,'Bearer access');
+ const update=server.calls.findLast(c=>c.options.method==='PUT');assert.deepEqual(JSON.parse(update.options.body),{password});assert.equal(update.options.redirect,'error');assert.equal(update.options.cache,'no-store');assert(!JSON.stringify(result).includes(password));assert(!JSON.stringify([...localStorage.values,...sessionStorage.values]).includes(password));assert(!server.calls.slice(before).some(c=>c.url.endsWith('/auth/v1/logout')));
  await assert.rejects(store.completePasswordRecovery(password),/valid password reset link/);
 });
 test('recovery update failure is not success and never echoes a rejected password',async()=>{
@@ -877,6 +880,49 @@ test('recovery update failure is not success and never echoes a rejected passwor
  server.passwordStatus=422;server.passwordReply={message:'PRIVATE supplied password'};await assert.rejects(store.completePasswordRecovery('long-recovery-password'),e=>/not confirmed/.test(e.message)&&!e.message.includes('PRIVATE'));assert.equal(store.getCloudStatus().passwordRecovery,true);
  for(const p of ['short','x'.repeat(129),null])await assert.rejects(store.completePasswordRecovery(p),/12 and 128/);
  server.passwordStatus=null;server.passwordNetworkFailure=true;await assert.rejects(store.completePasswordRecovery('long-recovery-password'),/not confirmed/);assert.equal(store.getCloudStatus().passwordRecovery,true);await store.signOut();
+});
+test('password-save success plus failed sign-in stays restricted and retry only verifies the saved password',async()=>{
+ for(const failure of ['credentials','network','missing-session','other-user','anonymous','unverified','inactive','unknown-role']){
+  await fresh();callbackPage(callbackHash(callbackToken(),'recovery'));await store.consumeAuthCallback();
+  const valid={access_token:'verified-access',refresh_token:'verified-refresh',expires_in:3600,user:{id:uid,email:'demo@example.test',email_confirmed_at:'2026-01-01'}};
+  if(failure==='credentials'){server.passwordGrantStatus=400;server.passwordGrantReply={message:'PRIVATE rejected credential'};}
+  if(failure==='network')server.passwordGrantNetworkFailure=true;
+  if(failure==='missing-session')server.passwordGrantReply={user:valid.user};
+  if(failure==='other-user')server.passwordGrantReply={...valid,user:{...valid.user,id:cid}};
+  if(failure==='anonymous')server.passwordGrantReply={...valid,user:{...valid.user,is_anonymous:true}};
+  if(failure==='unverified')server.passwordGrantReply={...valid,user:{...valid.user,email_confirmed_at:null}};
+  if(failure==='inactive')server.active=false;
+  if(failure==='unknown-role')server.role='superadmin';
+  await assert.rejects(store.completePasswordRecovery(' new recovery password '),e=>/password was saved, but sign-in could not be verified/.test(e.message)&&!e.message.includes('PRIVATE'),failure);
+  assert.equal(store.getCloudStatus().passwordRecovery,true,failure);assert.equal(store.getCloudStatus().passwordRecoveryUpdated,true);assert.equal(await store.loadDataset(),null);assert.equal(idbData.get('current'),undefined);
+  await assert.rejects(store.pullFromCloud(),/Finish resetting/);
+  const before=server.calls.length;server.passwordGrantReply=valid;server.passwordGrantStatus=200;server.passwordGrantNetworkFailure=false;server.active=true;server.role='owner';
+  const result=await store.completePasswordRecovery(' new recovery password ');assert.equal(result.signedIn,true);
+  const retry=server.calls.slice(before);assert(!retry.some(c=>c.options.method==='PUT'||c.url.endsWith('/logout')),failure);assert.deepEqual(JSON.parse(retry[0].options.body),{email:'demo@example.test',password:' new recovery password '});
+  assert(!JSON.stringify([...localStorage.values,...sessionStorage.values]).includes('new recovery password'));
+ }
+});
+test('saved-password retry state survives session serialization; pending eligible users only receive setup access',async()=>{
+ await fresh();callbackPage(callbackHash(callbackToken(),'recovery'));await store.consumeAuthCallback();server.passwordGrantNetworkFailure=true;
+ await assert.rejects(store.completePasswordRecovery('saved-password-to-verify'),/password was saved/);
+ // Rehydrating an expired recovery session still skips another password update.
+ const key='mouse-colony.session.v1',saved=JSON.parse(sessionStorage.getItem(key));saved.expires_at=1;sessionStorage.setItem(key,JSON.stringify(saved));
+ server.passwordGrantNetworkFailure=false;server.memberships=[];server.myProfile={eligible:true,setup_required:true,member:{member_id:'member'}};
+ const before=server.calls.length;assert.equal((await store.completePasswordRecovery('saved-password-to-verify')).signedIn,true);assert.equal(store.getCloudStatus().role,'pending');assert.equal(store.getCloudStatus().setupRequired,true);assert.equal(store.getCloudStatus().exportLevel,null);assert(!server.calls.slice(before).some(c=>c.options.method==='PUT'));
+});
+test('delayed recovery update, password grant, and membership cannot restore or erase another account action',async()=>{
+ for(const stage of ['update','grant','membership'])for(const action of ['logout','configure','new-login']){
+  await fresh();callbackPage(callbackHash(callbackToken(),'recovery'));await store.consumeAuthCallback();
+  const baseFetch=fetch;let release,started,first=true;const waiting=new Promise(r=>started=r);
+  globalThis.fetch=async(url,options)=>{
+   const target=stage==='update'?url.endsWith('/auth/v1/user')&&options.method==='PUT':stage==='grant'?url.includes('grant_type=password'):url.includes('/memberships?');
+   if(target&&first){first=false;started();await new Promise(r=>release=r);}
+   return baseFetch(url,options);
+  };
+  const pending=store.completePasswordRecovery('new-password-to-verify'),rejected=assert.rejects(pending,/account or cloud configuration changed|account or colony changed/);await waiting;
+  if(action==='logout')await store.signOut();else if(action==='configure')store.configureCloud({url:'https://another.supabase.co',anonKey:jwt('anon'),colonyId:cid});else await store.signIn('demo@example.test','normal-password');
+  const current=sessionStorage.getItem('mouse-colony.session.v1');release();await rejected;assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),current,stage+' '+action);assert.equal(store.getCloudStatus().passwordRecovery,false);
+ }
 });
 test('delayed callbacks cannot restore sessions after sign-out/config change or erase a newer sign-in',async()=>{
  for(const action of ['logout','configure','new-login','new-login-error']){

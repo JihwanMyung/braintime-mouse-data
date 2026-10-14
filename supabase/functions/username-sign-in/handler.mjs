@@ -50,12 +50,13 @@ export function createHandler({env,fetchImpl=fetch,defer}) {
    const throttle=await call('/rest/v1/rpc/consume_username_login_attempt',{method:'POST',body:{p_colony_id:colony,p_username:username}});
    if(!throttle.ok)return reply({message:'Sign-in is temporarily unavailable.'},503);
    if(throttle.value!==true)return reply({message:'Too many attempts. Wait 10 minutes before trying again.'},429);
-   const result=await call('/rest/v1/lab_members?select=linked_user_id,email&colony_id=eq.'+colony+'&username=eq.'+encodeURIComponent(username)+'&status=eq.current&archived=eq.false&limit=1');
-   const person=result.value?.[0];if(!result.ok||!person?.linked_user_id||!person?.email)return denied();
-   const allowed=await call('/rest/v1/memberships?select=active&colony_id=eq.'+colony+'&user_id=eq.'+person.linked_user_id+'&limit=1');
-   if(!allowed.ok||allowed.value?.[0]?.active!==true)return denied();
+   // Reuse the server-only verified-account lookup. It checks active membership
+   // and the current linked username without granting this role table SELECT.
+   // This RPC only resolves identity; it does not send recovery mail.
+   const result=await call('/rest/v1/rpc/resolve_colony_password_recovery',{method:'POST',body:{p_colony_id:colony,p_identifier:username}});
+   const person=result.value;if(!result.ok||typeof person?.user_id!=='string'||!person.user_id||typeof person?.email!=='string'||!person.email)return denied();
    const auth=await call('/auth/v1/token?grant_type=password',{admin:false,method:'POST',body:{email:person.email,password:body.password}});
-   if(!auth.ok||typeof auth.value?.access_token!=='string'||!auth.value.access_token||typeof auth.value.refresh_token!=='string'||!auth.value.refresh_token||auth.value?.user?.id!==person.linked_user_id||!auth.value.user.email_confirmed_at||auth.value.user.is_anonymous)return denied();
+   if(!auth.ok||typeof auth.value?.access_token!=='string'||!auth.value.access_token||typeof auth.value.refresh_token!=='string'||!auth.value.refresh_token||auth.value?.user?.id!==person.user_id||!auth.value.user.email_confirmed_at||auth.value.user.is_anonymous)return denied();
    return reply(auth.value);
   }catch{return reply({message:'Sign-in could not be confirmed. Please try again later.'},503);}
  };
