@@ -750,6 +750,30 @@ export async function manageColonyUsers(action,payload={}) {
 
 export async function inviteLabMember(payload){return manageColonyUsers('invite_preregistered',payload);}
 
+const ACCESS_PAGES={mouse:['overview','mice','matings','litters','cages','family','planner','experiments','iacuc','housing','locobox','cryo','fees','archive','brainbot','settings'],reagents:['inventory','safety','usage','orders','vendors','equipment','history','review','settings']};
+// Authenticated app activity is best effort and contains only allowlisted labels.
+// Capture the current token before sign-out clears it; never delay sign-out for logging.
+export function recordAppAccess(payload){
+ const c=configuration(),s=session(),idPattern=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+ if(!c||!s?.access_token||!s.user?.id||s.passwordRecovery||s.setupRequired||!['owner','manager','editor','viewer'].includes(s.role)||!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(k=>!['app','event','page','sessionId','eventId'].includes(k))||!['mouse','reagents'].includes(payload.app)||!['session_start','page_view','sign_out'].includes(payload.event)||!ACCESS_PAGES[payload.app]?.includes(payload.page)||!idPattern.test(payload.sessionId||'')||!idPattern.test(payload.eventId||''))return Promise.resolve(null);
+ const body={p_colony_id:c.colonyId,p_app:payload.app,p_event:payload.event,p_page:payload.page,p_session_id:payload.sessionId,p_event_id:payload.eventId};
+ try{return Promise.resolve(fetch(`${c.url}/rest/v1/rpc/record_app_access`,{method:'POST',cache:'no-store',redirect:'error',keepalive:true,headers:{apikey:c.anonKey,Authorization:`Bearer ${s.access_token}`,'Content-Type':'application/json'},body:JSON.stringify(body),...(typeof globalThis.AbortSignal?.timeout==='function'?{signal:globalThis.AbortSignal.timeout(5000)}:{})})).then(async response=>{if(!response.ok)return null;const result=await responseJSON(response);return result&&typeof result.recorded==='boolean'&&['recorded','duplicate','debounced','rate_limited'].includes(result.reason)?result:null;}).catch(()=>null);}catch{return Promise.resolve(null);}
+}
+
+export async function listAppAccess(filters={}){
+ const c=configuration(),s=session(),generation=authGeneration;
+ const denied=()=>Object.assign(new Error('Only the database owner can read access logs.'),{code:'42501'});
+ if(!c||!s?.user?.id||s.passwordRecovery||s.role!=='owner')throw denied();
+ if(!filters||typeof filters!=='object'||Array.isArray(filters)||Object.keys(filters).some(k=>!['app','userId','event','from','to','before','limit'].includes(k)))throw new Error('Unsupported access log filters.');
+ const value={app:null,userId:null,event:null,from:null,to:null,before:null,limit:50,...filters};
+ const time=v=>v===null||typeof v==='string'&&v.length<=40&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(v)&&Number.isFinite(Date.parse(v));
+ if(value.app!==null&&!['mouse','reagents'].includes(value.app)||value.userId!==null&&!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.userId)||value.event!==null&&!['session_start','page_view','sign_out'].includes(value.event)||!time(value.from)||!time(value.to)||value.from&&value.to&&Date.parse(value.from)>=Date.parse(value.to)||value.before!==null&&!(typeof value.before==='string'&&/^[1-9]\d*$/.test(value.before)&&value.before.length<=19)||!Number.isInteger(value.limit)||value.limit<1||value.limit>50)throw new Error('Choose valid access log filters.');
+ const check=()=>{if(generation!==authGeneration||configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==s.user.id)throw new Error('The account changed. Reopen Access logs.');if(session()?.role!=='owner')throw denied();};
+ if(await membership({check})!=='owner')throw denied();check();
+ const result=await request('rpc/list_app_access',{method:'POST',body:{p_colony_id:c.colonyId,p_app:value.app,p_user_id:value.userId,p_event:value.event,p_from:value.from,p_to:value.to,p_before:value.before,p_limit:value.limit}});
+ check();if(!result||!Array.isArray(result.events)||result.events.length>value.limit||typeof result.has_more!=='boolean')throw new Error('Access logs could not be verified.');return result;
+}
+
 const HISTORY_BUCKET='colony-history';
 function historyIndex(value){
   if(!value||typeof value!=='object'||!Array.isArray(value.sources)||!Array.isArray(value.sheets)||!Array.isArray(value.cells))throw new Error('A history index must contain sources, sheets, and cells arrays.');

@@ -221,3 +221,12 @@ supabase/tests/password-recovery.test.mjs
 web/site-migration.js
 tests/site-migration.test.mjs
 tests/reagents-store.test.mjs
+web/access-logs.js
+web/access-activity.js
+tests/access-logs.test.mjs
+tests/access-logs-store.test.mjs
+tests/access-activity.test.mjs
+supabase/app-access-log.sql
+supabase/APP_ACCESS_LOG.md
+supabase/tests/app-access-log.test.mjs
+tests/member-invitation-store.test.mjs
