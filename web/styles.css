@@ -183,3 +183,7 @@
 @media(max-width:1150px){.cage-summary-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.cage-summary-grid .mouse-summary-item{border:0;border-left:1px solid var(--line)}.cage-summary-grid .mouse-summary-item:nth-child(3n+1){border-left:0}.cage-summary-grid .mouse-summary-item:nth-child(n+4){border-top:1px solid var(--line)}}
 @media(max-width:600px){.cage-summary-options-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:480px){.cage-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.cage-summary-grid .mouse-summary-item:nth-child(n){border:0;border-left:1px solid var(--line)}.cage-summary-grid .mouse-summary-item:nth-child(odd){border-left:0}.cage-summary-grid .mouse-summary-item:nth-child(n+3){border-top:1px solid var(--line)}.cage-summary-grid .mouse-summary-item:last-child{grid-column:1/-1}}
+
+/* Current activity counters on Overview. */
+.overview-stats{grid-template-columns:repeat(3,minmax(0,1fr));margin-top:12px}.overview-stats .stat{min-width:0}.overview-stats .stat-note{overflow-wrap:anywhere}
+@media(max-width:620px){.overview-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}

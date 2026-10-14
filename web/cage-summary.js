@@ -1,4 +1,4 @@
-import { getCageSummaryOptions, getCageSummaryOptionsStatus } from './cage-summary-options.js?v=16';
+import { getCageSummaryOptions, getCageSummaryOptionsStatus } from './cage-summary-options.js?v=17';
 
 const list=value=>Array.isArray(value)?value.filter(record=>record&&typeof record==='object'&&!Array.isArray(record)):[];
 const id=value=>typeof value==='string'?value.trim():typeof value==='number'&&Number.isFinite(value)?String(value):'';
