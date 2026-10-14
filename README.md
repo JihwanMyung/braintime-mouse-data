@@ -32,6 +32,10 @@ Run `node scripts/prepare-pages.mjs` to verify and create a fresh `_site` packag
 
 `deploy/pages-workflow.example.yml` is an inactive Actions alternative retained for reference. There is no custom workflow under `.github/workflows`; branch deployment uses GitHub's built-in Pages publishing.
 
+## Official lab mark
+
+`web/icons/braintime-mark.png` is the unchanged [Braintime Lab header mark](https://braintime.tmu.edu.tw/assets/images/braintime-121x138.png), retrieved on 2026-10-14 (121 × 138 pixels). The website and printed cards preserve its aspect ratio. Install icons place the same artwork on a white square; the separate maskable icon keeps the complete mark within the central 80% safe circle. Larger icon files resize the supplied raster image and do not add detail.
+
 ## Validation
 
 Run `node --test tests/*.test.mjs`. The separate SQL suite runs with `npm ci --prefix supabase/tests` followed by `npm test --prefix supabase/tests`. The SQL suite uses an isolated local PostgreSQL-compatible runtime; it does not alter the shared scientific Python/R/Julia environments.
