@@ -215,3 +215,6 @@
 
 .workspace-links{display:flex;align-items:center;flex-wrap:wrap;gap:4px 14px}.lab-home-link{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:550;color:var(--link);text-decoration:none}.lab-home-link:hover{text-decoration:underline}.lab-home-link svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 @media print{.lab-home-link{display:none}}
+
+/* Keep access log columns readable on phones; scroll the table within its panel. */
+.access-logs{min-width:0}.access-logs .table-scroll{max-width:100%;overflow-x:auto}.access-logs table{min-width:720px;table-layout:auto}.access-logs th{padding:10px 15px}.access-logs th,.access-logs td{word-break:normal;overflow-wrap:normal}.access-logs th:first-child,.access-logs td:first-child{min-width:165px;white-space:nowrap}.access-logs th:nth-child(2),.access-logs td:nth-child(2){min-width:190px}.access-logs td:nth-child(2) .small{overflow-wrap:anywhere}.access-logs th:nth-child(3),.access-logs td:nth-child(3){min-width:100px}.access-logs th:nth-child(4),.access-logs td:nth-child(4){min-width:125px}.access-logs th:nth-child(5),.access-logs td:nth-child(5){min-width:125px}
