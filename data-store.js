@@ -119,7 +119,7 @@ export function configureCloud({url,anonKey,colonyId}){
 }
 export function getCloudStatus(){
   const c=configuration(),s=session();
-  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),passwordRecovery:s?.passwordRecovery===true,email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:s?.passwordRecovery!==true&&(mode()==='local'||synced),colonyId:c?.colonyId??null,role:s?.role??null,permissions:s?.permissions??{},username:s?.username??null,setupRequired:s?.setupRequired===true,exportLevel:s?.role==='owner'?'max':s?.exportLevel??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
+  return {configured:Boolean(c),signedIn:Boolean(s?.access_token),passwordRecovery:s?.passwordRecovery===true,passwordRecoveryUpdated:s?.passwordRecovery===true&&s?.passwordRecoveryUpdated===true,email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:s?.passwordRecovery!==true&&(mode()==='local'||synced),colonyId:c?.colonyId??null,role:s?.role??null,permissions:s?.permissions??{},username:s?.username??null,setupRequired:s?.setupRequired===true,exportLevel:s?.role==='owner'?'max':s?.exportLevel??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
 }
 async function responseJSON(response){const text=await response.text();if(!text)return null;try{return JSON.parse(text);}catch{throw new Error('The cloud server returned an unreadable response.');}}
 function apiError(response,body){
@@ -145,7 +145,7 @@ async function accessToken(){
   let s=session();if(!s?.access_token)throw new Error('Sign in before using cloud data.');
   if(s.expires_at<=Date.now()/1000+60){
     const generation=authGeneration,config=stable(configuration());const current=()=>generation===authGeneration&&config===stable(configuration())&&session()?.user?.id===s.user?.id;
-    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{if(!current())throw new Error('The account changed during session refresh.');const next={...normalizeSession(result),passwordRecovery:s.passwordRecovery===true,role:s.role,permissions:s.permissions,username:s.username,setupRequired:s.setupRequired,exportLevel:s.exportLevel};saveSession(next);return next;}).catch(e=>{if(current()){saveSession(null);invalidate();}throw e;}).finally(()=>{refreshPromise=null;});
+    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{if(!current())throw new Error('The account changed during session refresh.');const next={...normalizeSession(result),passwordRecovery:s.passwordRecovery===true,passwordRecoveryUpdated:s.passwordRecoveryUpdated===true,role:s.role,permissions:s.permissions,username:s.username,setupRequired:s.setupRequired,exportLevel:s.exportLevel};saveSession(next);return next;}).catch(e=>{if(current()){saveSession(null);invalidate();}throw e;}).finally(()=>{refreshPromise=null;});
     s=await refreshPromise;
   }
   return s.access_token;
@@ -179,6 +179,18 @@ export async function verifyCloudMembership(){
   if(!response.ok||user?.id!==initial.user.id||user.is_anonymous||!user.email_confirmed_at)throw new Error('Your sign-in could not be verified. Sign in again.');
   await membership(action);action.check();
   return getCloudStatus();
+}
+// Shared lab-tool transport; authorization and history limits are enforced again by each RPC.
+const REAGENT_ACTIONS=new Set(['list','save','history','sources','observations','import','record_usage','access','set_access']);
+export async function callReagents(action,args={}){
+ if(!REAGENT_ACTIONS.has(action)||!args||Array.isArray(args)||typeof args!=='object')throw new Error('Unsupported reagent operation.');
+ const generation=authGeneration,c=configuration(),identity=session()?.user?.id;
+ const denied=message=>Object.assign(new Error(message),{reagentsAccessChanged:true});
+ if(!c||!identity||session()?.setupRequired||session()?.role==='pending'||session()?.passwordRecovery)throw denied('Sign in and complete your account before opening Reagents.');
+ const check=()=>{if(generation!==authGeneration||configuration()?.url!==c.url||configuration()?.colonyId!==c.colonyId||session()?.user?.id!==identity)throw denied('Your account changed. Reopen Reagents.');};
+ try{await membership({check});check();}catch(error){error.reagentsAccessChanged=true;throw error;}
+ try{const result=await request('rpc/reagents_'+action,{method:'POST',body:{...args,p_colony_id:c.colonyId}});check();return result;}
+ catch(error){check();if(/session expired|sign.in|permission for this cloud operation/i.test(error.message))error.reagentsAccessChanged=true;throw error;}
 }
 async function establishMembershipOrSetup(action){
   const c=configuration(),s=session();
@@ -892,11 +904,42 @@ export async function requestPasswordReset(identifier){
 export async function completePasswordRecovery(password){
  const c=configuration(),signedIn=session();if(!c||!signedIn?.passwordRecovery||!signedIn.user?.id)throw new Error('Open a valid password reset link first.');
  if(typeof password!=='string'||password.length<12||password.length>128)throw new Error('Use a password between 12 and 128 characters.');
- const generation=authGeneration,context=exportContext(),token=await accessToken();
- if(generation!==authGeneration)throw new Error('The account changed. Open the reset link again.');checkExportContext(context);
- let response;try{response=await fetch(`${c.url}/auth/v1/user`,{method:'PUT',cache:'no-store',redirect:'error',headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({password})});}catch{throw new Error('The password update was not confirmed. Check your connection before trying again.');}
- const result=await responseJSON(response);if(generation!==authGeneration)throw new Error('The account changed. Sign in with your new password to verify the result.');checkExportContext(context);
- if(!response.ok||result?.id!==signedIn.user.id)throw new Error('The password update was not confirmed. Use a different password or request a new reset link.');
- await signOut();statusMessage='Password updated. Sign in with your ID and new password.';
- return {updated:true,message:statusMessage};
+ const action=beginAuthAction(),context=exportContext();
+ const check=()=>{action.check();checkExportContext(context);if(!session()?.passwordRecovery)throw new Error('Password recovery changed. Sign in again.');};
+ const email=signedIn.user.email;
+ if(typeof email!=='string'||!/^\S+@\S+\.\S+$/.test(email))throw new Error('The reset account could not be verified. Request a new reset link.');
+ if(!signedIn.passwordRecoveryUpdated){
+  const token=await accessToken();check();
+  let response;try{response=await fetch(`${c.url}/auth/v1/user`,{method:'PUT',cache:'no-store',redirect:'error',headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({password})});}catch{check();throw new Error('The password update was not confirmed. Check your connection before trying again.');}
+  const result=await responseJSON(response);check();
+  if(!response.ok||result?.id!==signedIn.user.id)throw new Error('The password update was not confirmed. Use a different password or request a new reset link.');
+  // A nonsecret marker makes verification retries safe, including after reload.
+  // Never store the password or send another password update for a retry.
+  saveSession({...session(),passwordRecoveryUpdated:true});
+ }
+ try{
+  // Authenticate normally with the password just entered. The recovery token
+  // remains restricted until a new session and current membership both pass.
+  const response=await fetch(`${c.url}/auth/v1/token?grant_type=password`,{method:'POST',cache:'no-store',redirect:'error',headers:{apikey:publicKey(c.anonKey),'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+  const result=await responseJSON(response);check();
+  if(!response.ok||result?.user?.id!==signedIn.user.id||result.user.is_anonymous||!result.user.email_confirmed_at)throw new Error('verification');
+  const next=normalizeSession(result),headers={apikey:publicKey(c.anonKey),Authorization:`Bearer ${next.access_token}`};
+  const memberResponse=await fetch(`${c.url}/rest/v1/memberships?select=role,active,export_level,permissions&user_id=eq.${encodeURIComponent(signedIn.user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store',redirect:'error'});
+  const rows=await responseJSON(memberResponse);check();
+  if(!memberResponse.ok||!Array.isArray(rows))throw new Error('membership');
+  let pendingSetup=false;
+  if(rows.length===0){
+   const profileResponse=await fetch(`${c.url}/rest/v1/rpc/get_my_lab_member`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},cache:'no-store',redirect:'error',body:JSON.stringify({p_colony_id:c.colonyId})});
+   const profile=await responseJSON(profileResponse);check();pendingSetup=profileResponse.ok&&profile?.eligible===true&&profile.setup_required===true&&!!profile.member;
+  }
+  if(!pendingSetup&&(rows.length!==1||rows[0].active!==true||!['owner','manager','editor','viewer'].includes(rows[0].role)))throw new Error('membership');
+  const member=rows[0]||{role:'pending',permissions:{},export_level:null};check();
+  saveSession({...next,passwordRecovery:false,passwordRecoveryUpdated:false,role:member.role,permissions:pendingSetup?{}:member.permissions||{},setupRequired:pendingSetup,exportLevel:pendingSetup?null:member.role==='owner'?'max':member.export_level||'low'});
+  pendingEmail=null;invalidate();statusMessage='Password saved and sign-in verified.';
+  // Do not call global logout here: it would revoke the newly verified session.
+  return {updated:true,signedIn:true,message:statusMessage};
+ }catch(error){
+  check();
+  throw new Error('Your password was saved, but sign-in could not be verified. Re-enter the password you just saved to retry, or return to sign in and request a new reset link.');
+ }
 }
