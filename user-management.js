@@ -1,5 +1,5 @@
 /* Owner-only interface. Authorization is enforced by the server for every request. */
-import {MANAGER_PERMISSION_LABELS,defaultManagerPermissions,normalizeManagerPermissions} from './permissions.js?v=23';
+import {MANAGER_PERMISSION_LABELS,defaultManagerPermissions,normalizeManagerPermissions} from './permissions.js?v=24';
 const escapeHTML=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const mounts=new WeakMap();
 const editableRoles=new Set(['viewer','editor','manager']);

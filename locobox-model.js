@@ -1,5 +1,5 @@
 /** Cage-associated plans and observations. No schedule, exposure, or dose is inferred. */
-import {validTimingDate} from './experiment-timing.js?v=23';
+import {validTimingDate} from './experiment-timing.js?v=24';
 const array=x=>Array.isArray(x)?x:[],object=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const present=x=>x!==null&&x!==undefined&&x!=='';
 const live=r=>r&&!r.app_archived_at&&r.archived!==true;

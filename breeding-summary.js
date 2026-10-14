@@ -1,5 +1,5 @@
-import { getBreedingOptions } from './breeding-options.js?v=23';
-import { mouseLineAssignments } from './mouse-summary.js?v=23';
+import { getBreedingOptions } from './breeding-options.js?v=24';
+import { mouseLineAssignments } from './mouse-summary.js?v=24';
 import { validateGeneticProfile } from './genotype-schema.js';
 
 const text=value=>typeof value==='string'?value:'';

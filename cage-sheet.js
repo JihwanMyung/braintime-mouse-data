@@ -1,8 +1,8 @@
-import { planCageMove, planCageRemoval, validateCageMovementOccupancy } from './cage-movement.js?v=23';
-import { sortRooms } from './room-order.js?v=23';
-import { projectAnimalSheet } from './animal-sheet-export.js?v=23';
-import { mouseManager, validateRecord, buildCageLocationEvent } from './model.js?v=23';
-import { lightClock, sourceListedAnimals } from './husbandry.js?v=23';
+import { planCageMove, planCageRemoval, validateCageMovementOccupancy } from './cage-movement.js?v=24';
+import { sortRooms } from './room-order.js?v=24';
+import { projectAnimalSheet } from './animal-sheet-export.js?v=24';
+import { mouseManager, validateRecord, buildCageLocationEvent } from './model.js?v=24';
+import { lightClock, sourceListedAnimals } from './husbandry.js?v=24';
 
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const keys={mice:'mouse_sid',cages:'cage_sid',locations:'location_id'};
