@@ -64,3 +64,7 @@ node --test supabase/tests/user-management.test.mjs
 Tests use mocked HTTP and an isolated in-memory PostgreSQL database. They send no real emails. The SQL test covers anonymous/editor/foreign-owner denial, owner/self protection even after target promotion, membership uniqueness, inactive owner rejection, unchanged other-colony ownership, and audit identity. HTTP tests cover Auth verification, allowlisted origin/redirect, list/email pagination, custom SMTP errors, invitation uncertainty, and partial completion.
 
 References: [verified Auth user lookup](https://supabase.com/docs/reference/javascript/auth-getuser), [server-only admin user listing](https://supabase.com/docs/reference/javascript/auth-admin-listusers), [standard invite email](https://supabase.com/docs/reference/javascript/auth-admin-inviteuserbyemail), and [Edge Function default secrets](https://supabase.com/docs/guides/functions/secrets).
+
+## Export permission migration
+
+The generated deployment bundle now includes `01-membership.sql` and `02-export-permissions.sql`. Apply them in that order before deploying the updated handler. Invite and access-update requests accept a separate `export_level` (`low`, `high`, `max`); list and mutation responses return it. Low covers three calendar years, High six, and Max all available history. New nonowners default to Low; omitted update values preserve the existing level. Read/write roles are unchanged. See `supabase/EXPORTS.md` for the reporting RPC and permission boundary.

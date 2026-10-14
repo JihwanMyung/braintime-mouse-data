@@ -12,7 +12,7 @@ const foreign = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const values = {SUPABASE_URL: 'https://example.supabase.co', SUPABASE_ANON_KEY: 'public-key', SUPABASE_SERVICE_ROLE_KEY: 'server-secret',
   USER_MANAGEMENT_COLONY_ID: colony, USER_MANAGEMENT_OWNER_EMAIL: 'owner@example.org', USER_MANAGEMENT_APP_URL: 'https://example.org/app/'};
 const user = (id, email, extra = {}) => ({id, email, email_confirmed_at: '2026-01-01', user_metadata: {full_name: 'Member', private_field: 'PRIVATE'}, ...extra});
-const membership = (id = target, extra = {}) => ({colony_id: colony, user_id: id, role: id === owner ? 'owner' : 'viewer', active: true, ...extra});
+const membership = (id = target, extra = {}) => ({colony_id: colony, user_id: id, role: id === owner ? 'owner' : 'viewer', active: true, export_level: id === owner ? 'max' : 'low', ...extra});
 const json = (body, status = 200) => Response.json(body, {status});
 function fixture(options = {}) {
   const calls = [];
@@ -49,7 +49,7 @@ function fixture(options = {}) {
     if (path === '/rest/v1/rpc/manage_colony_member') {
       assert.equal(init.headers.apikey, values.SUPABASE_ANON_KEY);
       assert.equal(init.headers.Authorization, 'Bearer owner-token');
-      return json([membership(body.p_user_id, {role: body.p_role, active: body.p_active})]);
+      return json([membership(body.p_user_id, {role: body.p_role, active: body.p_active, export_level:body.p_export_level??members.find(row=>row.user_id===body.p_user_id)?.export_level??'low'})]);
     }
     throw new Error('Unexpected route: ' + path);
   };
@@ -93,7 +93,7 @@ test('list returns only colony members and allowlisted profile fields with invit
   const f = fixture({members: [membership(owner), membership(target, {active: false}), membership(other)], accounts: [user(owner, 'owner@example.org'), user(target, 'member@example.org'), user(other, 'new@example.org', {email_confirmed_at: null, invited_at: '2026-01-02'}), user('44444444-4444-4444-8444-444444444444', 'foreign@example.org')]});
   const {response, data} = await f.request({action: 'list'});
   assert.equal(response.status, 200); assert.equal(data.users.length, 3); assert.equal(data.users[1].status, 'disabled'); assert.equal(data.users[2].status, 'invited');
-  assert.deepEqual(Object.keys(data.users[0]).sort(), ['active', 'email', 'name', 'role', 'status', 'user_id']);
+  assert.deepEqual(Object.keys(data.users[0]).sort(), ['active', 'email', 'export_level', 'name', 'role', 'status', 'user_id']);
   assert.ok(!JSON.stringify(data).includes('PRIVATE')); assert.ok(!JSON.stringify(data).includes('foreign@example.org'));
   assert.equal(response.headers.get('Cache-Control'), 'no-store'); assert.equal(response.headers.get('Access-Control-Allow-Origin'), 'https://example.org');
 });
@@ -113,7 +113,7 @@ test('all owner rows and self are protected; foreign target cannot gain membersh
 test('valid access update uses caller JWT, configured colony and atomic guarded RPC', async () => {
   const f = fixture(); const {data, response} = await f.request({action: 'update_access', user_id: target, role: 'editor', active: false});
   assert.equal(response.status, 200); assert.equal(data.user.role, 'editor'); assert.equal(data.user.active, false);
-  assert.deepEqual(mutations(f.calls)[0].body, {p_colony_id: colony, p_user_id: target, p_role: 'editor', p_active: false, p_action: 'update'});
+  assert.deepEqual(mutations(f.calls)[0].body, {p_colony_id: colony, p_user_id: target, p_role: 'editor', p_active: false, p_action: 'update',p_export_level:null});
 });
 test('existing Auth account is found beyond first page and added without another invitation email', async () => {
   const accounts = [...Array.from({length: 200}, (_, i) => user(target, `person${i}@example.org`)), user(other, 'new@example.org')];
@@ -157,6 +157,17 @@ test('invalid server configuration is closed and normal preflight never touches 
   const f = fixture({env: {USER_MANAGEMENT_APP_URL: 'https://example.org/app/?next=evil'}});
   assert.equal((await f.request({action: 'list'})).response.status, 503); assert.equal(f.calls.length, 0);
   const g = fixture(); assert.equal((await g.request({}, {}, 'OPTIONS')).response.status, 204); assert.equal(g.calls.length, 0);
+});
+
+test('export level is independent of read/write access, defaults low for invitations and is verified',async()=>{
+  const f=fixture({members:[membership(owner),membership(target,{export_level:'high'})]});
+  const preserved=await f.request({action:'update_access',user_id:target,role:'viewer',active:false});assert.equal(preserved.data.user.export_level,'high');
+  const changed=await f.request({action:'update_access',user_id:target,role:'editor',active:true,export_level:'max'});assert.equal(changed.data.user.export_level,'max');
+  const invite=fixture();assert.equal((await invite.request({action:'invite',email:'new@example.org',role:'editor'})).data.user.export_level,'low');
+  assert.equal(mutations(invite.calls).at(-1).body.p_export_level,'low');
+  for(const invalid of [null,'owner','all',true,{},1]){const bad=fixture();assert.equal((await bad.request({action:'update_access',user_id:target,role:'viewer',active:true,export_level:invalid})).response.status,400);assert.equal(bad.calls.length,0);}
+  const mismatch=fixture({intercept:({url})=>url.pathname.endsWith('/manage_colony_member')?json([membership(target,{export_level:'low'})]):null});
+  assert.equal((await mismatch.request({action:'update_access',user_id:target,role:'viewer',active:true,export_level:'high'})).data.code,'membership_outcome_unknown');
 });
 
 test('SQL enforces role/colony/owner protections atomically and retains audit actor', async () => {

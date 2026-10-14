@@ -46,6 +46,19 @@ function installServer(){
     if(u.pathname.endsWith('/logout'))return response({});
     if(server.deny)return response({message:'denied',code:'42501'},403);
     if(u.pathname.endsWith('/memberships'))return response([{role:server.role,active:server.active}]);
+    if(u.pathname.endsWith('/rpc/get_export_permission')||u.pathname.endsWith('/rpc/assert_full_export_permission')){
+      server.exportPermissionReads=(server.exportPermissionReads||0)+1;
+      if(server.onExportPermission)server.onExportPermission(server.exportPermissionReads);
+      if(!server.active||server.exportPermissionError)return response({code:'42501',message:'Active export membership required'},403);
+      const level=server.exportLevel||'max';
+      if(u.pathname.endsWith('/assert_full_export_permission')&&level!=='max')return response({code:'42501',message:'Max required'},403);
+      return response({level,as_of_date:'2026-10-14',cutoff_date:level==='max'?null:level==='low'?'2023-10-14':'2020-10-14',full_history:level==='max'});
+    }
+    if(u.pathname.endsWith('/rpc/export_records')){
+      if(server.exportResponse)return response(await server.exportResponse(body));
+      const level=server.exportLevel||'max';
+      return response({rows:[],next_offset:null,export_level:level,cutoff_date:level==='max'?null:level==='low'?'2023-10-14':'2020-10-14',as_of_date:'2026-10-14',snapshot_revision:'42',from_date:body.p_from_date,to_date:body.p_to_date,scope:body.p_scope,excluded_undated:2});
+    }
     if(u.pathname.endsWith('/functions/v1/manage-colony-users')){
       if(server.managementNetworkFailure)throw new TypeError('Network unavailable');
       if(server.managementStatus)return response(server.managementReply,server.managementStatus);
@@ -440,4 +453,77 @@ test('cryopreservation balance and activity save atomically and a stale withdraw
   await assert.rejects(store.saveDataset(stale),/changed in another session/);
   assert(!server.records.has('husbandry_events:'+stalePair.event.event_id));assert.equal(server.records.get('husbandry_events:CRYO-TEST').payload.cryopreservation.quantity,10);
   assert.equal((await store.loadDataset()).tables.husbandry_events.find(r=>r.event_id===lot.event_id).cryopreservation.quantity,10);
+});
+
+test('export date bounds use fresh server Low3 and High6 permission without changing local data',async()=>{
+  const d=createSyntheticDataset();await connected(d);server.exportLevel='low';server.role='viewer';
+  const before=await store.loadDataset();
+  const result=await store.getExportRecords({scope:'history',entityTypes:['husbandry_events']});
+  assert.equal(result.metadata.cutoff_date,'2023-10-14');assert.equal(result.metadata.excluded_undated,2);
+  const body=JSON.parse(server.calls.find(c=>c.url.endsWith('/rpc/export_records')).options.body);
+  assert.equal(body.p_from_date,'2023-10-14');assert.equal(body.p_to_date,'2026-10-14');assert.deepEqual(body.p_entity_types,['husbandry_events']);
+  assert.deepEqual(await store.loadDataset(),before);
+  await assert.rejects(store.getExportRecords({scope:'history',fromDate:'2023-10-13'}),/exceeds/);
+  server.exportLevel='high';assert.equal((await store.getExportPermission()).cutoff_date,'2020-10-14');
+  server.active=false;await assert.rejects(store.getExportPermission(),/permission/);
+});
+
+test('paginated exports reject mixed revisions or changed permissions before a file is returned',async()=>{
+  await connected(createSyntheticDataset());server.exportLevel='low';
+  server.exportResponse=body=>({rows:[{entity_type:'mice',entity_id:'EXP-'+body.p_offset,record_date:'2026-01-01',payload:{mouse_sid:'EXP-'+body.p_offset,state:'Stock',date_of_birth:'2020-01-01'}}],next_offset:body.p_offset?null:1,export_level:'low',cutoff_date:'2023-10-14',as_of_date:'2026-10-14',snapshot_revision:body.p_offset?'43':'42'});
+  await assert.rejects(store.getExportRecords(),/changed while exporting/);
+  server.exportResponse=()=>({rows:[],next_offset:null,export_level:'low',cutoff_date:'2023-10-14',as_of_date:'2026-10-14',snapshot_revision:'42'});
+  server.exportPermissionReads=0;server.onExportPermission=n=>{if(n===2)server.exportLevel='high';};
+  await assert.rejects(store.getExportRecords(),/permission changed/);
+});
+
+test('Max backups recheck permission after reading and signed-out real workspaces cannot fall back to local export',async()=>{
+  const d=createSyntheticDataset();delete d.demo;delete d.synthetic;delete d.is_demo;await connected(d);
+  server.exportLevel='low';await assert.rejects(store.getFullExportBackup(),/permission/);
+  server.exportLevel='max';server.exportPermissionReads=0;server.onExportPermission=n=>{if(n===2)server.exportLevel='low';};
+  await assert.rejects(store.getFullExportBackup(),/permission/);
+  server.onExportPermission=null;await store.signOut();await assert.rejects(store.getExportPermission(),/Sign in/);
+});
+
+test('server current housing exports preserve old DOB and add explicit record date without pulling archives',async()=>{
+  await connected(createSyntheticDataset());server.exportLevel='low';
+  server.exportResponse=()=>({rows:[{entity_type:'mice',entity_id:'EXP-OLD',record_date:'2020-01-01',payload:{mouse_sid:'EXP-OLD',state:'Stock',date_of_birth:'2020-01-01'}}],next_offset:null,export_level:'low',cutoff_date:'2023-10-14',as_of_date:'2026-10-14',snapshot_revision:'42'});
+  const start=server.calls.length,result=await store.getExportRecords({scope:'current_housing'});
+  assert.equal(result.dataset.tables.mice[0].date_of_birth,'2020-01-01');assert.equal(result.dataset.tables.mice[0].export_record_date,'2020-01-01');
+  assert(!server.calls.slice(start).some(c=>c.url.includes('/entity_records')));
+  const body=JSON.parse(server.calls.slice(start).find(c=>c.url.endsWith('/rpc/export_records')).options.body);assert.equal(body.p_from_date,null);assert.equal(body.p_to_date,null);
+});
+
+test('exports reject account or colony changes during initial and final authorization',async()=>{
+  for(const method of [()=>store.getExportRecords(),()=>store.getFullExportBackup()]){
+    for(const read of [1,2]){
+      await connected(createSyntheticDataset());
+      server.onExportPermission=n=>{if(n===read){const key='mouse-colony.session.v1',s=JSON.parse(sessionStorage.getItem(key));s.user.id='33333333-3333-4333-8333-333333333333';sessionStorage.setItem(key,JSON.stringify(s));}};
+      await assert.rejects(method(),/account or colony changed/);
+    }
+  }
+});
+
+test('imported demo flags do not authorize a configured colony but explicit built-in demo does',async()=>{
+  await fresh();const data=createSyntheticDataset();data.demo=true;data.synthetic=true;data.is_demo=true;
+  await store.saveDataset(data,{localOnly:true});await assert.rejects(store.getExportPermission(),/Sign in/);
+  await store.saveDataset(data,{localOnly:true,localKind:'demo'});assert.equal((await store.getExportPermission()).local,true);
+  await store.saveDataset(data,{localOnly:true});await assert.rejects(store.getExportPermission(),/Sign in/);
+});
+
+test('local current snapshots exclude historical animals and events while Max history retains undated records',async()=>{
+  await fresh();const data=createSyntheticDataset();
+  data.tables.mice.push({mouse_sid:'HISTORICAL',state:'Dead',date_of_birth:'2010-01-01'});
+  data.tables.husbandry_events.push({event_id:'UNDATED',event_type:'note'});
+  data.tables.locations.push({location_id:'POSITION-EMPTY',row:1,column:1});data.tables.cages.push({cage_sid:'INACTIVE-POSITIONED',state:'Inactive',location_id:'POSITION-EMPTY'});
+  data.tables.light_events.push({event_id:'OLD-LIGHT',start_date:'2010-01-01',end_date:'2011-01-01'});
+  await store.saveDataset(data,{localOnly:true,localKind:'demo'});
+  const current=await store.getExportRecords();assert(current.dataset.tables.cages.some(r=>r.cage_sid==='INACTIVE-POSITIONED'));assert.equal(current.metadata.from_date,null);assert.equal(current.metadata.to_date,null);assert(!Number.isNaN(Date.parse(current.metadata.captured_at)));
+  assert(current.dataset.tables.mice.every(m=>m.state==='Stock'));assert.equal(current.dataset.tables.husbandry_events.length,0);assert(!current.dataset.tables.light_events.some(r=>r.event_id==='OLD-LIGHT'));
+  const history=await store.getExportRecords({scope:'history',toDate:(await store.getExportPermission()).as_of_date});assert(history.dataset.tables.husbandry_events.some(r=>r.event_id==='UNDATED'));
+});
+
+test('trusted demo cannot export a retained real source archive with Low permission',async()=>{
+  await connected(createSyntheticDataset());server.exportLevel='low';await store.saveDataset(createSyntheticDataset(),{localOnly:true,localKind:'demo'});
+  let loaded=false;await assert.rejects(store.getFullSourceExport(async()=>{loaded=true;return {private:true};}),/permission/);assert.equal(loaded,false);
 });

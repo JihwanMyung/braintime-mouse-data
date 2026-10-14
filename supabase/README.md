@@ -1,5 +1,7 @@
 # Shared colony backend
 
+Separate Low (three calendar years), High (six calendar years), and Max export permissions are prepared in `export-permissions.sql`. Apply it after the membership migration. See [EXPORTS.md](EXPORTS.md) for report RPCs, deployment order, tests, and the boundary between supported exports and existing viewing access.
+
 `schema.sql` is prepared for a dedicated Supabase project. It has not been applied to a cloud account. Run it as the database owner in that project's SQL editor after reviewing it. Configure Supabase Auth with only the intended application redirect URLs, create/invite the lab users through Auth, and establish the owner membership using `bootstrap.example.sql` or the authenticated `create_colony` RPC. Membership is based on Auth UUIDs, never user-editable profile metadata.
 
 All four public tables have RLS. Anonymous roles have no table access. Authenticated lab members can read their colony; only active owners/editors can mutate records through the SQL-checked RPC. Direct client INSERT/UPDATE/DELETE is revoked. Owner-only membership changes cannot remove the final active owner. Records are archived rather than deleted. Entity and membership changes create audit entries, and clients cannot update/delete those entries. A privileged database administrator can still change schema or disable triggers; this is not tamper-proof against the project administrator.

@@ -4,7 +4,7 @@ import {renderUserManagement} from '../web/user-management.js';
 
 const initialUsers=()=>[
   {user_id:'OWNER',email:'owner@example.invalid',name:'Lab owner',role:'owner',active:true,status:'active'},
-  {user_id:'EDITOR',email:'editor@example.invalid',name:'<b>Test & editor</b>',role:'editor',active:true,status:'active'},
+  {user_id:'EDITOR',email:'editor@example.invalid',name:'<b>Test & editor</b>',role:'editor',export_level:'high',active:true,status:'active'},
   {user_id:'VIEWER',email:'reader@example.invalid',name:'Reader',role:'viewer',active:false,status:'disabled'}
 ];
 async function mount(handler) {
@@ -20,7 +20,7 @@ async function mount(handler) {
       return {user,message:'Access updated.'};
     }
     if(action==='invite'){
-      users.push({user_id:'INVITED',email:payload.email,role:payload.role,active:true,status:'invited'});
+      users.push({user_id:'INVITED',email:payload.email,role:payload.role,export_level:payload.export_level,active:true,status:'invited'});
       return {user:users.at(-1),email_sent:true,message:'Invitation sent.'};
     }
     throw new Error('Unexpected action');
@@ -29,8 +29,8 @@ async function mount(handler) {
   return {container,calls};
 }
 const click=(container,action,userId)=>container.onclick({target:{closest:()=>({dataset:{userAction:action,userId}})}});
-function invite(container,email,role='viewer') {
-  return container.onsubmit({target:{hasAttribute:name=>name==='data-user-invite',elements:{namedItem:name=>({value:name==='invite-email'?email:role})}},preventDefault(){},stopPropagation(){}});
+function invite(container,email,role='viewer',exportLevel='low') {
+  return container.onsubmit({target:{hasAttribute:name=>name==='data-user-invite',elements:{namedItem:name=>({value:name==='invite-email'?email:name==='invite-role'?role:exportLevel})}},preventDefault(){},stopPropagation(){}});
 }
 const row=(html,text)=>[...html.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map(match=>match[1]).find(value=>value.includes(text));
 
@@ -60,7 +60,7 @@ test('invitation validates the explicit email and access, then accurately report
   await invite(container,'person@example.invalid','owner');
   assert.equal(calls.length,1);
   await invite(container,' person@example.invalid ','editor');
-  assert.deepEqual(calls[1],{action:'invite',payload:{email:'person@example.invalid',role:'editor'}});
+  assert.deepEqual(calls[1],{action:'invite',payload:{email:'person@example.invalid',role:'editor',export_level:'low'}});
   assert.equal(calls[2].action,'list');
   assert.match(container.innerHTML,/No invitation email was sent/);
   assert.doesNotMatch(container.innerHTML,/Invitation sent\./);
@@ -72,11 +72,11 @@ test('access changes require Save and inactive accounts can be reactivated',asyn
   container.onchange({target:{dataset:{userRole:'EDITOR'},value:'viewer'}});
   assert.equal(calls.length,1,'selecting access remains a local draft');
   await click(container,'save-access','EDITOR');
-  assert.deepEqual(calls[1],{action:'update_access',payload:{user_id:'EDITOR',role:'viewer',active:true}});
+  assert.deepEqual(calls[1],{action:'update_access',payload:{user_id:'EDITOR',role:'viewer',export_level:'high',active:true}});
   await click(container,'deactivate','EDITOR');
-  assert.deepEqual(calls[3],{action:'update_access',payload:{user_id:'EDITOR',role:'viewer',active:false}});
+  assert.deepEqual(calls[3],{action:'update_access',payload:{user_id:'EDITOR',role:'viewer',export_level:'high',active:false}});
   await click(container,'reactivate','VIEWER');
-  assert.deepEqual(calls[5],{action:'update_access',payload:{user_id:'VIEWER',role:'viewer',active:true}});
+  assert.deepEqual(calls[5],{action:'update_access',payload:{user_id:'VIEWER',role:'viewer',export_level:'low',active:true}});
   assert.match(row(container.innerHTML,'reader@example.invalid'),/>Active<\/span>/);
 });
 
@@ -118,4 +118,38 @@ test('user list errors can be retried and unavailable accounts remain protected'
   assert.doesNotMatch(row(container.innerHTML,'missing@example.invalid'),/data-user-action|data-user-role/);
   await click(container,'reactivate','UNAVAILABLE');
   assert.equal(calls.length,2);
+});
+
+test('export level is independent of read/write, with low invitation default and protected owner max',async()=>{
+  const {container,calls}=await mount();
+  assert.match(container.innerHTML,/name="invite-export-level"[^>]*><option value="low" selected>Low \(past 3 years\)/);
+  assert.match(container.innerHTML,/High \(past 6 years\)/);assert.match(container.innerHTML,/Max \(full history\)/);
+  const owner=row(container.innerHTML,'owner@example.invalid');assert.match(owner,/>Max<\/span>/);assert.doesNotMatch(owner,/data-user-export-level/);
+  container.onchange({target:{dataset:{userExportLevel:'OWNER'},value:'low'}});await click(container,'save-access','OWNER');assert.equal(calls.length,1);
+  await invite(container,'read-all@example.invalid','viewer','max');
+  assert.deepEqual(calls[1],{action:'invite',payload:{email:'read-all@example.invalid',role:'viewer',export_level:'max'}});
+  assert.match(container.innerHTML,/name="invite-export-level"[^>]*><option value="low" selected>/,'each subsequent new invitation starts at low');
+});
+
+test('changing export level alone requires Save and sends role plus level together',async()=>{
+  const {container,calls}=await mount();
+  container.onchange({target:{dataset:{userExportLevel:'EDITOR'},value:'max'}});
+  assert.equal(calls.length,1);assert.match(row(container.innerHTML,'editor@example.invalid'),/<option value="max" selected>/);
+  await click(container,'save-access','EDITOR');assert.deepEqual(calls[1],{action:'update_access',payload:{user_id:'EDITOR',role:'editor',export_level:'max',active:true}});
+  container.onchange({target:{dataset:{userRole:'VIEWER'},value:'editor'}});container.onchange({target:{dataset:{userExportLevel:'VIEWER'},value:'high'}});
+  await click(container,'save-access','VIEWER');assert.deepEqual(calls[3],{action:'update_access',payload:{user_id:'VIEWER',role:'editor',export_level:'high',active:false}});
+});
+
+test('active toggles preserve stored export permissions and do not apply unsaved level drafts',async()=>{
+  const {container,calls}=await mount();
+  container.onchange({target:{dataset:{userExportLevel:'EDITOR'},value:'max'}});container.onchange({target:{dataset:{userRole:'EDITOR'},value:'viewer'}});
+  await click(container,'deactivate','EDITOR');assert.deepEqual(calls[1],{action:'update_access',payload:{user_id:'EDITOR',role:'editor',export_level:'high',active:false}});
+  await click(container,'reactivate','VIEWER');assert.deepEqual(calls[3],{action:'update_access',payload:{user_id:'VIEWER',role:'viewer',export_level:'low',active:true}},'missing legacy permission defaults to low');
+});
+
+test('invalid export levels are rejected and failed permission updates retain the reviewed draft',async()=>{
+  const {container,calls}=await mount(async(action,payload,{users})=>{if(action==='list')return {users};throw new Error('Permission update failed.');});
+  await invite(container,'person@example.invalid','viewer','unlimited');assert.equal(calls.length,1);assert.match(container.innerHTML,/Choose Low, High or Max/);
+  container.onchange({target:{dataset:{userExportLevel:'EDITOR'},value:'max'}});await click(container,'save-access','EDITOR');assert.equal(calls.length,2);assert.match(container.innerHTML,/Permission update failed/);assert.match(row(container.innerHTML,'editor@example.invalid'),/<option value="max" selected>/);
+  container.onchange({target:{dataset:{userExportLevel:'EDITOR'},value:'administrator'}});await click(container,'save-access','EDITOR');assert.equal(calls.at(-1).payload.export_level,'max','invalid control values do not replace a valid draft');
 });

@@ -72,3 +72,12 @@ web/cryopreservation.js
 tests/cryo-sources.test.mjs
 tests/cryopreservation-model.test.mjs
 tests/cryopreservation.test.mjs
+web/export-center.js
+web/animal-sheet-export.js
+web/workbook-export.js
+tests/export-center.test.mjs
+tests/animal-sheet-export.test.mjs
+supabase/export-permissions.sql
+supabase/EXPORTS.md
+supabase/tests/export-permissions.test.mjs
+docs/animal-sheet-exports.md

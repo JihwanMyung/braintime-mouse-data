@@ -11,5 +11,6 @@ const bundled = '// Generated from manage-colony-users/handler.mjs and index.ts.
 await mkdir(output, {recursive: true});
 await writeFile(join(output, 'index.ts'), bundled);
 await copyFile(new URL('./membership.sql', import.meta.url), join(output, '01-membership.sql'));
+await copyFile(new URL('../../export-permissions.sql', import.meta.url), join(output, '02-export-permissions.sql'));
 await copyFile(new URL('./README.md', import.meta.url), join(output, 'README.md'));
-console.log(JSON.stringify({output, bundle_bytes: Buffer.byteLength(bundled), files: ['index.ts', '01-membership.sql', 'README.md']}));
+console.log(JSON.stringify({output, bundle_bytes: Buffer.byteLength(bundled), files: ['index.ts', '01-membership.sql', '02-export-permissions.sql', 'README.md']}));
