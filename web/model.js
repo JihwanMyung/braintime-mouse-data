@@ -6,6 +6,39 @@ const key = value => JSON.stringify(value);
 const populated = value => value!==null && value!==undefined && value!=='';
 const provenance = name => name.startsWith('source') || name==='record_origin';
 
+const managerName = value => typeof value==='string' ? value.trim().replace(/\s*\(Me\)$/,'').trim() : '';
+function managerResult(name,source,status,candidates=[],incomplete=false) {
+  return {name:name||null,source,status,candidates,incomplete,missing:status==='missing',conflict:status==='conflict'};
+}
+function recordedManager(record) {
+  // An explicitly empty assignment suppresses the imported fallback without changing it.
+  if(record&&Object.hasOwn(record,'manager')) {
+    const name=managerName(record.manager);
+    return managerResult(name,'manager',name?'assigned':'missing',name?[name]:[]);
+  }
+  const name=managerName(record?.owner);
+  return name?managerResult(name,'owner','assigned',[name]):null;
+}
+
+/** Resolve an app assignment or the recorded owner; creators do not establish responsibility. */
+export function mouseManager(record) {
+  return recordedManager(record)??managerResult(null,null,'missing');
+}
+
+/** A cage can inherit a manager only when every current resident has the same assignment. */
+export function cageManager(cage,mice=[]) {
+  const recorded=recordedManager(cage);
+  if(recorded)return recorded;
+  if(typeof cage?.cage_sid!=='string'||!cage.cage_sid.trim())return managerResult(null,null,'missing');
+  const residents=mice.filter(mouse=>mouse.cage_sid===cage.cage_sid&&mouse.state==='Stock'&&!mouse.app_archived_at&&mouse.archived!==true);
+  if(!residents.length)return managerResult(null,null,'missing');
+  const assignments=residents.map(mouseManager),candidates=[...new Set(assignments.map(r=>r.name).filter(Boolean))].sort();
+  const incomplete=assignments.some(r=>r.status!=='assigned');
+  if(candidates.length>1)return managerResult(null,'residents','conflict',candidates,incomplete);
+  if(incomplete||!candidates.length)return managerResult(null,'residents','missing',candidates,true);
+  return managerResult(candidates[0],'residents','assigned',candidates);
+}
+
 export function normalizeDataset(dataset) {
   if (!dataset || typeof dataset!=='object' || Array.isArray(dataset)) throw new Error('A dataset object is required.');
   const result=copy(dataset);
@@ -124,6 +157,16 @@ export function validateRecord(type,draft,dataset,originalId=null) {
   if(base.tables[type].some(r=>r[field]===draft[field]&&r[field]!==originalId))errors.push(`Identifier ${draft[field]} already exists.`);
   if(old)for(const name of new Set([...Object.keys(old),...Object.keys(draft)]))if(provenance(name)&&key(old[name])!==key(draft[name]))errors.push(`Imported provenance ${name} cannot be changed.`);
   if(type==='mice'&&!['Male','Female','Unknown'].includes(draft.sex))errors.push('Sex must be Male, Female, or Unknown.');
+  if(type==='mice'||type==='cages') {
+    if(Object.hasOwn(draft,'manager')&&draft.manager!==null&&typeof draft.manager!=='string')errors.push('Manager must be a name or an empty assignment.');
+    const resolved=type==='mice'?mouseManager(draft):cageManager(draft,base.tables.mice);
+    const changed=old&&(Object.hasOwn(old,'manager')!==Object.hasOwn(draft,'manager')||key(old.manager)!==key(draft.manager));
+    if(resolved.status!=='assigned') {
+      const detail=resolved.status==='conflict'?'Resident mice have different managers.':resolved.incomplete?'Some resident mice have no recorded manager.':'No manager is recorded.';
+      if(!old||changed)errors.push(`${detail} Assign a manager before saving this ${type==='mice'?'mouse':'cage'}.`);
+      else warnings.push(`${detail} The existing record can be saved without inventing an assignment.`);
+    }
+  }
   for(const name of ['sire_sids','dam_sids','male_sids','female_sids'])if(populated(draft[name])&&(!Array.isArray(draft[name])||draft[name].some(id=>typeof id!=='string'||!id.trim())))errors.push(`${name} must contain text identifiers.`);
   const candidate=copy(base);
   candidate.tables[type]=base.tables[type].filter(r=>r[field]!==originalId);

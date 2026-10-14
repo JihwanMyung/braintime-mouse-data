@@ -15,7 +15,7 @@ assert(!scheduleApplies({start_date:'2026-10-01',end_date:'2026-10-14',interval_
 let saved=model.createSyntheticDataset();saved.demo=true;
 const store={loadDataset:async()=>structuredClone(saved),saveDataset:async next=>{saved=structuredClone(next)},clearDataset:async()=>{saved=null},getCloudStatus:()=>({mode:'local',configured:false,signedIn:false})};
 const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
-const context={console,model,store,PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
+const context={console,model,store,PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
 vm.createContext(context);vm.runInContext(source,context);await new Promise(resolve=>setTimeout(resolve,10));
 vm.runInContext(`
 assert($('main').innerHTML.includes('Recently born'));
@@ -36,10 +36,33 @@ filters={state:'Stock'};renderTable();assert(currentRows.every(r=>r.state==='Sto
 printCards([dataset.tables.mice[0].mouse_sid]);assert($('print-area').innerHTML.includes('Generated'));assert($('print-area').innerHTML.includes('Protocol'));assert($('print-preview').open);assert($('print-area').innerHTML.includes('Light record'));action('system-print');
 `,context);
 assert(context.printed,'print triggered');
+vm.runInContext(`
+const managedMouse=dataset.tables.mice[0],managedCage=dataset.tables.cages[0];
+managedMouse.owner='Imported owner (Me)';managedMouse.manager='Animal keeper';managedCage.owner='Cage keeper (Me)';
+route='mice';detail={type:'mice',id:managedMouse.mouse_sid};render();assert($('main').innerHTML.includes('Animal keeper'));assert($('main').innerHTML.includes('Cage keeper'));
+printCards([managedMouse.mouse_sid]);assert($('print-area').innerHTML.includes('Mouse manager'));assert($('print-area').innerHTML.includes('Cage manager'));assert($('print-area').innerHTML.includes('Animal keeper'));assert($('print-area').innerHTML.includes('Cage keeper'));
+printCageCards([managedCage.cage_sid]);assert($('print-area').innerHTML.includes('Cage keeper'));assert($('print-area').innerHTML.includes('Animal keeper'));assert($('print-area').innerHTML.includes(managedMouse.mouse_sid));
+route='cages';detail=null;query='Cage keeper';filters={};renderTable();assert(currentRows.some(c=>c.cage_sid===managedCage.cage_sid));
+openEditor('cages',managedCage.cage_sid);assert($('record-fields').innerHTML.includes('value="Cage keeper"'));assert($('record-fields').innerHTML.includes('Recorded SoftMouse owner'));
+const OriginalFormData=FormData;let enteredManager='Cage keeper';FormData=class{get(k){return k==='manager'?enteredManager:editor.record[k]??''}};
+const unchanged=collectDraft();assert(!Object.hasOwn(unchanged,'manager'));assert(unchanged.owner==='Cage keeper (Me)');
+enteredManager='New keeper';const changed=collectDraft();assert(changed.manager==='New keeper');assert(changed.owner==='Cage keeper (Me)');
+enteredManager='';assert(model.validateRecord('cages',collectDraft(),dataset,managedCage.cage_sid).errors.some(x=>/manager/i.test(x)));FormData=OriginalFormData;
+route='settings';detail=null;cloud={signedIn:true,role:'owner'};renderSettings();assert($('main').innerHTML.includes('id="user-management"'));
+cloud={signedIn:true,role:'editor'};renderSettings();assert(!$('main').innerHTML.includes('id="user-management"'));
+cloud={signedIn:true,role:'viewer'};renderSettings();assert(!$('main').innerHTML.includes('id="user-management"'));
+cloud={signedIn:false,role:'owner'};renderSettings();assert(!$('main').innerHTML.includes('id="user-management"'));
+cloud={mode:'cloud',signedIn:true,role:'viewer'};cloudReady=true;route='mice';detail={type:'mice',id:managedMouse.mouse_sid};render();assert($('add-button').hidden);assert(!$('main').innerHTML.includes('data-action="edit"'));assert(!$('main').innerHTML.includes('data-action="archive-record"'));assert($('main').innerHTML.includes('Print ID card'));
+route='overview';detail=null;render();assert(!$('main').innerHTML.includes('data-action="new-mice"'));
+route='settings';renderSettings();assert($('main').innerHTML.includes('account-new-password'));assert($('main').innerHTML.includes('account-name'));assert(!$('main').innerHTML.includes('Upload local records'));
+managedCage.location='Recorded room / rack';assert(cageHousing(managedCage).housing.includes('Recorded room / rack'));
+cloud={mode:'local'};
+`,context);
+
 const shell=fs.readFileSync(new URL('../web/sw.js',import.meta.url),'utf8');
 assert(shell.includes('!allowed.has(event.request.url)'),'service worker exact shell allowlist');
 assert(!shell.includes('supabase.co'),'no cloud API route cached');
-for(const filename of ['app.js','data-store.js','model.js']){const code=fs.readFileSync(new URL('../web/'+filename,import.meta.url),'utf8');for(const match of code.matchAll(/from ['"](\.\/[^'"]+\.js)['"]/g))assert(shell.includes(match[1]),'Offline shell includes '+match[1]);}
+for(const filename of ['app.js','data-store.js','model.js']){const code=fs.readFileSync(new URL('../web/'+filename,import.meta.url),'utf8');for(const match of code.matchAll(/from ['"](\.\/[^'"]+\.js(?:\?v=\d+)?)['"]/g))assert(shell.includes(match[1]),'Offline shell includes '+match[1]);}
 const manifest=JSON.parse(fs.readFileSync(new URL('../web/manifest.webmanifest',import.meta.url),'utf8'));
 for(const icon of manifest.icons)assert(fs.existsSync(new URL('../web/'+icon.src.slice(2),import.meta.url)));
 

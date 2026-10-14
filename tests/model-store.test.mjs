@@ -23,7 +23,7 @@ function callbackPage(hash=''){
 function callbackToken(overrides={}){return `x.${btoa(JSON.stringify({iss:'https://test.supabase.co/auth/v1',aud:'authenticated',role:'authenticated',sub:uid,exp:Math.floor(Date.now()/1000)+3600,...overrides}))}.x`;}
 function callbackHash(token=callbackToken(),type='magiclink'){return '#'+new URLSearchParams({access_token:token,refresh_token:'synthetic-refresh',token_type:'bearer',type}).toString();}
 function installServer(){
-  server={records:new Map(),objects:new Map(),role:'owner',calls:[],refreshes:0,deny:false,expires:3600,failBatch:null,batches:0};
+  server={records:new Map(),objects:new Map(),role:'owner',active:true,calls:[],refreshes:0,deny:false,expires:3600,failBatch:null,batches:0};
   globalThis.fetch=async(url,options={})=>{
     server.calls.push({url,options});const u=new URL(url);const body=options.body?JSON.parse(options.body):null;
     if(u.pathname.endsWith('/token')){
@@ -32,10 +32,27 @@ function installServer(){
     }
     if(u.pathname.endsWith('/otp'))return server.otpDenied?response({message:'Email request rate limit exceeded'},429):response({});
     if(u.pathname.endsWith('/verify'))return body.token==='123456'?response({access_token:'access',refresh_token:'refresh',expires_in:3600,user:{id:uid,email:body.email}}):response({message:'Token has expired or is invalid'},403);
-    if(u.pathname.endsWith('/auth/v1/user'))return server.authRejected?response({message:'invalid token'},401):response({id:server.authUser??uid,email:'demo@example.test',is_anonymous:false});
+    if(u.pathname.endsWith('/auth/v1/user')){
+      if(options.method==='PUT'&&body?.data){
+        if(server.profileNetworkFailure)throw new TypeError('Network unavailable');
+        if(server.profileStatus)return response(server.profileReply,server.profileStatus);
+        return response(server.profileReply??{id:server.authUser??uid,email:'demo@example.test',user_metadata:{...server.userMetadata,...body.data},is_anonymous:false});
+      }
+      if(options.method==='PUT'&&server.passwordNetworkFailure)throw new TypeError('Network unavailable');
+      if(options.method==='PUT'&&server.passwordStatus)return response(server.passwordReply,server.passwordStatus);
+      return server.authRejected?response({message:'invalid token'},401):response({id:server.authUser??uid,email:'demo@example.test',is_anonymous:false});
+    }
     if(u.pathname.endsWith('/logout'))return response({});
     if(server.deny)return response({message:'denied',code:'42501'},403);
-    if(u.pathname.endsWith('/memberships'))return response([{role:server.role}]);
+    if(u.pathname.endsWith('/memberships'))return response([{role:server.role,active:server.active}]);
+    if(u.pathname.endsWith('/functions/v1/manage-colony-users')){
+      if(server.managementNetworkFailure)throw new TypeError('Network unavailable');
+      if(server.managementStatus)return response(server.managementReply,server.managementStatus);
+      if(server.managementReply)return response(server.managementReply);
+      if(body.action==='list')return response({colony_id:cid,users:[{user_id:uid,email:'demo@example.test',name:'Demo Owner',role:'owner',active:true,status:'active'}]});
+      const user={user_id:body.user_id??'33333333-3333-4333-8333-333333333333',email:body.email??'colleague@example.test',role:body.role,active:body.active??true,status:body.action==='invite'?'invited':'active'};
+      return response({user,message:body.action==='invite'?'Invitation sent.':'Access updated.',...(body.action==='invite'?{email_sent:true}:{})});
+    }
     if(u.pathname.includes('/storage/v1/')){
       const prefix='/storage/v1/object/';
       if(u.pathname.includes('/object/list/'))return response([...server.objects.keys()].filter(p=>p.startsWith(`${body.prefix}/`)).reverse().slice(body.offset,body.offset+body.limit).map(p=>({name:p.split('/').at(-1)})));
@@ -72,7 +89,7 @@ async function privateFixture(context,name){
 }
 
 test('identifiers preserve leading zeros; duplicates and provenance changes are rejected',()=>{
-  const d=createSyntheticDataset();const draft={...d.tables.mice[0],mouse_sid:'0007',source_record_id:'import:1'};
+  const d=createSyntheticDataset();const draft={...d.tables.mice[0],mouse_sid:'0007',source_record_id:'import:1',manager:'Demo caretaker'};
   assert.deepEqual(validateRecord('mice',draft,d).errors,[]);
   d.tables.mice.push(draft);
   assert.match(validateRecord('mice',{...draft,comment:'note'},d).errors.join(' '),/already exists/);
@@ -124,17 +141,18 @@ test('email-link requests existing users with an exact same-origin redirect',asy
   assert.equal(server.calls.length,count);
 });
 test('magic-link and invitation callbacks clear the fragment before verification and persist only authorized membership',async()=>{
-  for(const type of ['magiclink','invite']){
+  for(const type of ['magiclink','invite','recovery']){
     await fresh();callbackPage(callbackHash(callbackToken(),type));
     const originalFetch=fetch;globalThis.fetch=async(...args)=>{assert.equal(location.hash,'');assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),null);return originalFetch(...args);};
-    const status=await store.consumeAuthCallback();assert.equal(status.signedIn,true);assert.equal(status.role,'owner');
+    const status=await store.consumeAuthCallback();assert.equal(status.signedIn,true);assert.equal(status.role,'owner');assert.equal(status.needsPasswordSetup,type==='invite'||type==='recovery');
     assert.equal(JSON.parse(sessionStorage.getItem('mouse-colony.session.v1')).user.id,uid);assert.equal(localStorage.getItem('mouse-colony.session.v1'),null);
+    assert.equal(Object.hasOwn(JSON.parse(sessionStorage.getItem('mouse-colony.session.v1')),'needsPasswordSetup'),false);
     assert(server.calls.some(c=>c.url.endsWith('/auth/v1/user')));assert(server.calls.some(c=>c.url.includes('/memberships?')));
     assert.equal(await store.consumeAuthCallback(),null);
   }
 });
 test('callback rejects foreign projects, expired tokens, invalid users and forbidden memberships without retaining credentials',async()=>{
-  const cases=[{claims:{iss:'https://foreign.supabase.co/auth/v1'},pattern:/different cloud/},{claims:{exp:1},pattern:/expired/},{authRejected:true,pattern:/rejected/},{authUser:cid,pattern:/verify this account/},{deny:true,pattern:/membership/},{role:'none',pattern:/not a member/}];
+  const cases=[{claims:{iss:'https://foreign.supabase.co/auth/v1'},pattern:/different cloud/},{claims:{exp:1},pattern:/expired/},{authRejected:true,pattern:/rejected/},{authUser:cid,pattern:/verify this account/},{deny:true,pattern:/membership/},{role:'none',pattern:/not an active member/},{active:false,pattern:/not an active member/}];
   for(const scenario of cases){
     await fresh();Object.assign(server,scenario);callbackPage(callbackHash(callbackToken(scenario.claims)));
     await assert.rejects(store.consumeAuthCallback(),scenario.pattern);assert.equal(location.hash,'');assert.equal(store.getCloudStatus().signedIn,false);assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),null);
@@ -290,4 +308,102 @@ test('real augmented dataset round-trips with bounded archive payloads, RPCs and
   const writes=server.calls.filter(c=>c.url.endsWith('/rpc/save_records'));assert(writes.every(c=>Buffer.byteLength(c.options.body)<=MAX_RPC_BYTES));
   assert(server.calls.filter(c=>c.url.includes('entity_type=eq.archive')).every(c=>new URL(c.url).searchParams.get('limit')==='3'));
   assert.equal(loaded.tables.historical_observations.length,d.tables.historical_observations.length);
+});
+
+test('owner user-management uses the configured project and refreshed authentication without storing invitations',async()=>{
+  await fresh();server.expires=-1;await store.signIn('demo@example.test','test-password');server.expires=3600;
+  const beforeRefresh=server.refreshes;
+  const listing=await store.manageColonyUsers('list');assert.equal(listing.users[0].role,'owner');assert(server.refreshes>beforeRefresh);
+  const invited=await store.manageColonyUsers('invite',{email:' colleague@example.test ',role:'editor'});
+  assert.equal(invited.email_sent,true);assert.equal(invited.user.role,'editor');
+  const updated=await store.manageColonyUsers('update_access',{user_id:invited.user.user_id,role:'viewer',active:false});assert.equal(updated.user.active,false);
+  const calls=server.calls.filter(c=>c.url.includes('/functions/v1/'));
+  assert.equal(calls.length,3);
+  for(const {url,options}of calls){assert.equal(url,'https://test.supabase.co/functions/v1/manage-colony-users');assert.equal(options.method,'POST');assert.equal(options.cache,'no-store');assert.equal(options.redirect,'error');assert.equal(options.headers.Authorization,'Bearer access');assert.equal(options.headers.apikey,jwt('anon'));assert.equal(JSON.parse(options.body).colony_id,cid);}
+  assert.deepEqual(JSON.parse(calls[1].options.body),{email:'colleague@example.test',role:'editor',action:'invite',colony_id:cid});
+  assert(!JSON.stringify([...localStorage.values,...sessionStorage.values]).includes('colleague@example.test'));
+});
+test('user-management rejects unsigned, nonowner, inactive and revoked membership before Edge invocation',async()=>{
+  await fresh();localStorage.clear();await assert.rejects(store.manageColonyUsers('list'),/Configure/);configure();
+  await assert.rejects(store.manageColonyUsers('list'),/Sign in/);
+  for(const role of ['editor','viewer']){server.role=role;await store.signIn('demo@example.test','test-password');await assert.rejects(store.manageColonyUsers('list'),/Only an active colony owner/);}
+  server.role='owner';await store.signIn('demo@example.test','test-password');server.active=false;
+  await assert.rejects(store.manageColonyUsers('list'),/not an active member/);
+  server.active=true;server.role='editor';await assert.rejects(store.manageColonyUsers('list'),/Only an active colony owner/);
+  assert.equal(server.calls.filter(c=>c.url.includes('/functions/v1/')).length,0);
+});
+test('user-management rejects action, colony, redirect and role injection, invalid targets and self edits',async()=>{
+  await fresh();await store.signIn('demo@example.test','test-password');
+  const target='33333333-3333-4333-8333-333333333333';
+  const bad=[['delete',{}],['list',{colony_id:target}],['invite',{email:'a@example.test',role:'viewer',redirect_to:'https://outside.example.test'}],['invite',{email:'a@example.test',role:'owner'}],['invite',{email:'invalid',role:'viewer'}],['update_access',{user_id:uid,role:'editor',active:true}],['update_access',{user_id:'wrong',role:'viewer',active:false}],['update_access',{user_id:target,role:'viewer',active:'false'}],['list',[]]];
+  for(const [action,payload]of bad)await assert.rejects(store.manageColonyUsers(action,payload));
+  assert.equal(server.calls.filter(c=>c.url.includes('/functions/v1/')).length,0);
+});
+test('user-management preserves backend delivery status and partial-invitation errors without retrying',async()=>{
+  await fresh();await store.signIn('demo@example.test','test-password');
+  server.managementReply={user:{user_id:'33333333-3333-4333-8333-333333333333',role:'viewer',active:true},email_sent:false,message:'Existing account access updated; no invitation email sent.'};
+  assert.equal((await store.manageColonyUsers('invite',{email:'colleague@example.test',role:'viewer'})).email_sent,false);
+  server.managementReply={code:'membership_failed',message:'Invitation sent, but colony access was not saved. Check the user list before retrying.',invitation_sent:true};
+  for(const status of [500,403]){server.managementStatus=status;await assert.rejects(store.manageColonyUsers('invite',{email:'colleague@example.test',role:'viewer'}),error=>error.code==='membership_failed'&&error.invitationSent===true&&error.message===server.managementReply.message);}
+  server.managementStatus=403;server.managementReply={message:'Owner access required.'};await assert.rejects(store.manageColonyUsers('list'),/permission/);
+  server.managementStatus=null;server.managementNetworkFailure=true;const before=server.calls.length;
+  await assert.rejects(store.manageColonyUsers('list'),/not confirmed/);
+  assert.equal(server.calls.slice(before).filter(c=>c.url.includes('/functions/v1/')).length,1);
+});
+
+test('account password update uses authenticated PUT, preserves spaces, and never persists the password',async()=>{
+  await fresh();await store.signIn('demo@example.test','test-password');
+  const beforeLocal=JSON.stringify([...localStorage.values]),beforeSession=JSON.stringify([...sessionStorage.values]);
+  const password=' Synthetic account password 42! ';
+  const result=await store.updateAccountPassword(password);
+  assert.deepEqual(result,{user_id:uid,message:'Account password updated.'});
+  const call=server.calls.find(c=>c.url.endsWith('/auth/v1/user')&&c.options.method==='PUT');
+  assert.equal(call.url,'https://test.supabase.co/auth/v1/user');assert.equal(call.options.headers.Authorization,'Bearer access');assert.equal(call.options.headers.apikey,jwt('anon'));assert.equal(call.options.cache,'no-store');assert.equal(call.options.redirect,'error');assert.deepEqual(JSON.parse(call.options.body),{password});
+  assert.equal(JSON.stringify([...localStorage.values]),beforeLocal);assert.equal(JSON.stringify([...sessionStorage.values]),beforeSession);
+  assert(!JSON.stringify(await store.loadDataset()).includes(password));assert(!JSON.stringify(result).includes(password));
+});
+test('account password update rejects unsigned, inactive members and invalid lengths before Auth mutation',async()=>{
+  await fresh();localStorage.clear();await assert.rejects(store.updateAccountPassword('synthetic-password'),/Configure/);configure();
+  await assert.rejects(store.updateAccountPassword('synthetic-password'),/Sign in/);
+  await store.signIn('demo@example.test','test-password');
+  for(const password of [null,123,'short','x'.repeat(129)])await assert.rejects(store.updateAccountPassword(password),/12 and 128/);
+  server.active=false;await assert.rejects(store.updateAccountPassword('synthetic-password'),/not an active member/);
+  assert.equal(server.calls.filter(c=>c.url.endsWith('/auth/v1/user')&&c.options.method==='PUT').length,0);
+});
+test('active viewers can update only their own password and Auth rejection or uncertainty is not success',async()=>{
+  await fresh();server.role='viewer';await store.signIn('demo@example.test','test-password');
+  await store.updateAccountPassword('synthetic-password');
+  server.passwordStatus=422;server.passwordReply={message:'Rejected credential: synthetic-password'};
+  await assert.rejects(store.updateAccountPassword('synthetic-password'),error=>/different/.test(error.message)&&!error.message.includes('synthetic-password'));
+  server.passwordStatus=401;server.passwordReply={message:'expired'};await assert.rejects(store.updateAccountPassword('synthetic-password'),/Sign in again/);
+  server.passwordStatus=null;server.authUser=cid;await assert.rejects(store.updateAccountPassword('synthetic-password'),/did not confirm/);
+  server.authUser=uid;server.passwordNetworkFailure=true;const before=server.calls.length;
+  await assert.rejects(store.updateAccountPassword('synthetic-password'),/not confirmed/);
+  assert.equal(server.calls.slice(before).filter(c=>c.url.endsWith('/auth/v1/user')&&c.options.method==='PUT').length,1);
+  assert(!JSON.stringify([...localStorage.values,...sessionStorage.values]).includes('synthetic-password'));
+});
+
+test('account profile sends only full_name metadata and persists verified returned user with other metadata intact',async()=>{
+  await fresh();await store.signIn('demo@example.test','test-password');server.userMetadata={laboratory:'Synthetic lab',full_name:'Old Name'};
+  assert.equal(store.getCloudStatus().name,null);const localBefore=JSON.stringify([...localStorage.values]);
+  const result=await store.updateAccountProfile('  New Name  ');assert.deepEqual(result,{user_id:uid,name:'New Name',message:'Account profile updated.'});
+  const call=server.calls.find(c=>c.url.endsWith('/auth/v1/user')&&c.options.method==='PUT');
+  assert.deepEqual(JSON.parse(call.options.body),{data:{full_name:'New Name'}});assert.equal(call.options.headers.Authorization,'Bearer access');assert.equal(call.options.cache,'no-store');assert.equal(call.options.redirect,'error');
+  const session=JSON.parse(sessionStorage.getItem('mouse-colony.session.v1'));
+  assert.deepEqual(session.user.user_metadata,{laboratory:'Synthetic lab',full_name:'New Name'});assert.equal(session.access_token,'access');assert.equal(session.role,'owner');assert.equal(store.getCloudStatus().name,'New Name');assert.equal(JSON.stringify([...localStorage.values]),localBefore);
+});
+test('account profile rejects unsigned/inactive users and bad names, leaving session unchanged after invalid server confirmation',async()=>{
+  await fresh();await assert.rejects(store.updateAccountProfile('Name'),/Sign in/);await store.signIn('demo@example.test','test-password');
+  for(const name of [null,{},'', '  ','x'.repeat(121)])await assert.rejects(store.updateAccountProfile(name),/1 and 120/);
+  server.active=false;await assert.rejects(store.updateAccountProfile('Name'),/not an active member/);server.active=true;
+  assert.equal(server.calls.filter(c=>c.url.endsWith('/auth/v1/user')&&c.options.method==='PUT').length,0);
+  const before=sessionStorage.getItem('mouse-colony.session.v1');
+  server.authUser=cid;await assert.rejects(store.updateAccountProfile('Name'),/did not confirm/);assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),before);
+  server.authUser=uid;server.profileReply={id:uid,user_metadata:{full_name:'Wrong Name'}};await assert.rejects(store.updateAccountProfile('Name'),/did not confirm/);assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),before);
+  server.profileStatus=403;server.profileReply={message:'Rejected'};await assert.rejects(store.updateAccountProfile('Name'),/permission/);assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),before);
+});
+test('active viewers may edit their own name but a sign-out during the request cannot resurrect their session',async()=>{
+  await fresh();server.role='viewer';await store.signIn('demo@example.test','test-password');await store.updateAccountProfile('Viewer Name');assert.equal(store.getCloudStatus().name,'Viewer Name');assert.equal(store.getCloudStatus().role,'viewer');
+  const original=fetch;globalThis.fetch=async(url,options)=>{const result=await original(url,options);if(url.endsWith('/auth/v1/user')&&options.method==='PUT')sessionStorage.clear();return result;};
+  await assert.rejects(store.updateAccountProfile('New Viewer Name'),/account changed/);assert.equal(store.getCloudStatus().signedIn,false);
 });

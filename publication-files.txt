@@ -45,3 +45,13 @@ web/manifest.webmanifest
 web/model.js
 web/styles.css
 web/sw.js
+tests/manager.test.mjs
+tests/housing-manager.test.mjs
+web/user-management.js
+tests/user-management.test.mjs
+supabase/functions/manage-colony-users/handler.mjs
+supabase/functions/manage-colony-users/index.ts
+supabase/functions/manage-colony-users/membership.sql
+supabase/functions/manage-colony-users/README.md
+supabase/functions/manage-colony-users/prepare-bundle.mjs
+supabase/tests/user-management.test.mjs

@@ -45,3 +45,9 @@ Run `node --test tests/*.test.mjs`. The separate SQL suite runs with `npm ci --p
 The public test suite generates synthetic scale data and should run before each release. Additional app round-trip and SQL validation tests use private local fixtures when present and explicitly skip when those files are absent; malformed or unreadable fixtures still fail.
 
 No real colony records or login secrets are included in this source package. Deployment and data-import receipts are maintained separately from the public source repository.
+
+## Managers and user accounts
+
+Mouse and cage records show an editable manager, using the imported SoftMouse owner until an assignment is changed. Original owner fields are preserved. Printed animal and cage cards include managers in a compact two-column layout.
+
+Signed-in members can set their app password and display name in Settings. The configured database owner can list users, invite new accounts, assign Read only or Read & write access, and deactivate access. See `supabase/functions/manage-colony-users/README.md` for the server setup and email-delivery requirements. Passwords and administrative keys are never included in the public app package.
