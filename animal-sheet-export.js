@@ -1,6 +1,6 @@
-import {mouseManager,cageManager} from './model.js?v=15';
-import {createWorkbookXlsx,columnName} from './workbook-export.js?v=15';
-export {createWorkbookXlsx} from './workbook-export.js?v=15';
+import {mouseManager,cageManager} from './model.js?v=16';
+import {createWorkbookXlsx,columnName} from './workbook-export.js?v=16';
+export {createWorkbookXlsx} from './workbook-export.js?v=16';
 
 const present=v=>v!==null&&v!==undefined&&v!=='';
 const id=v=>present(v)?String(v):'';
@@ -167,7 +167,7 @@ function mapSheet(projection) {
 const columns={
   mice:['mouse_sid','physical_tag','sex','date_of_birth','genotype','genotype_status','mouseline','strain','state','status','cage_sid','cage_tag','manager','manager_status','manager_basis','sire_sids','dam_sids','litter_sid','mating_sids','protocol','comment','source'],
   cages:['cage_sid','cage_tag','state','room_id','room','rack_id','rack','location_id','position','current_stock_count','selected_stock_count','manager','manager_status','manager_basis','derived','capacity','cage_type','comment','source'],
-  locations:['location_id','label','room_id','rack_id','row','column','record_origin','source_snapshot_date','source_observed_mouse_sids','source_candidate_mouse_sids','source_observed_tags','source_observed_cage_sids','source_candidate_cage_sids','evidence_status','notes','source'],
+  locations:['location_id','label','room_id','rack_id','locobox_id','row','column','record_origin','source_snapshot_date','source_observed_mouse_sids','source_candidate_mouse_sids','source_observed_tags','source_observed_cage_sids','source_candidate_cage_sids','evidence_status','notes','source'],
   rooms:['room_id','name','label','notes','source'],racks:['rack_id','room_id','name','label','notes','source'],
   light_events:['event_id','room_id','rack_id','location_id','cage_sid','start_date','end_date','interval_semantics','protocol','cycle_hours','light_hours','lights_on','lights_off','transition_minutes','intensity_lux','timezone','evidence_status','actual_exposure_verified','notes','source'],
   husbandry_events:['event_id','event_type','event_date','mouse_sid','cage_sid','location_id','old_location_label','location_label','notes','source'],

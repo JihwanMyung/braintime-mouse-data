@@ -1,5 +1,5 @@
-import { predictCross, validateScenario, rankPairs } from './genetics.js?v=15';
-import { discoverGenotypes, sourceProfile } from './genotype-catalog.js?v=15';
+import { predictCross, validateScenario, rankPairs } from './genetics.js?v=16';
+import { discoverGenotypes, sourceProfile } from './genotype-catalog.js?v=16';
 
 const mounts=new WeakMap();
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
