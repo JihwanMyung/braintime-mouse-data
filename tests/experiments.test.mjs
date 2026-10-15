@@ -356,3 +356,44 @@ test('repeated managed searches preserve results and restriction changes invalid
  search('hidden-evidence-phrase');assert.match(h.container.innerHTML,/Imported channel observation/);search('hidden-evidence');assert.match(h.container.innerHTML,/Imported channel observation/);
  d.source_archive_restricted=true;h.render(d);assert.match(h.container.innerHTML,/No matching records/);search('Imported channel');assert.match(h.container.innerHTML,/Imported channel observation/);
 });
+
+test('compact draft detail translates review flags without exposing technical metadata or confirming animals',async t=>{
+ const built=compactSourceDraft();built.record.source_draft.flags=['identity_and_completion_unreviewed','candidate_birth_after_source_date','ambiguous_animal_candidates','unmatched_animal_identifier','event_date_unknown','specimen_labels_are_not_animal_identifiers','assay_result_not_verified','planning_or_template_text_with_recorded_result_needs_review','same_source_cell_has_other_observations_not_merged','one_source_observation_not_one_biological_event','no_current_specimen_stock_claim','candidate_birth_after_source_date','<img src=x onerror=unsafe>'];
+ const before=clone(built.dataset),h=await harness(t,built.dataset);await h.click('open','DRAFT-1');const html=h.container.innerHTML;
+ assert.match(html,/<h3>Review needed<\/h3>/);assert.equal((html.match(/A candidate was born after the source date/g)||[]).length,1);
+ for(const text of ['An identifier matches several animals','An animal identifier has no match','The event date is unknown','specimen labels, not animal IDs','assay result has not been verified','Planning or template text','Other observations share these source cells','not necessarily a separate experiment','completion are unconfirmed','current specimen stock','Additional source checks need review'])assert(html.includes(text),text);
+ assert.doesNotMatch(html,/candidate_birth_after_source_date|source_fingerprint|experiment-source-drafts|<img src=x|&lt;img src=x/);
+ assert.match(html,/<span>Confirmed animals<\/span><strong>0<\/strong>/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
+});
+
+test('unresolved participant details link saved candidate mice without promoting or inventing identities',async t=>{
+ const built=compactSourceDraft();built.record.experiment.participants[0].candidate_sids=['M1','M1','M2','MISSING'];built.record.experiment.participants[0].raw_identifier='<untrusted tag>';
+ const before=clone(built.dataset),h=await harness(t,built.dataset,{canEdit:()=>false});await h.click('open','DRAFT-1');
+ assert.match(h.container.innerHTML,/Unresolved: &lt;untrusted tag&gt;/);assert.match(h.container.innerHTML,/Possible matches, verify before confirming \(ambiguous\) · Unconfirmed/);
+ for(const id of ['M1','M2'])assert.equal((h.container.innerHTML.match(new RegExp(`data-exp-action="mouse" data-id="${id}"`,'g'))||[]).length,1);
+ assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="MISSING"|Confirm SID/);assert.match(h.container.innerHTML,/Some saved candidates are unavailable/);
+ await h.click('mouse','M1');assert.deepEqual(h.messages,[{mouse:'M1'}]);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);assert.equal(built.record.experiment.participants[0].mouse_sid,null);
+});
+
+test('participant editor offers candidate record links while confirmation remains explicit',async t=>{
+ const built=compactSourceDraft(),h=await harness(t,built.dataset);await h.click('edit','DRAFT-1');
+ assert.match(h.container.innerHTML,/Possible matches, verify before confirming · Unconfirmed/);assert.match(h.container.innerHTML,/data-exp-action="mouse" data-id="M1"/);assert.match(h.container.innerHTML,/Confirm SID/);
+ await h.click('mouse','M1');assert.equal(h.saves.length,0);assert.equal(h.dataset.tables.husbandry_events[0].experiment.participants[0].link_status,'unresolved');
+ h.input('[data-resolve="0"]','M1');await h.click('resolve','0');assert.doesNotMatch(h.container.innerHTML,/Possible matches, verify before confirming/);await h.save();assert.equal(h.dataset.tables.husbandry_events.find(r=>r.event_id==='DRAFT-1').experiment.participants[0].link_status,'confirmed');
+});
+
+test('unmatched and specimen identifiers remain unconfirmed with no candidate donor links',async t=>{
+ const built=compactSourceDraft();built.record.experiment.participants[0].candidate_sids=[];built.record.source_draft.flags=['unmatched_animal_identifier'];const h=await harness(t,built.dataset);await h.click('open','DRAFT-1');
+ assert.match(h.container.innerHTML,/No matching animal recorded. Identity remains unconfirmed/);assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse"/);
+ // Defensive rendering: even a legacy sample-label record with candidate IDs
+ // cannot present those specimen labels as inferred donors.
+ const next=clone(h.dataset),r=next.tables.husbandry_events[0];r.source_observation.identifier_kind='sample_label';r.experiment.participants[0].candidate_sids=['M1'];r.source_draft.flags=['specimen_labels_are_not_animal_identifiers'];h.render(next);
+ assert.match(h.container.innerHTML,/These are specimen labels, not animal IDs/);assert.match(h.container.innerHTML,/Specimen label, not an animal ID. No donor is inferred/);assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse"/);
+ await h.click('edit','DRAFT-1');assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse"/);assert.equal(h.saves.length,0);
+});
+
+test('import warnings remain historical after explicit status review and ordinary records have no import warnings',async t=>{
+ const built=compactSourceDraft();built.record.source_draft.flags=['identity_and_completion_unreviewed','candidate_birth_after_source_date'];built.record.experiment.status='completed';const before=clone(built.dataset),h=await harness(t,built.dataset);await h.click('open','DRAFT-1');
+ assert.match(h.container.innerHTML,/<summary>Warnings recorded at import<\/summary>/);assert.doesNotMatch(h.container.innerHTML,/<h3>Review needed<\/h3>/);assert.match(h.container.innerHTML,/class="badge blue">completed/);assert.deepEqual(h.dataset,before);
+ const ordinary=buildExperiment({title:'Manual planned experiment',assays:['qPCR'],event_date:'2026-10-14'},base()),other=await harness(t,ordinary.dataset);await other.click('open',ordinary.record.event_id);assert.doesNotMatch(other.container.innerHTML,/Review needed|Warnings recorded at import/);
+});
