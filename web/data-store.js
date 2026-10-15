@@ -973,15 +973,15 @@ export async function getAnimalSheetImportConflicts({offset=0,limit=100}={}){
 }
 
 
-// Brainbot owner controls are transient and never enter shared colony backups.
+// Braintime Bot owner controls are transient and never enter shared colony backups.
 async function brainbotRequest(name,body={}){
  const context=exportContext(),c=configuration();
- if(!c||!session()?.user?.id)throw new Error('Sign in before opening Brainbot.');
- if(await membership()!=='owner')throw new Error('Only the owner can manage Brainbot.');
+ if(!c||!session()?.user?.id)throw new Error('Sign in before opening Braintime Bot.');
+ if(await membership()!=='owner')throw new Error('Only the owner can manage Braintime Bot.');
  checkExportContext(context);
  const result=await request('rpc/'+name,{method:'POST',body:{p_colony_id:c.colonyId,...body}});
  checkExportContext(context);
- if(!result||!Number.isSafeInteger(result.settings?.version)||result.settings.version<0||!Array.isArray(result.runs)||!Array.isArray(result.issues)||result.principal?.role!=='manager')throw new Error('Brainbot status was not confirmed. Reload the monitoring page.');
+ if(!result||!Number.isSafeInteger(result.settings?.version)||result.settings.version<0||!Array.isArray(result.runs)||!Array.isArray(result.issues)||result.principal?.role!=='manager')throw new Error('Braintime Bot status was not confirmed. Reload the monitoring page.');
  return result;
 }
 export function getBrainbotStatus(){return brainbotRequest('get_brainbot_status');}
