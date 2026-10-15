@@ -20,7 +20,7 @@ const db={close(){},objectStoreNames:{contains:()=>true},transaction(){
  tx.abort=()=>{if(state!=='active')throw Error('Transaction already finished');state='aborted';queueMicrotask(()=>tx.onabort?.());};
  tx.objectStore=()=>({get:k=>run(()=>changes.has(k)?changes.get(k)===deleted?undefined:changes.get(k):idbData.get(k)),put:(v,k)=>run(()=>{changes.set(k,structuredClone(v));return k;}),delete:k=>run(()=>{changes.set(k,deleted);})});
  function run(fn){const request={};pending++;queueMicrotask(()=>{if(state!=='active')return;request.result=structuredClone(fn());request.onsuccess?.();pending--;finish();});return request;}
- function finish(){if(pending||scheduled||state!=='active')return;scheduled=true;queueMicrotask(async()=>{scheduled=false;if(pending||state!=='active')return;if(changes.size&&idbHooks.beforeCommit)await idbHooks.beforeCommit(changes);if(state!=='active')return;for(const [k,v]of changes)v===deleted?idbData.delete(k):idbData.set(k,v);state='finished';if(changes.size&&idbHooks.afterCommit)await idbHooks.afterCommit(changes);if(!changes.size&&idbHooks.afterRead)await idbHooks.afterRead();tx.oncomplete?.();});}
+ function finish(){if(pending||scheduled||state!=='active')return;scheduled=true;queueMicrotask(async()=>{scheduled=false;if(pending||state!=='active')return;if(changes.size&&idbHooks.beforeCommit){try{await idbHooks.beforeCommit(changes);}catch(error){tx.error=error;state='aborted';tx.onerror?.();return;}}if(state!=='active')return;for(const [k,v]of changes)v===deleted?idbData.delete(k):idbData.set(k,v);state='finished';if(changes.size&&idbHooks.afterCommit)await idbHooks.afterCommit(changes);if(!changes.size&&idbHooks.afterRead)await idbHooks.afterRead();tx.oncomplete?.();});}
  return tx;
 }};
 globalThis.indexedDB={open(){const request={};queueMicrotask(()=>{request.result=db;request.onsuccess?.();});return request;}};
@@ -249,7 +249,7 @@ test('cloud pull shrinks only timed-out read pages, keeps keyset cursors and pre
    attempts.push({cursor,limit});if(limit>(cursor===null?100:30))return response({code:'57014',message:'canceling statement due to statement timeout'},500);
   }else if(u.searchParams.get('entity_type')==='eq.archive'&&u.searchParams.get('select').includes('payload'))archiveSizes.push(limit);
  }return originalFetch(url,options);};
- const result=await store.pullFromCloud();
+ const result=await store.pullFromCloud({forceFull:true});
  assert.deepEqual(result.tables.mice.map(r=>r.mouse_sid),data.tables.mice.map(r=>r.mouse_sid));assert.deepEqual(result.tables.source_history,data.tables.source_history);
  assert.deepEqual(attempts.slice(0,8),[{cursor:null,limit:1000},{cursor:null,limit:500},{cursor:null,limit:250},{cursor:null,limit:125},{cursor:null,limit:62},{cursor:'gt.READ-0061',limit:62},{cursor:'gt.READ-0061',limit:31},{cursor:'gt.READ-0061',limit:15}]);
  assert(attempts.slice(8).every(row=>row.limit===15));assert(archiveSizes.length>1);assert(archiveSizes.every(size=>size>=1&&size<=3));assert.equal(server.batches,batches);assert.equal(store.getCloudStatus().readyForEdits,true);
@@ -303,11 +303,11 @@ test('malformed, duplicate or unrelated cloud page records cannot replace a veri
  for(const change of cases){
   const before=await connected(),originalFetch=fetch;let attempts=0;
   globalThis.fetch=async(url,options)=>{const u=new URL(url),reply=await originalFetch(url,options);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.mice'){attempts++;const rows=await reply.json();return response([change(rows)]);}return reply;};
-  await assert.rejects(store.pullFromCloud(),/invalid or unrelated record/);assert.equal(attempts,1);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
+  await assert.rejects(store.pullFromCloud({forceFull:true}),/invalid or unrelated record/);assert.equal(attempts,1);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
  }
  const before=await connected(),originalFetch=fetch;
  globalThis.fetch=async(url,options)=>{const u=new URL(url),reply=await originalFetch(url,options);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.mice'){const rows=await reply.json();return response([rows[0],rows[0]]);}return reply;};
- await assert.rejects(store.pullFromCloud(),/cursor did not advance/);assert.deepEqual(idbData.get('current'),before);
+ await assert.rejects(store.pullFromCloud({forceFull:true}),/cursor did not advance/);assert.deepEqual(idbData.get('current'),before);
 });
 test('keyset record streams cover every entity type allowed by the maintained server schema',async()=>{
  const sql=await readFile(new URL('../supabase/schema.sql',import.meta.url),'utf8'),match=sql.match(/entity_type text not null check \(entity_type in \(([^)]+)\)\)/);
@@ -419,9 +419,9 @@ test('legacy archive is readable and migrates safely on the first ordinary edit'
   const d=await connected();const manifest=server.records.get('archive:reconstruction');
   manifest.payload=await decodeArchive([...server.records.values()]);
   for(const [k,r] of server.records)if(isArchiveChunk(r))server.records.delete(k);
-  const before=await store.pullFromCloud();before.tables.mice[0].comment='legacy edit';await store.saveDataset(before);
+  const before=await store.pullFromCloud({forceFull:true});before.tables.mice[0].comment='legacy edit';await store.saveDataset(before);
   assert.equal(server.records.get('archive:reconstruction').payload.archive_format,'colony-archive-manifest-v1');
-  assert.equal((await store.pullFromCloud()).tables.mice[0].comment,'legacy edit');
+  assert.equal((await store.pullFromCloud({forceFull:true})).tables.mice[0].comment,'legacy edit');
 });
 test('failed manifest commit keeps previous history authoritative and ordinary edits skip unchanged chunks',async()=>{
   const d=createSyntheticDataset();d.tables.history=[{text:'original'}];const before=await connected(d);
@@ -1105,7 +1105,7 @@ test('selected archive fetch reads manifest first and only referenced chunk payl
    try{await new Promise(resolve=>setTimeout(resolve,2));return await originalFetch(url,options);}finally{inFlight--;}
   }
  }return originalFetch(url,options);};
- const loaded=await store.pullFromCloud();assert.deepEqual(loaded,before);assert.equal(maximum,3);
+ const loaded=await store.pullFromCloud({forceFull:true});assert.deepEqual(loaded,before);assert.equal(maximum,3);
  const payloadQueries=archiveQueries.filter(query=>query.get('select').includes('payload'));
  assert.equal(payloadQueries[0].get('entity_id'),'eq.reconstruction');assert(payloadQueries.every(query=>Number(query.get('limit'))<=3));
  const chunkQueries=payloadQueries.slice(1);assert(chunkQueries.length>3);assert(chunkQueries.every(query=>query.get('entity_id').startsWith('in.(')&&!query.get('entity_id').includes(orphan.entity_id)));
@@ -1128,7 +1128,7 @@ test('selected archive batches reduce only confirmed timeout pages without omitt
  globalThis.fetch=async(url,options)=>{const query=new URL(url).searchParams;if(query.get('entity_id')?.startsWith('in.(')){
   const n=Number(query.get('limit'));limits.push(n);if(n>1)return response({code:'57014',message:'canceling statement due to statement timeout'},500);
  }return originalFetch(url,options);};
- assert.deepEqual(await store.pullFromCloud(),before);assert(limits.includes(3));assert(limits.includes(1));
+ assert.deepEqual(await store.pullFromCloud({forceFull:true}),before);assert(limits.includes(3));assert(limits.includes(1));
  const ids=server.calls.slice(start).filter(call=>new URL(call.url).searchParams.get('entity_id')?.startsWith('in.(')).map(call=>new URL(call.url).searchParams.get('entity_id'));
  assert(ids.every(value=>/^in\.\(chunk:[a-f0-9]{64}\)$/.test(value)),'each successful fallback page selects one literal chunk ID');
 });
@@ -1140,7 +1140,7 @@ test('selected archive rejects unknown descriptors and references before issuing
   if(scenario==='table')head.payload.archive_tables.mice={row_count:0,chunk_ids:[]};
   if(scenario==='id')head.payload.archive_tables.unknown={row_count:1,chunk_ids:['chunk:bad,entity_type.eq.mice']};
   if(scenario==='descriptor')head.payload.archive_tables.unknown={row_count:-1,chunk_ids:[]};
-  const start=server.calls.length;await assert.rejects(store.pullFromCloud(),/not supported|Invalid archive/);
+  const start=server.calls.length;await assert.rejects(store.pullFromCloud({forceFull:true}),/not supported|Invalid archive/);
   assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
   assert(!server.calls.slice(start).some(call=>new URL(call.url).searchParams.get('entity_id')?.startsWith('in.(')));
  }
@@ -1162,7 +1162,7 @@ test('missing, corrupt, duplicate or unrelated selected chunks fail closed and p
    if(failure==='unknown-id')rows[0].entity_id='chunk:'+'0'.repeat(64);
    return response(rows);
   }return reply;};
-  await assert.rejects(store.pullFromCloud(),/missing|Missing|invalid|checksum/);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
+  await assert.rejects(store.pullFromCloud({forceFull:true}),/missing|Missing|invalid|checksum/);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
  }
 });
 
@@ -1173,7 +1173,7 @@ test('a replaced manifest or changed account during selected archive reads canno
   globalThis.fetch=async(url,options)=>{const query=new URL(url).searchParams,reply=await originalFetch(url,options);if(!changed&&query.get('entity_id')?.startsWith('in.(')){
    changed=true;if(failure==='manifest')server.records.get('archive:reconstruction').version++;else await store.signOut();
   }return reply;};
-  await assert.rejects(store.pullFromCloud(),/manifest changed|account or colony changed/);
+  await assert.rejects(store.pullFromCloud({forceFull:true}),/manifest changed|account or colony changed/);
   if(failure==='manifest'){assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);}else{assert.equal(idbData.get('current'),undefined);assert.equal(store.getCloudStatus().signedIn,false);}
  }
 });
@@ -1271,4 +1271,197 @@ test('a stalled cloud cache commit is aborted and cannot become ready or publish
   releaseCommit();await new Promise(resolve=>originalTimeout(resolve,0));assert.equal(store.getCloudStatus().readyForEdits,false);assert.deepEqual(idbData.get('current'),before,'a resumed late transaction stays aborted');
  }finally{idbHooks.beforeCommit=null;globalThis.setTimeout=originalTimeout;}
  const reloaded=await store.pullFromCloud();assert.equal(reloaded.tables.mice[0].comment,changed.payload.comment);assert.equal(store.getCloudStatus().readyForEdits,true);
+});
+
+const cloudReadQueries=calls=>calls.map(call=>new URL(call.url)).filter(url=>url.pathname.endsWith('/entity_records')).map(url=>url.searchParams);
+const payloadReads=calls=>cloudReadQueries(calls).filter(query=>query.get('select')?.includes('payload'));
+const incrementalFixture=()=>{const data=createSyntheticDataset();data.tables.incremental_history=Array.from({length:5},(_,i)=>({id:i,text:String.fromCharCode(65+i).repeat(140000)}));return data;};
+
+test('unchanged routine pull checks versions and access without transferring any record or archive payload',async()=>{
+ const before=await connected(incrementalFixture()),start=server.calls.length;
+ assert.deepEqual(await store.pullFromCloud(),before);assert.equal(payloadReads(server.calls.slice(start)).length,0);
+ assert(server.calls.slice(start).some(call=>call.url.includes('/memberships?')));assert(server.calls.slice(start).some(call=>call.url.endsWith('/rpc/get_lac_fee_visibility')));
+ assert.equal(store.getCloudStatus().readyForEdits,true);
+});
+test('one changed entity fetches only its payload and retains every unchanged history chunk',async()=>{
+ const before=await connected(incrementalFixture()),row=server.records.get('mice:SYN-M001');row.payload.comment='Updated on another device';row.version++;
+ const start=server.calls.length,result=await store.pullFromCloud(),reads=payloadReads(server.calls.slice(start));
+ assert.equal(result.tables.mice[0].comment,'Updated on another device');assert.deepEqual(result.tables.incremental_history,before.tables.incremental_history);
+ assert.equal(reads.length,1);assert.equal(reads[0].get('entity_type'),'eq.mice');assert.equal(reads[0].get('entity_id'),'eq.SYN-M001');
+});
+test('incremental pulls fetch new punctuation and Unicode IDs literally and remove rows absent from the current index',async()=>{
+ const before=await connected(),id='new,"quoted"\\耳:mouse';server.records.set(`mice:${id}`,{entity_type:'mice',entity_id:id,colony_id:cid,version:1,archived:false,payload:{...before.tables.mice[0],mouse_sid:id,comment:'New animal'}});server.records.delete('mice:SYN-M003');
+ const start=server.calls.length,result=await store.pullFromCloud(),reads=payloadReads(server.calls.slice(start));assert(result.tables.mice.some(row=>row.mouse_sid===id));assert(!result.tables.mice.some(row=>row.mouse_sid==='SYN-M003'));
+ assert.equal(reads.length,1);assert.equal(reads[0].get('entity_id'),'eq.'+id);
+});
+test('an updated archive transfers only its new manifest and newly referenced chunks',async()=>{
+ const before=await connected(incrementalFixture()),updated=structuredClone(before);updated.tables.incremental_history.push({id:6,text:'new evidence'});
+ const previousIds=new Set(server.records.keys()),next=await encodeArchive(updated),newIds=[];
+ for(const record of next){const key=`archive:${record.entity_id}`,old=server.records.get(key);if(record.entity_id==='reconstruction')server.records.set(key,{...record,colony_id:cid,version:old.version+1});else if(!old){server.records.set(key,{...record,colony_id:cid,version:1});newIds.push(record.entity_id);}}
+ const start=server.calls.length,result=await store.pullFromCloud(),reads=payloadReads(server.calls.slice(start));assert.deepEqual(result.tables.incremental_history,updated.tables.incremental_history);
+ assert(reads.every(query=>query.get('entity_type')==='eq.archive'));assert.equal(reads.filter(query=>query.get('entity_id')==='eq.reconstruction').length,1);
+ const transferred=reads.filter(query=>query.get('entity_id')!=='eq.reconstruction').flatMap(query=>query.get('entity_id').slice(4,-1).split(','));assert.deepEqual(transferred.sort(),newIds.sort());assert(transferred.every(id=>!previousIds.has(`archive:${id}`)));
+});
+test('ordinary mouse edits send only changed records and the next sync requires no historical payload transfer',async()=>{
+ const before=await connected(incrementalFixture());before.tables.mice[0].comment='One local edit';let start=server.calls.length;await store.saveDataset(before);
+ const changes=server.calls.slice(start).filter(call=>call.url.endsWith('/rpc/save_records')).flatMap(call=>JSON.parse(call.options.body).p_changes);
+ assert.deepEqual(changes.map(row=>[row.entity_type,row.entity_id]),[['mice','SYN-M001']]);start=server.calls.length;const loaded=await store.pullFromCloud();assert.equal(loaded.tables.mice[0].comment,'One local edit');assert.equal(payloadReads(server.calls.slice(start)).length,0);
+});
+test('a browser without a persisted baseline and explicit repair both fetch and verify complete cloud data',async()=>{
+ const before=await connected(incrementalFixture());idbData.delete('current-cloud-baseline');const cold=await import('../web/data-store.js?incremental-cold-client'),start=server.calls.length;
+ assert.deepEqual(await cold.pullFromCloud(),before);assert(payloadReads(server.calls.slice(start)).some(query=>query.get('entity_type')==='eq.archive'&&query.get('entity_id')?.startsWith('in.(')));
+ const repairStart=server.calls.length;assert.deepEqual(await store.pullFromCloud({forceFull:true}),before);assert(payloadReads(server.calls.slice(repairStart)).some(query=>query.get('entity_type')==='eq.mice'));
+});
+test('a changed record during incremental loading preserves the old snapshot and pauses editing until retry',async()=>{
+ const before=await connected(),row=server.records.get('mice:SYN-M001');row.payload.comment='First update';row.version++;const originalFetch=fetch;let changed=false;
+ globalThis.fetch=async(url,options)=>{const query=new URL(url).searchParams,reply=await originalFetch(url,options);if(!changed&&query.get('entity_type')==='eq.mice'&&query.get('entity_id')==='eq.SYN-M001'&&query.get('select').includes('payload')){changed=true;row.payload.comment='Concurrent update';row.version++;}return reply;};
+ await assert.rejects(store.pullFromCloud(),/records changed during loading/);assert(changed);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);globalThis.fetch=originalFetch;assert.equal((await store.pullFromCloud()).tables.mice[0].comment,'Concurrent update');
+});
+test('a manifest changed after its cached header was checked rejects reuse and succeeds only on a fresh retry',async()=>{
+ const before=await connected(incrementalFixture()),originalFetch=fetch;let changed=false;
+ globalThis.fetch=async(url,options)=>{const query=new URL(url).searchParams,reply=await originalFetch(url,options);if(!changed&&query.get('entity_type')==='eq.archive'&&!query.has('entity_id')){changed=true;server.records.get('archive:reconstruction').version++;}return reply;};
+ await assert.rejects(store.pullFromCloud(),/manifest changed/);assert(changed);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);globalThis.fetch=originalFetch;assert.deepEqual(await store.pullFromCloud(),before);
+});
+test('restricted or changed membership policies cannot reuse a full-visibility baseline',async()=>{
+ const before=await connected(incrementalFixture());server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};const start=server.calls.length,result=await store.pullFromCloud();
+ assert.equal(result.source_archive_restricted,true);assert.equal(result.tables.incremental_history,undefined);assert(payloadReads(server.calls.slice(start)).some(query=>query.get('entity_type')==='eq.mice'));assert(!cloudReadQueries(server.calls.slice(start)).some(query=>query.get('entity_type')==='eq.archive'));
+});
+test('sign-out clears the persisted baseline and prevents reuse even for the same account',async()=>{
+ const before=await connected(incrementalFixture());assert(idbData.has('current-cloud-baseline'));await store.signOut();assert(!idbData.has('current-cloud-baseline'));await store.signIn('demo@example.test','test-password');const start=server.calls.length;assert.deepEqual(await store.pullFromCloud(),before);
+ assert(payloadReads(server.calls.slice(start)).some(query=>query.get('entity_type')==='eq.archive'&&query.get('entity_id')?.startsWith('in.(')));
+});
+test('an older in-flight incremental pull cannot invalidate or overwrite a newer verified pull',async()=>{
+ const before=await connected(),originalFetch=fetch;let release,entered,held=false;const waiting=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ globalThis.fetch=async(url,options)=>{const query=new URL(url).searchParams,reply=await originalFetch(url,options);if(!held&&query.get('entity_type')==='eq.mice'&&!query.get('select').includes('payload')){held=true;entered();await gate;}return reply;};
+ const pending=store.pullFromCloud(),rejected=assert.rejects(pending,/account or colony changed/);await waiting;
+ const row=server.records.get('mice:SYN-M001');row.payload.comment='Newer verified result';row.version++;const latest=await store.pullFromCloud();assert.equal(latest.tables.mice[0].comment,'Newer verified result');release();await rejected;
+ assert.deepEqual(idbData.get('current'),latest);assert.equal(store.getCloudStatus().readyForEdits,true);globalThis.fetch=originalFetch;
+});
+test('an unchanged-version row with changed archive flag still fetches its new payload',async()=>{
+ await connected();const row=server.records.get('mice:SYN-M001');row.archived=true;row.payload.app_archived_at='2026-10-16T00:00:00Z';const start=server.calls.length,loaded=await store.pullFromCloud();
+ assert.equal(loaded.tables.mice[0].app_archived_at,row.payload.app_archived_at);assert.equal(payloadReads(server.calls.slice(start)).length,1);
+});
+
+
+let restartedClient=0;
+const restartStore=()=>import(`../web/data-store.js?restart-${++restartedClient}`);
+test('browser restart verifies live membership and policy before reusing a compact persisted baseline',async()=>{
+ const before=await connected(incrementalFixture()),client=await restartStore(),start=server.calls.length,envelope=idbData.get('current-cloud-baseline');
+ assert.equal(client.getCloudStatus().readyForEdits,false);assert(envelope.entries.length>0);assert(!JSON.stringify(envelope).includes('A'.repeat(1000)));assert(utf8Size(envelope)<utf8Size(before)/10);
+ assert.deepEqual(await client.pullFromCloud(),before);assert.equal(payloadReads(server.calls.slice(start)).length,0);assert.equal(client.getCloudStatus().readyForEdits,true);assert.match(client.getCloudStatus().message,/Downloaded 0 records and 0 history blocks; reused [1-9]\d* records and [1-9]\d* history blocks/);
+ assert(server.calls.slice(start).some(call=>call.url.includes('/memberships?')));assert(server.calls.slice(start).some(call=>call.url.endsWith('/rpc/get_lac_fee_visibility')));
+});
+test('browser restart fetches only one changed mouse and reuses the persisted history',async()=>{
+ const before=await connected(incrementalFixture()),row=server.records.get('mice:SYN-M001');row.payload.comment='Changed during browser shutdown';row.version++;
+ const client=await restartStore(),start=server.calls.length,loaded=await client.pullFromCloud(),reads=payloadReads(server.calls.slice(start));
+ assert.equal(loaded.tables.mice[0].comment,row.payload.comment);assert.deepEqual(loaded.tables.incremental_history,before.tables.incremental_history);assert.equal(reads.length,1);assert.equal(reads[0].get('entity_id'),'eq.SYN-M001');assert.match(client.getCloudStatus().message,/Downloaded 1 records and 0 history blocks/);
+});
+test('a cloud edit atomically advances the persisted baseline for a subsequent browser restart',async()=>{
+ const data=await connected(incrementalFixture()),prior=idbData.get('current-cloud-baseline').write_id;data.tables.mice[0].comment='Saved before browser restart';await store.saveDataset(data);
+ const envelope=idbData.get('current-cloud-baseline');assert.notEqual(envelope.write_id,prior);assert.equal(envelope.write_id,idbData.get('current-cloud-write').id);assert.equal(envelope.sha256,JSON.parse(localStorage.getItem('mouse-colony.cloud-cache-context.v1')).baseline_sha256);
+ const client=await restartStore(),start=server.calls.length;assert.equal((await client.pullFromCloud()).tables.mice[0].comment,data.tables.mice[0].comment);assert.equal(payloadReads(server.calls.slice(start)).length,0);
+});
+test('persisted records never grant access when live membership is revoked or unreachable',async()=>{
+ for(const unavailable of [false,true]){
+  const before=await connected(incrementalFixture()),client=await restartStore(),start=server.calls.length,originalFetch=fetch;
+  if(unavailable)globalThis.fetch=async(url,options)=>{if(url.includes('/memberships?'))throw new TypeError('Network unavailable');return originalFetch(url,options);};else server.active=false;
+  try{await assert.rejects(client.pullFromCloud(),/not an active member|Network unavailable/);assert.equal(client.getCloudStatus().readyForEdits,false);assert.equal(cloudReadQueries(server.calls.slice(start)).length,0);assert.deepEqual(idbData.get('current'),before);}
+  finally{globalThis.fetch=originalFetch;}
+ }
+});
+test('persisted baselines are isolated by account, membership permissions and visibility policy',async()=>{
+ for(const mismatch of ['account','permissions','policy','restricted']){
+  const before=await connected(incrementalFixture());
+  if(mismatch==='account'){const key='mouse-colony.session.v1',s=JSON.parse(sessionStorage.getItem(key));s.user.id='ffffffff-ffff-4fff-8fff-ffffffffffff';sessionStorage.setItem(key,JSON.stringify(s));}
+  if(mismatch==='permissions')server.memberships=[{role:'owner',active:true,permissions:{manage_members:true}}];
+  if(mismatch==='policy')server.feePolicy={version:1,owner:true,estimate:true,actual:true,source_archive_allowed:true};
+  if(mismatch==='restricted'){server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};}
+  const client=await restartStore(),start=server.calls.length,loaded=await client.pullFromCloud(),reads=payloadReads(server.calls.slice(start));
+  assert(reads.some(query=>query.get('entity_type')==='eq.mice'),mismatch);
+  if(mismatch==='restricted'){assert.equal(loaded.tables.incremental_history,undefined);assert(idbData.get('current-cloud-baseline').entries.every(entry=>!['archive','locations'].includes(entry[0])));assert(!cloudReadQueries(server.calls.slice(start)).some(query=>query.get('entity_type')==='eq.archive'));}
+  else assert.deepEqual(loaded,before);
+ }
+});
+test('corrupted or incompatible persisted sidecars fall back to fully verified cloud reads',async()=>{
+ for(const failure of ['version','checksum','missing','write-marker','projection']){
+  const before=await connected(incrementalFixture()),envelope=idbData.get('current-cloud-baseline');
+  if(failure==='version')envelope.entries[0][2]++;
+  if(failure==='checksum')envelope.sha256='f'.repeat(64);
+  if(failure==='missing')idbData.delete('current-cloud-baseline');
+  if(failure==='write-marker')envelope.write_id='different-transaction';
+  if(failure==='projection')envelope.projection_version++;
+  const client=await restartStore(),start=server.calls.length;assert.deepEqual(await client.pullFromCloud(),before);assert(payloadReads(server.calls.slice(start)).some(query=>query.get('entity_type')==='eq.archive'&&query.get('entity_id')?.startsWith('in.(')),failure);
+ }
+});
+test('cached payload corruption repairs only unverifiable records and never blesses altered history',async()=>{
+ for(const table of ['mice','incremental_history']){
+  const before=await connected(incrementalFixture()),saved=idbData.get('current');saved.tables[table][0][table==='mice'?'comment':'text']='CORRUPTED LOCAL PAYLOAD';
+  const client=await restartStore(),start=server.calls.length;assert.deepEqual(await client.pullFromCloud(),before);const reads=payloadReads(server.calls.slice(start));
+  if(table==='mice'){assert.equal(reads.length,1);assert.equal(reads[0].get('entity_id'),'eq.SYN-M001');}
+  else {assert(reads.length>0);assert(reads.every(query=>query.get('entity_type')==='eq.archive'));}
+ }
+});
+test('a quota failure aborts dataset and sidecar together and preserves the previously verified generation',async()=>{
+ const before=await connected(incrementalFixture()),oldSidecar=structuredClone(idbData.get('current-cloud-baseline')),oldWrite=structuredClone(idbData.get('current-cloud-write')),oldMark=localStorage.getItem('mouse-colony.cloud-cache-context.v1');
+ const row=server.records.get('mice:SYN-M001');row.payload.comment='New server value';row.version++;
+ let rejected=false;idbHooks.beforeCommit=changes=>{if(!rejected&&changes.has('current')){rejected=true;assert(changes.has('current-cloud-baseline'));assert(changes.has('current-cloud-write'));throw new DOMException('Quota exceeded','QuotaExceededError');}};
+ try{await assert.rejects(store.pullFromCloud(),/No save was confirmed/);assert.equal(store.getCloudStatus().readyForEdits,false);assert.deepEqual(idbData.get('current'),before);assert.deepEqual(idbData.get('current-cloud-baseline'),oldSidecar);assert.deepEqual(idbData.get('current-cloud-write'),oldWrite);assert.equal(localStorage.getItem('mouse-colony.cloud-cache-context.v1'),oldMark);}
+ finally{idbHooks.beforeCommit=null;}
+ const client=await restartStore(),start=server.calls.length;assert.equal((await client.pullFromCloud()).tables.mice[0].comment,row.payload.comment);assert.equal(payloadReads(server.calls.slice(start)).length,1);
+});
+test('a stalled cache commit cannot publish a partial persisted baseline after timeout',async()=>{
+ await connected(incrementalFixture());const oldSidecar=structuredClone(idbData.get('current-cloud-baseline')),oldWrite=structuredClone(idbData.get('current-cloud-write')),originalTimeout=setTimeout;let releaseCommit;
+ const row=server.records.get('mice:SYN-M001');row.payload.comment='Next generation';row.version++;
+ idbHooks.beforeCommit=changes=>changes.has('current')?new Promise(resolve=>{releaseCommit=resolve;}):undefined;globalThis.setTimeout=(callback,delay,...args)=>originalTimeout(callback,delay===30000?10:delay,...args);
+ try{await assert.rejects(store.pullFromCloud(),error=>error.storageTimeout===true);assert.deepEqual(idbData.get('current-cloud-baseline'),oldSidecar);assert.deepEqual(idbData.get('current-cloud-write'),oldWrite);releaseCommit();await new Promise(resolve=>originalTimeout(resolve,0));assert.deepEqual(idbData.get('current-cloud-baseline'),oldSidecar);assert.equal(store.getCloudStatus().readyForEdits,false);}
+ finally{idbHooks.beforeCommit=null;globalThis.setTimeout=originalTimeout;}
+});
+
+test('a new sign-in epoch for the same account may reuse persisted data only after fresh verification',async()=>{
+ const before=await connected(incrementalFixture()),client=await restartStore();await client.signIn('demo@example.test','test-password');assert.equal(client.getCloudStatus().readyForEdits,false);
+ const start=server.calls.length;assert.deepEqual(await client.pullFromCloud(),before);assert.equal(payloadReads(server.calls.slice(start)).length,0);
+});
+test('sign-out during persisted digest verification cannot restore a deleted account cache',async()=>{
+ await connected(incrementalFixture());const client=await restartStore(),digest=crypto.subtle.digest;let release,started;const waiting=new Promise(resolve=>started=resolve),gate=new Promise(resolve=>release=resolve);
+ crypto.subtle.digest=async function(...args){started();await gate;return digest.apply(this,args);};
+ try{const pull=client.pullFromCloud(),rejected=assert.rejects(pull,/account or colony changed/);await waiting;await client.signOut();release();await rejected;assert.equal(idbData.get('current-cloud-baseline'),undefined);assert.equal(idbData.get('current'),undefined);assert.equal(client.getCloudStatus().signedIn,false);}
+ finally{release();crypto.subtle.digest=digest;}
+});
+test('restricted repeated and restarted sync reuse ordinary records but fetch fresh location and fee projections',async()=>{
+ await connected(locationFixture());server.role='editor';server.feePolicy=restrictedPolicy(1);
+ const fee={entity_type:'husbandry_events',entity_id:'projected-fee',colony_id:cid,version:1,archived:false,payload:{event_id:'projected-fee',event_type:'lac_fee_month',event_date:'2026-01-01',fee_visibility:{estimate:true,actual:false}}};server.feeRows=[fee];
+ await store.pullFromCloud();const envelope=idbData.get('current-cloud-baseline');assert(envelope.entries.every(entry=>entry[0]!=='archive'&&entry[0]!=='locations'&&entry[1]!=='projected-fee'));assert(!JSON.stringify(envelope).includes('HIDDEN-FINANCIAL'));
+ for(const client of [store,await restartStore()]){
+  const start=server.calls.length,loaded=await client.pullFromCloud(),calls=server.calls.slice(start);
+  assert.equal(payloadReads(calls).length,0);assert(!cloudReadQueries(calls).some(q=>['eq.archive','eq.locations'].includes(q.get('entity_type'))));assert(calls.some(call=>call.url.endsWith('/rpc/get_lac_fee_records')));assert(calls.some(call=>call.url.endsWith('/rpc/get_managed_locations')));
+  assert.equal(loaded.source_archive_restricted,true);assert(!JSON.stringify(loaded).includes('HIDDEN-FINANCIAL'));assert.equal(loaded.tables.husbandry_events.find(row=>row.event_id==='projected-fee').event_type,'lac_fee_month');assert.equal(client.getCloudStatus().readyForEdits,true);
+ }
+});
+test('a changed ordinary record after restricted restart fetches only that record without raw locations or archive',async()=>{
+ await connected(locationFixture());server.role='editor';server.feePolicy=restrictedPolicy(1);await store.pullFromCloud();const row=server.records.get('mice:SYN-M001');row.payload.comment='Changed ordinary record';row.version++;
+ const client=await restartStore(),start=server.calls.length,loaded=await client.pullFromCloud(),reads=payloadReads(server.calls.slice(start));assert.equal(loaded.tables.mice[0].comment,row.payload.comment);assert.equal(reads.length,1);assert.equal(reads[0].get('entity_id'),'eq.SYN-M001');assert(!JSON.stringify(loaded).includes('HIDDEN-FINANCIAL'));
+});
+test('restricted persisted baseline never substitutes projected fee payloads for raw records or survives access expansion',async()=>{
+ await connected(locationFixture());server.role='editor';server.feePolicy=restrictedPolicy(1);const raw={entity_type:'husbandry_events',entity_id:'fee-row',colony_id:cid,version:1,archived:false,payload:{event_id:'fee-row',event_type:'lac_fee_month',actual_total:'PRIVATE TOTAL'}};server.records.set('husbandry_events:fee-row',raw);server.feeRows=[{...raw,payload:{event_id:'fee-row',event_type:'lac_fee_month',fee_visibility:{estimate:true,actual:false}}}];await store.pullFromCloud();
+ const client=await restartStore(),start=server.calls.length,loaded=await client.pullFromCloud();assert(!JSON.stringify(loaded).includes('PRIVATE TOTAL'));assert(!idbData.get('current-cloud-baseline').entries.some(entry=>entry[1]==='fee-row'));assert.equal(payloadReads(server.calls.slice(start)).filter(q=>q.get('entity_id')==='eq.fee-row').length,1);
+ server.feePolicy={version:2,owner:false,estimate:true,actual:true,source_archive_allowed:true};const expanded=await restartStore(),fullStart=server.calls.length,full=await expanded.pullFromCloud();assert(!full.source_archive_restricted);assert(JSON.stringify(full).includes('PRIVATE TOTAL'));assert(payloadReads(server.calls.slice(fullStart)).some(q=>q.get('entity_type')==='eq.archive'));assert(payloadReads(server.calls.slice(fullStart)).some(q=>q.get('entity_type')==='eq.locations'));
+});
+
+test('a delayed cloud save cannot invalidate or erase a newer verified pull, including restricted workspaces',async()=>{
+ for(const restricted of [false,true])for(const lateFailure of [false,true]){
+  await connected(locationFixture());if(restricted){server.role='editor';server.feePolicy=restrictedPolicy(1);await store.pullFromCloud();}
+  const draft=await store.loadDataset();draft.tables.mice[0].comment='Save committed before its response';const originalFetch=fetch;let release,entered,held=false;const waiting=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+  globalThis.fetch=async(url,options)=>{const reply=await originalFetch(url,options);if(!held&&url.endsWith('/rpc/save_records')){held=true;entered();await gate;if(lateFailure)throw new TypeError('Delayed network failure');}return reply;};
+  try{
+   const saving=store.saveDataset(draft),rejected=assert.rejects(saving,/shared data changed|Delayed network failure/);await waiting;const latest=await store.pullFromCloud(),marker=localStorage.getItem('mouse-colony.cloud-cache-context.v1');assert.equal(latest.tables.mice[0].comment,draft.tables.mice[0].comment);release();await rejected;
+   assert.equal(store.getCloudStatus().readyForEdits,true);assert.deepEqual(idbData.get('current'),latest);assert.equal(localStorage.getItem('mouse-colony.cloud-cache-context.v1'),marker);assert.equal(idbData.get('current-cloud-baseline').write_id,idbData.get('current-cloud-write').id);
+  }finally{release();globalThis.fetch=originalFetch;}
+ }
+});
+test('restricted sync replaces an ordinary event reclassified as a fee with its fresh sanitized projection',async()=>{
+ await connected();server.role='editor';server.feePolicy=restrictedPolicy(1);const row={colony_id:cid,entity_type:'husbandry_events',entity_id:'changing-event',version:1,archived:false,payload:{event_id:'changing-event',event_type:'health',notes:'Ordinary observation'}};server.records.set('husbandry_events:changing-event',row);await store.pullFromCloud();
+ row.version++;row.payload={event_id:'changing-event',event_type:'lac_fee_month',actual_total:'PRIVATE NEW FINANCIAL VALUE'};server.feeRows=[{...row,payload:{event_id:'changing-event',event_type:'lac_fee_month',fee_visibility:{estimate:true,actual:false}}}];
+ const originalFetch=fetch;globalThis.fetch=async(url,options)=>{const reply=await originalFetch(url,options),u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.husbandry_events')return response((await reply.json()).filter(item=>item.entity_id!=='changing-event'));return reply;};
+ try{const client=await restartStore(),loaded=await client.pullFromCloud(),events=loaded.tables.husbandry_events.filter(item=>item.event_id==='changing-event');assert.equal(events.length,1);assert.equal(events[0].event_type,'lac_fee_month');assert(!JSON.stringify(loaded).includes('PRIVATE NEW FINANCIAL'));assert(!idbData.get('current-cloud-baseline').entries.some(entry=>entry[1]==='changing-event'));}
+ finally{globalThis.fetch=originalFetch;}
 });

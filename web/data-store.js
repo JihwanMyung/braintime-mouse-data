@@ -15,8 +15,9 @@ const MANAGED=Object.keys(ID_FIELDS);
 const clone=value=>structuredClone(value);
 let feeVisibility=null,feeVisibilityContext=null;
 let authGeneration=0;
-const guardedCacheWrites=new Set(),CACHE_WRITE_KEY='current-cloud-write';
-let versions=new Map(),baseline=null,synced=false,refreshPromise=null,statusMessage='',pendingEmail=null;
+const guardedCacheWrites=new Set(),CACHE_WRITE_KEY='current-cloud-write',BASELINE_CACHE_KEY='current-cloud-baseline';
+const BASELINE_CACHE_VERSION=1,MAX_BASELINE_RECORDS=250000,MAX_BASELINE_BYTES=32*1024*1024;
+let versions=new Map(),baseline=null,baselineIdentity=null,synced=false,refreshPromise=null,statusMessage='',pendingEmail=null,pullGeneration=0;
 const memory=new Map();
 function getStorage(kind,key){try{return globalThis[kind]?.getItem(key)??null;}catch{return memory.get(`${kind}:${key}`)??null;}}
 function setStorage(kind,key,value){try{if(!globalThis[kind])throw Error();value===null?globalThis[kind].removeItem(key):globalThis[kind].setItem(key,value);}catch{value===null?memory.delete(`${kind}:${key}`):memory.set(`${kind}:${key}`,value);}}
@@ -25,7 +26,7 @@ const configuration=()=>readJSON('localStorage',CONFIG_KEY);
 const session=()=>readJSON('sessionStorage',SESSION_KEY);
 const mode=()=>getStorage('localStorage',MODE_KEY)==='cloud'?'cloud':'local';
 function setMode(value){setStorage('localStorage',MODE_KEY,value);}
-function invalidate(){synced=false;baseline=null;versions=new Map();}
+function invalidate(){synced=false;baseline=null;baselineIdentity=null;versions=new Map();}
 function saveSession(s){setStorage('sessionStorage',SESSION_KEY,s?JSON.stringify(s):null);}
 function stable(value){if(Array.isArray(value))return `[${value.map(stable).join(',')}]`;if(value&&typeof value==='object')return `{${Object.keys(value).sort().filter(k=>value[k]!==undefined).map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')}}`;return JSON.stringify(value);}
 function advanceAuthGeneration(){authGeneration++;for(const cancel of guardedCacheWrites)cancel();return authGeneration;}
@@ -53,7 +54,7 @@ async function discardCloudWrite(id){
     const tx=db.transaction('datasets','readwrite'),store=tx.objectStore('datasets'),request=store.get(CACHE_WRITE_KEY);let settled=false;
     const finish=(error=null)=>{if(settled)return;settled=true;clearTimeout(timer);error?reject(error):resolve();};
     const timer=setTimeout(()=>{const error=storageTimeout('checking the cloud cache');try{tx.abort();}catch{}finish(error);closeDatabase(db);},30000);
-    request.onsuccess=()=>{if(!settled&&request.result?.id===id){store.delete('current');store.delete(CACHE_WRITE_KEY);}};
+    request.onsuccess=()=>{if(!settled&&request.result?.id===id){store.delete('current');store.delete(CACHE_WRITE_KEY);store.delete(BASELINE_CACHE_KEY);}};
     tx.oncomplete=()=>finish();tx.onerror=tx.onabort=()=>finish(new Error('Unable to clear a cancelled cloud cache write.'));
   });
 }
@@ -61,14 +62,15 @@ function ownCacheWrite(mark){
   const c=configuration(),s=session();
   return !!s?.access_token&&mark.url===c?.url&&mark.colony===c?.colonyId&&mark.user===s.user?.id;
 }
-async function local(action,value,{check,cacheWrite}={}){
+async function local(action,value,{check,cacheWrite,syncBaseline=null,readBaseline=false}={}){
   const db=await database();check?.();
   return new Promise((resolve,reject)=>{
     const tx=db.transaction('datasets',action==='get'?'readonly':'readwrite'),store=tx.objectStore('datasets');
     const request=action==='get'?store.get('current'):action==='delete'?store.delete('current'):store.put(clone(value),'current');
     // The sidecar and dataset commit atomically. It never enters a dataset/export.
     const markRequest=action==='get'?store.get(CACHE_WRITE_KEY):cacheWrite?store.put(cacheWrite,CACHE_WRITE_KEY):store.delete(CACHE_WRITE_KEY);
-    let result,mark,guardError,settled=false;
+    const baselineRequest=action==='get'?(readBaseline?store.get(BASELINE_CACHE_KEY):null):syncBaseline?store.put(syncBaseline,BASELINE_CACHE_KEY):store.delete(BASELINE_CACHE_KEY);
+    let result,mark,savedBaseline,guardError,settled=false;
     const cleanup=()=>{clearTimeout(timer);guardedCacheWrites.delete(cancel);};
     const fail=error=>{if(settled)return;settled=true;cleanup();reject(error);};
     const cancel=()=>{if(settled)return;try{check?.();}catch(error){guardError=error;try{tx.abort();}catch{/* A committed write is removed by its own ID below. */}}};
@@ -76,6 +78,7 @@ async function local(action,value,{check,cacheWrite}={}){
     if(check)guardedCacheWrites.add(cancel);
     request.onsuccess=()=>{if(settled)return;result=request.result;cancel();};
     markRequest.onsuccess=()=>{if(settled)return;if(action==='get')mark=markRequest.result;cancel();};
+    if(baselineRequest)baselineRequest.onsuccess=()=>{if(settled)return;if(action==='get')savedBaseline=baselineRequest.result;cancel();};
     tx.oncomplete=()=>{
       if(settled)return;settled=true;cleanup();
       try{
@@ -85,7 +88,7 @@ async function local(action,value,{check,cacheWrite}={}){
           // A previous account's write can be discarded by ID without touching a newer cache.
           if(!ownCacheWrite(mark)&&typeof mark.id==='string')void discardCloudWrite(mark.id).then(()=>resolve(null),()=>resolve(null));
           else resolve(null);
-        }else resolve(result??null);
+        }else resolve(readBaseline?{data:result??null,baseline:savedBaseline??null,mark:mark??null}:result??null);
       }
       catch(error){if(cacheWrite)void discardCloudWrite(cacheWrite.id).then(()=>reject(error),()=>reject(error));else reject(error);}
     };
@@ -428,19 +431,124 @@ async function readCloudPage(read,limit,check){
     }
   }
 }
+// A verified baseline can save network traffic, never authorize access.
+// Membership and visibility are checked anew before any of these rows are reused.
+function persistentIdentity(){const s=session();return stable({configuration:configuration(),user:s?.user?.id,role:s?.role,permissions:s?.permissions,exportLevel:s?.exportLevel});}
+function syncIdentity(){return stable({generation:authGeneration,identity:persistentIdentity()});}
+async function cacheDigest(value){
+  const bytes=new TextEncoder().encode(stable(value));
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(value=>value.toString(16).padStart(2,'0')).join('');
+}
+async function mapBounded(values,fn,check){
+  const result=new Array(values.length);let next=0,failure=null;
+  async function worker(){try{while(true){check();if(failure)throw failure;const index=next++;if(index>=values.length)return;result[index]=await fn(values[index],index);check();}}catch(error){failure??=error;throw error;}}
+  await Promise.all(Array.from({length:Math.min(16,values.length)},()=>worker()));check();return result;
+}
+const ordinaryManagedRecord=row=>MANAGED.includes(row?.entity_type)&&row.entity_type!=='locations'&&!feeRecord(row);
+async function baselineEnvelope(rows,writeId,check,recordVersions=versions){
+  const policy=clone(feeVisibility),identity=persistentIdentity();
+  if(!policy.source_archive_allowed)rows=rows.filter(ordinaryManagedRecord);
+  if(rows.length>MAX_BASELINE_RECORDS)return null;
+  const entries=await mapBounded(rows,async row=>{
+    const version=row.version??recordVersions.get(recordKey(row));
+    if(!Number.isSafeInteger(version)||version<1)throw new Error('The saved cloud version could not be verified. Pull again.');
+    // Archive IDs are already SHA-256 hashes of their canonical payloads.
+    return [row.entity_type,row.entity_id,version,row.archived,isArchiveChunk(row)?row.entity_id.slice(6):await cacheDigest(row.payload)];
+  },check);
+  const body={schema_version:BASELINE_CACHE_VERSION,projection_version:SOURCE_PROJECTION_VERSION,write_id:writeId,identity,policy,entries};
+  if(utf8Size(body)>MAX_BASELINE_BYTES)return null;
+  const sha256=await cacheDigest(body);check();
+  if(identity!==persistentIdentity()||stable(policy)!==stable(feeVisibility))throw new Error('Cloud access changed while preparing the saved workspace. Pull again.');
+  return {...body,sha256};
+}
+async function persistedBaseline(policy,check){
+  const snapshot=await local('get',undefined,{check,readBaseline:true});check();
+  const envelope=snapshot?.baseline,mark=readJSON('localStorage',CLOUD_CACHE_KEY);
+  if(!snapshot?.data||!envelope||envelope.schema_version!==BASELINE_CACHE_VERSION||envelope.projection_version!==SOURCE_PROJECTION_VERSION||typeof envelope.write_id!=='string'||envelope.write_id!==snapshot.mark?.id||envelope.write_id!==mark?.write_id||envelope.sha256!==mark?.baseline_sha256||envelope.identity!==persistentIdentity()||stable(envelope.policy)!==stable(policy)||!Array.isArray(envelope.entries)||envelope.entries.length>MAX_BASELINE_RECORDS)return null;
+  if(policy.source_archive_allowed?snapshot.data.source_archive_restricted:!currentRestrictedCache(snapshot.data,mark,policy))return null;
+  try{
+    const {sha256,...body}=envelope;
+    if(typeof sha256!=='string'||!/^[a-f0-9]{64}$/.test(sha256)||utf8Size(body)>MAX_BASELINE_BYTES||await cacheDigest(body)!==sha256)return null;check();
+    const indexed=new Map();
+    for(const entry of envelope.entries){
+      if(!Array.isArray(entry)||entry.length!==5||![...MANAGED,'archive'].includes(entry[0])||typeof entry[1]!=='string'||!entry[1]||!Number.isSafeInteger(entry[2])||entry[2]<1||typeof entry[3]!=='boolean'||typeof entry[4]!=='string'||!/^[a-f0-9]{64}$/.test(entry[4]))return null;
+      if(!policy.source_archive_allowed&&['archive','locations'].includes(entry[0]))return null;
+      const key=recordKey({entity_type:entry[0],entity_id:entry[1]});if(indexed.has(key))return null;indexed.set(key,entry);
+    }
+    // Reconstruct from the same atomically saved workspace. Normalization can
+    // legitimately add defaults: mismatched rows are fetched afresh, not guessed.
+    const candidates=await entityRecords(snapshot.data);check();const records=new Map(),knownVersions=new Map();
+    await mapBounded(candidates,async row=>{
+      if(!policy.source_archive_allowed&&!ordinaryManagedRecord(row))return;
+      const key=recordKey(row),entry=indexed.get(key);if(!entry||entry[3]!==row.archived)return;
+      const digest=isArchiveChunk(row)?row.entity_id.slice(6):await cacheDigest(row.payload);if(digest!==entry[4])return;
+      records.set(key,row);knownVersions.set(key,entry[2]);
+    },check);
+    return {records,versions:knownVersions,identity:syncIdentity(),policy:clone(policy)};
+  }catch(error){check();return null;}
+}
+function checkedCloudRecord(row,type,c,payload=true){
+  // PostgreSQL btrim(id) excludes only ordinary spaces, not tabs/NBSP.
+  if(!row||typeof row.colony_id!=='string'||row.colony_id.toLowerCase()!==c.colonyId.toLowerCase()||row.entity_type!==type||typeof row.entity_id!=='string'||!row.entity_id.length||row.entity_id.startsWith(' ')||row.entity_id.endsWith(' ')||[...row.entity_id].length>200||!Number.isSafeInteger(row.version)||row.version<1||typeof row.archived!=='boolean'||payload&&(!row.payload||typeof row.payload!=='object'||Array.isArray(row.payload)||type!=='archive'&&row.payload[ID_FIELDS[type]]!==row.entity_id))throw new Error('Cloud page contains an invalid or unrelated record.');
+  return row;
+}
+function reusableRecord(reuse,row,c){
+  const key=recordKey(row),cached=reuse?.records.get(key);
+  if(!cached||reuse.versions.get(key)!==row.version||cached.archived!==row.archived)return null;
+  return checkedCloudRecord({...cached,colony_id:c.colonyId,version:row.version},row.entity_type,c);
+}
+async function managedVersionIndex(type,c,check){
+  const index=new Map();let cursor=null,limit=1000;
+  while(true){
+    const loaded=await readCloudPage(size=>{
+      const query=new URLSearchParams({select:'colony_id,entity_type,entity_id,version,archived',colony_id:`eq.${c.colonyId}`,entity_type:`eq.${type}`,order:'entity_id.asc',limit:String(size)});
+      if(cursor!==null)query.set('entity_id',`gt.${cursor}`);return request(`entity_records?${query}`);
+    },limit,check);const page=loaded.page;limit=loaded.limit;
+    if(!Array.isArray(page)||page.length>limit)throw new Error('Cloud records were not returned as a valid page.');
+    for(const row of page){checkedCloudRecord(row,type,c,false);if(index.has(row.entity_id))throw new Error('Cloud page cursor did not advance. Pull again.');index.set(row.entity_id,row);}
+    if(page.length<limit)break;cursor=page.at(-1).entity_id;
+  }
+  return index;
+}
+async function incrementalManaged(type,c,check,reuse,restricted=false){
+  const index=await managedVersionIndex(type,c,check),rows=new Map(),pending=[],reused=new Set();
+  for(const row of index.values()){const cached=reusableRecord(reuse,row,c);if(cached&&(!restricted||ordinaryManagedRecord(cached))){rows.set(row.entity_id,cached);reused.add(row.entity_id);}else pending.push(row);}
+  let next=0,failure=null;
+  const active=()=>{check();if(failure)throw failure;};
+  async function worker(){try{while(true){active();const expected=pending[next++];if(!expected)return;
+    // An equality parameter keeps punctuation and Unicode IDs literal. Fetching
+    // only changed records also avoids a large repeated historical payload.
+    const query=new URLSearchParams({select:'colony_id,entity_type,entity_id,payload,version,archived',colony_id:`eq.${c.colonyId}`,entity_type:`eq.${type}`,entity_id:`eq.${expected.entity_id}`,limit:'1'});
+    const page=(await readCloudPage(()=>request(`entity_records?${query}`),1,active)).page;
+    if(!Array.isArray(page)||page.length!==1)throw new Error('A changed cloud record is missing. Pull again.');
+    const row=checkedCloudRecord(page[0],type,c);if(row.entity_id!==expected.entity_id||row.version!==expected.version||row.archived!==expected.archived)throw new Error('A cloud record changed during loading. Pull again.');
+    rows.set(row.entity_id,row);
+  }}catch(error){failure??=error;throw error;}}
+  await Promise.all(Array.from({length:Math.min(3,pending.length)},()=>worker()));check();
+  // Never silently merge against an index that changed while payloads arrived.
+  const final=await managedVersionIndex(type,c,check);
+  if(final.size!==index.size||[...index].some(([id,row])=>final.get(id)?.version!==row.version||final.get(id)?.archived!==row.archived))throw new Error('Cloud records changed during loading. Pull again.');
+  const result=[...index.keys()].map(id=>rows.get(id)).filter(row=>!restricted||ordinaryManagedRecord(row));result.reused=result.filter(row=>reused.has(row.entity_id)).length;return result;
+}
 // Only the manifest-selected chunks are needed to reconstruct a workspace.
 // Keep a small version index for old immutable chunks so a later archive edit
 // can safely reuse a previously staged chunk without blindly recreating it.
-async function selectedArchive(c,check,onLoaded){
+async function selectedArchive(c,check,onLoaded,reuse=null){
   const fields='colony_id,entity_type,entity_id,payload,version,archived';
   const query=(select,limit,filter)=>new URLSearchParams({select,colony_id:`eq.${c.colonyId}`,entity_type:'eq.archive',order:'entity_id.asc',limit:String(limit),...(filter?{entity_id:filter}:{})});
   const valid=(row,payload=false)=>{
     if(!row||typeof row.colony_id!=='string'||row.colony_id.toLowerCase()!==c.colonyId.toLowerCase()||row.entity_type!=='archive'||typeof row.entity_id!=='string'||!(row.entity_id==='reconstruction'||/^chunk:[a-f0-9]{64}$/.test(row.entity_id))||!Number.isSafeInteger(row.version)||row.version<1||typeof row.archived!=='boolean'||payload&&(!row.payload||typeof row.payload!=='object'||Array.isArray(row.payload)))throw new Error('Cloud page contains an invalid or unrelated archive record.');
     return row;
   };
-  const headPage=(await readCloudPage(size=>request(`entity_records?${query(fields,size,'eq.reconstruction')}`),1,check)).page;
+  let headPage=(await readCloudPage(size=>request(`entity_records?${query(reuse?'colony_id,entity_type,entity_id,version,archived':fields,size,'eq.reconstruction')}`),1,check)).page;
   if(!Array.isArray(headPage)||headPage.length!==1)throw new Error('Cloud import is incomplete: its reconstruction manifest is missing or duplicated. Finish or retry the initial upload before pulling.');
-  const head=valid(headPage[0],true);if(head.entity_id!=='reconstruction'||head.archived)throw new Error('The reconstruction manifest is invalid or archived.');
+  const headIndex=valid(headPage[0],!reuse);let head=reuse?reusableRecord(reuse,headIndex,c):headIndex;const headReused=Boolean(reuse&&head);
+  if(!head){
+    headPage=(await readCloudPage(size=>request(`entity_records?${query(fields,size,'eq.reconstruction')}`),1,check)).page;
+    if(!Array.isArray(headPage)||headPage.length!==1)throw new Error('The reconstruction manifest changed during loading. Pull again.');
+    head=valid(headPage[0],true);if(head.version!==headIndex.version||head.archived!==headIndex.archived)throw new Error('The reconstruction manifest changed during loading. Pull again.');
+  }
+  if(head.entity_id!=='reconstruction'||head.archived)throw new Error('The reconstruction manifest is invalid or archived.');
   const metadata=head.payload,ids=new Set();
   if(metadata.archive_format&&metadata.archive_format!==ARCHIVE_MANIFEST_FORMAT)throw new Error('This reconstruction archive format is not supported.');
   if(metadata.archive_format===ARCHIVE_MANIFEST_FORMAT){
@@ -460,8 +568,10 @@ async function selectedArchive(c,check,onLoaded){
   }
   if(indexed.get('reconstruction')?.version!==head.version)throw new Error('The reconstruction manifest changed during loading. Pull again.');
   for(const id of ids)if(!indexed.has(id)||indexed.get(id).archived)throw new Error(`Missing or invalid archive chunk ${id}; pull was not saved.`);
-  const ordered=[...ids].sort(),batches=[];for(let i=0;i<ordered.length;i+=3)batches.push(ordered.slice(i,i+3));
-  const chunks=new Map();let nextBatch=0,failure=null;
+  const ordered=[...ids].sort(),chunks=new Map(),needed=[];
+  for(const id of ordered){const cached=reusableRecord(reuse,indexed.get(id),c);if(cached){chunks.set(id,cached);onLoaded(1);}else needed.push(id);}
+  const batches=[];for(let i=0;i<needed.length;i+=3)batches.push(needed.slice(i,i+3));
+  let nextBatch=0,failure=null;
   const active=()=>{check();if(failure)throw failure;};
   async function worker(){
     try{while(true){active();const batch=batches[nextBatch++];if(!batch)return;let offset=0,size=batch.length;
@@ -480,12 +590,14 @@ async function selectedArchive(c,check,onLoaded){
   const finalPage=(await readCloudPage(size=>request(`entity_records?${query('colony_id,entity_type,entity_id,version,archived',size,'eq.reconstruction')}`),1,check)).page;
   if(!Array.isArray(finalPage)||finalPage.length!==1)throw new Error('The reconstruction manifest changed during loading. Pull again.');
   const finalHead=valid(finalPage[0]);if(finalHead.entity_id!=='reconstruction'||finalHead.archived||finalHead.version!==head.version)throw new Error('The reconstruction manifest changed during loading. Pull again.');
-  const result=[head,...ordered.map(id=>chunks.get(id))];result.archive_versions=[...indexed.values()].map(row=>[`archive:${row.entity_id}`,row.version]);return result;
+  const result=[head,...ordered.map(id=>chunks.get(id))];result.reused=Number(headReused)+ordered.length-needed.length;result.archive_versions=[...indexed.values()].map(row=>[`archive:${row.entity_id}`,row.version]);return result;
 }
-async function allRecords(onProgress=null,{referencedArchive=false}={}){
+async function allRecords(onProgress=null,{referencedArchive=false,reuse=null,allowPersisted=false,checkScope=null}={}){
   const generation=authGeneration,context=exportContext(),c=configuration(),policy=await refreshFeeVisibility({notify:false});const result=[];
-  const check=()=>{if(generation!==authGeneration)throw new Error('The account or colony changed during loading. Open the shared colony again.');checkExportContext(context);};
-  let recordsLoaded=0,archiveBlocksLoaded=0;
+  const check=()=>{checkScope?.();if(generation!==authGeneration)throw new Error('The account or colony changed during loading. Open the shared colony again.');checkExportContext(context);};
+  let reusable=referencedArchive&&reuse?.identity===syncIdentity()&&stable(reuse.policy)===stable(policy)?reuse:null;
+  if(!reusable&&referencedArchive&&allowPersisted)reusable=await persistedBaseline(policy,check);check();
+  let recordsLoaded=0,archiveBlocksLoaded=0,recordsReused=0,archiveBlocksReused=0;
   const progress=phase=>{check();onProgress?.({phase,recordsLoaded,archiveBlocksLoaded});};
   try{
   // Keep healthy reads efficient; only a confirmed timeout reduces a page.
@@ -493,6 +605,9 @@ async function allRecords(onProgress=null,{referencedArchive=false}={}){
   // Bound every page with the primary key before RLS evaluates its payload.
   // OFFSET repeatedly scans all preceding rows and can time out even at LIMIT 1.
   for(const type of [...MANAGED,...(policy.source_archive_allowed&&!referencedArchive?['archive']:[])]){
+    // Restricted locations always come from the sanitized projection RPC.
+    if(!policy.source_archive_allowed&&type==='locations')continue;
+    if(reusable&&type!=='archive'){progress('records');const rows=await incrementalManaged(type,c,check,reusable,!policy.source_archive_allowed);result.push(...rows);recordsLoaded+=rows.length;recordsReused+=rows.reused;progress('records');continue;}
     let cursor=null,limit=type==='archive'?3:1000;const seen=new Set();
     progress(type==='archive'?'archive':'records');
     while(true){
@@ -506,8 +621,7 @@ async function allRecords(onProgress=null,{referencedArchive=false}={}){
       const page=loaded.page;limit=loaded.limit;
       if(!Array.isArray(page)||page.length>limit)throw new Error('Cloud records were not returned as a valid page.');
       for(const row of page){
-        // PostgreSQL btrim(id) excludes only ordinary spaces, not tabs/NBSP.
-        if(!row||typeof row.colony_id!=='string'||row.colony_id.toLowerCase()!==c.colonyId.toLowerCase()||row.entity_type!==type||typeof row.entity_id!=='string'||!row.entity_id.length||row.entity_id.startsWith(' ')||row.entity_id.endsWith(' ')||[...row.entity_id].length>200||!Number.isSafeInteger(row.version)||row.version<1||typeof row.archived!=='boolean'||!row.payload||typeof row.payload!=='object'||Array.isArray(row.payload)||type!=='archive'&&row.payload[ID_FIELDS[type]]!==row.entity_id)throw new Error('Cloud page contains an invalid or unrelated record.');
+        checkedCloudRecord(row,type,c);
         if(seen.has(row.entity_id))throw new Error('Cloud page cursor did not advance. Pull again.');
         seen.add(row.entity_id);
       }
@@ -518,8 +632,8 @@ async function allRecords(onProgress=null,{referencedArchive=false}={}){
     }
   }
   if(policy.source_archive_allowed&&referencedArchive){
-    progress('archive');const archive=await selectedArchive(c,check,count=>{archiveBlocksLoaded+=count;progress('archive');});
-    result.push(...archive);result.archive_versions=archive.archive_versions;
+    progress('archive');const archive=await selectedArchive(c,check,count=>{archiveBlocksLoaded+=count;progress('archive');},reusable);
+    result.push(...archive);result.archive_versions=archive.archive_versions;archiveBlocksReused=archive.reused;
   }
   if(!policy.source_archive_allowed){
    let offset=0,limit=250;while(true){const loaded=await readCloudPage(size=>request('rpc/get_lac_fee_records',{method:'POST',body:{p_colony_id:c.colonyId,p_offset:offset,p_limit:size}}),limit,check);const page=loaded.page;limit=loaded.limit;
@@ -535,10 +649,10 @@ async function allRecords(onProgress=null,{referencedArchive=false}={}){
   }
   progress('verifying');
   checkExportContext(context);const finalPolicy=await refreshFeeVisibility({notify:false});if(!sameFeeVisibility(finalPolicy,policy))throw new Error('Fee visibility changed while loading. Pull again.');
-  result.fee_visibility=policy;return result;
+  result.fee_visibility=policy;result.sync_summary={recordsDownloaded:result.filter(row=>row.entity_type!=='archive').length-recordsReused,recordsReused,archiveBlocksDownloaded:result.filter(row=>row.entity_type==='archive').length-archiveBlocksReused,archiveBlocksReused};return result;
   }catch(error){
     // An older read must not clear a workspace created by a later sign-in.
-    const check=()=>{if(generation!==authGeneration)throw error;checkExportContext(context);};
+    const check=()=>{checkScope?.();if(generation!==authGeneration)throw error;checkExportContext(context);};
     try{check();invalidate();if(!policy.source_archive_allowed)await local('delete',undefined,{check});}catch{/* The newer account owns its cache. */}
     throw error;
   }
@@ -571,25 +685,28 @@ async function assemble(rows){
   }
   if(partial)data.fee_visibility=rows.fee_visibility;return normalizeDataset(data);
 }
-function rememberCloudCache(writeId){const c=configuration();setStorage('localStorage',CLOUD_CACHE_KEY,JSON.stringify({url:c.url,colony:c.colonyId,user:session()?.user?.id,estimate:feeVisibility?.estimate,actual:feeVisibility?.actual,source_projection_version:SOURCE_PROJECTION_VERSION,...(writeId?{write_id:writeId}:{})}));}
-function remember(rows){versions=new Map([...(rows.archive_versions||[]),...rows.map(r=>[recordKey(r),r.version])]);baseline=new Map(rows.map(r=>[recordKey(r),r]));synced=true;}
-export async function pullFromCloud({onProgress}={}){
-  invalidate();
+function rememberCloudCache(writeId,baselineHash){const c=configuration();setStorage('localStorage',CLOUD_CACHE_KEY,JSON.stringify({url:c.url,colony:c.colonyId,user:session()?.user?.id,estimate:feeVisibility?.estimate,actual:feeVisibility?.actual,source_projection_version:SOURCE_PROJECTION_VERSION,...(writeId?{write_id:writeId}:{}),...(baselineHash?{baseline_sha256:baselineHash}:{})}));}
+function remember(rows){versions=new Map([...(rows.archive_versions||[]),...rows.map(r=>[recordKey(r),r.version])]);baseline=new Map(rows.map(r=>[recordKey(r),r]));baselineIdentity=syncIdentity();synced=true;}
+export async function pullFromCloud({onProgress,forceFull=false}={}){
+  const reuse=!forceFull&&synced&&baseline&&baselineIdentity===syncIdentity()?{records:baseline,versions,identity:baselineIdentity,policy:clone(feeVisibility)}:null;
+  const pull=++pullGeneration;invalidate();
   const generation=authGeneration,context=exportContext(),config=stable(configuration());
-  const check=()=>{if(generation!==authGeneration||config!==stable(configuration())||context!==exportContext())throw new Error('The account or colony changed during loading. Open the shared colony again.');};
+  const check=()=>{if(pull!==pullGeneration||generation!==authGeneration||config!==stable(configuration())||context!==exportContext())throw new Error('The account or colony changed during loading. Open the shared colony again.');};
   const progress=value=>{check();if(typeof onProgress==='function'){try{onProgress(Object.freeze({...value}));}catch{/* Presentation cannot interrupt a verified read. */}}};
   progress({phase:'access',recordsLoaded:0,archiveBlocksLoaded:0});
   await membership({check});check();
-  const rows=await allRecords(progress,{referencedArchive:true});check();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
+  const rows=await allRecords(progress,{referencedArchive:true,reuse,allowPersisted:!forceFull,checkScope:check});check();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
   const data=await assemble(rows);check();
   const c=configuration(),cacheWrite={id:crypto.randomUUID(),url:c.url,colony:c.colonyId,user:session().user.id};
   try{
     progress({phase:'saving',recordsLoaded:rows.filter(row=>row.entity_type!=='archive').length,archiveBlocksLoaded:rows.filter(row=>row.entity_type==='archive').length});
-    await local('put',data,{check,cacheWrite});check();
-    rememberCloudCache(cacheWrite.id);remember(rows);setStorage('localStorage',DEMO_KEY,null);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
+    const syncBaseline=await baselineEnvelope(rows,cacheWrite.id,check);check();
+    await local('put',data,{check,cacheWrite,syncBaseline});check();
+    rememberCloudCache(cacheWrite.id,syncBaseline?.sha256);remember(rows);setStorage('localStorage',DEMO_KEY,null);setMode('cloud');const counts=rows.sync_summary;statusMessage=`Cloud connected. Downloaded ${counts.recordsDownloaded} records and ${counts.archiveBlocksDownloaded} history blocks; reused ${counts.recordsReused} records and ${counts.archiveBlocksReused} history blocks.`;return clone(data);
   }catch(error){const cleanup=discardCloudWrite(cacheWrite.id).catch(()=>{});if(error.storageTimeout!==true)await cleanup;throw error;}
 }
-async function writeAtomic(pending){
+async function writeAtomic(pending,{checkScope}={}){
+  checkScope?.();
   if(!pending.length)return [];
   if(pending.length>500)throw new Error('A cloud edit may change at most 500 records. Split this edit into smaller operations.');
   const c=configuration();
@@ -599,8 +716,12 @@ async function writeAtomic(pending){
     const rows=await request('rpc/save_records',{method:'POST',body});
     const expected=new Set(pending.map(([r])=>recordKey(r)));
     if(!Array.isArray(rows)||rows.length!==pending.length||rows.some(r=>!expected.delete(recordKey(r))||!Number.isInteger(r.version))||expected.size)throw new Error('The cloud save did not return a verifiable version for every record.');
-    return rows;
-  }catch(e){invalidate();statusMessage=`${e.message} Cloud save was not confirmed; pull the latest data before retrying.`;throw new Error(statusMessage);}
+    checkScope?.();return rows;
+  }catch(e){
+    // A delayed save must not invalidate a newer verified pull/account.
+    try{checkScope?.();}catch{throw e;}
+    invalidate();statusMessage=`${e.message} Cloud save was not confirmed; pull the latest data before retrying.`;throw new Error(statusMessage);
+  }
 }
 async function requireEditor(){const role=await membership();if(role==='viewer')throw new Error('Your colony role is viewer; cloud changes require editor or owner access.');}
 export async function pushToCloud(dataset){
@@ -620,7 +741,10 @@ export async function saveDataset(dataset,{localOnly=false,localKind=null}={}){
     await local('put',data);setStorage('localStorage',CLOUD_CACHE_KEY,null);if(localOnly){setStorage('localStorage',DEMO_KEY,localKind==='demo'?'true':null);setMode('local');invalidate();}statusMessage='Saved on this device.';return;
   }
   if(!synced||!baseline)throw new Error('Pull the latest cloud data before editing.');
-  const context=exportContext();await requireEditor();const policy=await refreshFeeVisibility();if(!synced||!baseline)throw new Error('Visibility changed. Pull the latest cloud data before editing.');
+  const context=exportContext(),savePullGeneration=pullGeneration,saveAuthGeneration=authGeneration;
+  const ownsSave=()=>savePullGeneration===pullGeneration&&saveAuthGeneration===authGeneration&&context===exportContext();
+  const checkSaveEpoch=()=>{if(!ownsSave())throw new Error('The account or shared data changed while saving. Pull again.');};
+  await requireEditor();checkSaveEpoch();const policy=await refreshFeeVisibility();checkSaveEpoch();if(!synced||!baseline)throw new Error('Visibility changed. Pull the latest cloud data before editing.');
   if(!policy.source_archive_allowed&&(data.source_archive_restricted!==true||data.source_projection_version!==SOURCE_PROJECTION_VERSION||!data.tables.locations.every(managedLocationPayload)))throw new Error('Source location fields require full financial visibility. Pull the latest cloud data before editing.');
   const incoming=await entityRecords(data),map=new Map(incoming.map(r=>[recordKey(r),r]));
   for(const [k,r] of baseline)if(!map.has(k)&&!isArchiveChunk(r))throw new Error(`Record ${r.entity_id} was removed. Archive records instead of deleting them.`);
@@ -631,10 +755,10 @@ export async function saveDataset(dataset,{localOnly=false,localKind=null}={}){
   // Immutable chunks can be staged before committing the manifest. A failed
   // final transaction leaves old data authoritative and new chunks unreferenced.
   const saved=[];
-  for(const batch of partitionChanges(chunks.map(([r,expected_version])=>({...r,expected_version}))))saved.push(...await writeAtomic(batch.map(({expected_version,...r})=>[r,expected_version])));
-  saved.push(...await writeAtomic(atomic));
+  for(const batch of partitionChanges(chunks.map(([r,expected_version])=>({...r,expected_version}))))saved.push(...await writeAtomic(batch.map(({expected_version,...r})=>[r,expected_version]),{checkScope:checkSaveEpoch}));
+  saved.push(...await writeAtomic(atomic,{checkScope:checkSaveEpoch}));
   try{
-   checkExportContext(context);const finalPolicy=await refreshFeeVisibility();
+   checkSaveEpoch();const finalPolicy=await refreshFeeVisibility();checkSaveEpoch();
    if(!sameFeeVisibility(finalPolicy,policy)||!synced)throw new Error('Fee visibility changed during save. Pull the latest cloud data.');
    for(const row of saved){
     if(!policy.source_archive_allowed&&row.entity_type==='locations')checkedManagedLocation(row,configuration().colonyId);
@@ -643,10 +767,14 @@ export async function saveDataset(dataset,{localOnly=false,localKind=null}={}){
     map.set(recordKey(row),row);
     if(row.entity_type==='locations'){const index=data.tables.locations.findIndex(location=>location.location_id===row.entity_id);if(index>=0)data.tables.locations[index]=clone(row.payload);}
    }
-  }catch(error){invalidate();if(!policy.source_archive_allowed)await local('delete');throw new Error(`${error.message} Cloud writes may have completed; pull again before editing.`);}
-  try{await local('put',data);rememberCloudCache();}catch(e){invalidate();throw new Error(`${e.message} Cloud writes completed; pull again to restore the local copy.`);}
-  for(const r of saved)versions.set(recordKey(r),r.version);
-  baseline=map;statusMessage='Saved to cloud and this device.';
+  }catch(error){if(ownsSave()){invalidate();if(!policy.source_archive_allowed)await local('delete',undefined,{check:checkSaveEpoch});}throw new Error(`${error.message} Cloud writes may have completed; pull again before editing.`);}
+  const generation=authGeneration,identity=syncIdentity(),nextVersions=new Map(versions);
+  for(const r of saved)nextVersions.set(recordKey(r),r.version);
+  const check=()=>{checkExportContext(context);if(generation!==authGeneration||identity!==syncIdentity()||savePullGeneration!==pullGeneration||!synced)throw new Error('Your account or shared data changed while saving the local copy.');};
+  const c=configuration(),cacheWrite={id:crypto.randomUUID(),url:c.url,colony:c.colonyId,user:session().user.id};
+  try{const syncBaseline=await baselineEnvelope([...map.values()],cacheWrite.id,check,nextVersions);check();await local('put',data,{check,cacheWrite,syncBaseline});check();rememberCloudCache(cacheWrite.id,syncBaseline?.sha256);}
+  catch(e){if(ownsSave())invalidate();const cleanup=discardCloudWrite(cacheWrite.id).catch(()=>{});if(e.storageTimeout!==true)await cleanup;throw new Error(`${e.message} Cloud writes completed; pull again to restore the local copy.`);}
+  versions=nextVersions;baseline=map;baselineIdentity=syncIdentity();statusMessage='Saved to cloud and this device.';
 }
 export async function getAuditLog({limit=100,before=null}={}){
   const c=configuration();await membership();
