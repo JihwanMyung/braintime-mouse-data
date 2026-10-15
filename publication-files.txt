@@ -230,3 +230,5 @@ supabase/app-access-log.sql
 supabase/APP_ACCESS_LOG.md
 supabase/tests/app-access-log.test.mjs
 tests/member-invitation-store.test.mjs
+web/local-backup.js
+tests/local-backup.test.mjs

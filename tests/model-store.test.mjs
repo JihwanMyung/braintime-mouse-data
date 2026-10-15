@@ -73,18 +73,20 @@ function installServer(){
     if(['/rpc/get_brainbot_status','/rpc/save_brainbot_settings','/rpc/run_brainbot','/rpc/review_brainbot_issue'].some(p=>u.pathname.endsWith(p))){if(server.onBrainbot)server.onBrainbot();return response(server.brainbotReply);}
     if(u.pathname.endsWith('/memberships'))return response(server.memberships??[{role:server.role,active:server.active}]);
     if(u.pathname.endsWith('/rpc/get_my_lab_member'))return response(server.myProfile??{eligible:false});
-    if(u.pathname.endsWith('/rpc/get_export_permission')||u.pathname.endsWith('/rpc/assert_full_export_permission')){
+    if(u.pathname.endsWith('/rpc/get_export_permission')||u.pathname.endsWith('/rpc/assert_full_export_permission')||u.pathname.endsWith('/rpc/get_local_backup_permission')){
       server.exportPermissionReads=(server.exportPermissionReads||0)+1;
       if(server.onExportPermission)server.onExportPermission(server.exportPermissionReads);
       if(!server.active||server.exportPermissionError)return response({code:'42501',message:'Active export membership required'},403);
       const level=server.exportLevel||'max';
       if(u.pathname.endsWith('/assert_full_export_permission')&&level!=='max')return response({code:'42501',message:'Max required'},403);
+      if(u.pathname.endsWith('/get_local_backup_permission')&&level==='low')return response({code:'42501',message:'High required'},403);
       return response({level,as_of_date:'2026-10-14',cutoff_date:level==='max'?null:level==='low'?'2023-10-14':'2020-10-14',full_history:level==='max'});
     }
-    if(u.pathname.endsWith('/rpc/export_records')){
+    if(u.pathname.endsWith('/rpc/export_records')||u.pathname.endsWith('/rpc/export_local_backup_records')){
+      if(u.pathname.endsWith('/rpc/export_local_backup_records')&&(!server.active||server.exportLevel==='low'))return response({code:'42501'},403);
       if(server.exportResponse)return response(await server.exportResponse(body));
       const level=server.exportLevel||'max';
-      return response({rows:[],next_offset:null,export_level:level,cutoff_date:level==='max'?null:level==='low'?'2023-10-14':'2020-10-14',as_of_date:'2026-10-14',snapshot_revision:'42',from_date:body.p_from_date,to_date:body.p_to_date,scope:body.p_scope,excluded_undated:2});
+      return response({rows:[],next_offset:null,export_level:level,cutoff_date:level==='max'?null:level==='low'?'2023-10-14':'2020-10-14',as_of_date:'2026-10-14',snapshot_revision:server.exportRevision||'42',fee_visibility:server.feePolicy||{version:0,owner:server.role==='owner',estimate:true,actual:true,source_archive_allowed:true},from_date:body.p_from_date,to_date:body.p_to_date,scope:body.p_scope,excluded_undated:2});
     }
     if(u.pathname.endsWith('/functions/v1/manage-colony-users')){
       if(server.managementNetworkFailure)throw new TypeError('Network unavailable');
@@ -993,4 +995,60 @@ test('a stale callback waiting on membership cannot clear a newer authorized ses
  await fresh();callbackPage(callbackHash());const baseFetch=fetch;let release,started;const waiting=new Promise(r=>started=r);let first=true;
  globalThis.fetch=async(url,options)=>{if(url.includes('/memberships?')&&first){first=false;started();await new Promise(r=>release=r);return response({message:'late failure'},403);}return baseFetch(url,options);};
  const pending=store.consumeAuthCallback(),rejected=assert.rejects(pending,/account or cloud configuration changed/);await waiting;await store.signIn('demo@example.test','test-password');const saved=sessionStorage.getItem('mouse-colony.session.v1');release();await rejected;assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),saved);
+});
+
+test('local backup uses server High boundary, dedicated guarded pages, and integrity envelope',async()=>{
+ installServer();configure();await store.signIn('demo@example.test','password');server.exportLevel='high';
+ const backup=await store.getLocalBackup();assert.equal(backup.full_workspace,false);assert.equal(backup.restore_mode,'reviewed_merge_only');assert.equal(backup.permission.cutoff_date,'2020-10-14');assert.deepEqual(Object.keys(backup.sections),['current_housing','history']);
+ const pages=server.calls.filter(c=>c.url.endsWith('/export_local_backup_records')).map(c=>JSON.parse(c.options.body));assert.equal(pages.length,4);assert.equal(pages[0].p_limit,1);assert.equal(pages[1].p_from_date,null);assert.equal(pages[2].p_from_date,'2020-10-14');assert.equal(pages[3].p_limit,1);assert(pages.slice(1).every(page=>page.p_expected_revision==='42'));assert(!server.calls.some(c=>c.url.endsWith('/rpc/export_records')));
+ const {integrity,...body}=backup;assert.equal(integrity.value,createHash('sha256').update(JSON.stringify(body)).digest('hex'));
+ server.exportLevel='low';const before=server.calls.length;await assert.rejects(store.getLocalBackup(),/permission/);assert(!server.calls.slice(before).some(c=>c.url.includes('export_local_backup_records')));
+});
+test('local backup rejects changes in revision or revoked permission across sections',async()=>{
+ for(const change of ['revision','level','account']){
+  installServer();configure();await store.signIn('demo@example.test','password');server.exportLevel='high';let pages=0;
+  server.exportResponse=body=>{pages++;if(pages===2&&change==='level')server.exportLevel='low';if(pages===2&&change==='account'){const key='mouse-colony.session.v1',s=JSON.parse(sessionStorage.getItem(key));s.user.id='33333333-3333-4333-8333-333333333333';sessionStorage.setItem(key,JSON.stringify(s));}return {rows:[],next_offset:null,export_level:'high',cutoff_date:'2020-10-14',as_of_date:'2026-10-14',snapshot_revision:change==='revision'?String(pages):'1',fee_visibility:{version:0,owner:true,estimate:true,actual:true,source_archive_allowed:true},from_date:body.p_from_date,to_date:body.p_to_date,scope:body.p_scope};};
+  await assert.rejects(store.getLocalBackup(),/changed|permission/);
+ }
+});
+
+
+test('local backup rejects policy changes across sections and after the final grant',async()=>{
+ for(const level of ['high','max'])for(const stage of ['section','final-grant']){
+  await connected();server.exportLevel=level;const baseFetch=fetch;let grants=0,pages=0;
+  globalThis.fetch=async(url,options)=>{
+   if(url.endsWith('/rpc/get_local_backup_permission')&&++grants===2&&stage==='final-grant')server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};
+   if(url.endsWith('/rpc/export_local_backup_records')&&++pages===3&&stage==='section')server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};
+   // A full backup has only boundary probes; change during the raw read instead.
+   if(level==='max'&&stage==='section'&&url.includes('/entity_records?'))server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};
+   return baseFetch(url,options);
+  };
+  await assert.rejects(store.getLocalBackup(),/visibility changed|requires access/,level+' '+stage);
+ }
+});
+test('Max local backup rejects a redacted workspace and any write during raw pagination',async()=>{
+ await connected();server.exportLevel='max';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};
+ const before=server.calls.length;await assert.rejects(store.getLocalBackup(),/requires access to source and fee data/);
+ assert(!server.calls.slice(before).some(call=>call.url.includes('/entity_records?')));
+ await connected();server.exportLevel='max';const baseFetch=fetch;
+ globalThis.fetch=async(url,options)=>{const result=await baseFetch(url,options);if(url.includes('/entity_records?'))server.exportRevision='43';return result;};
+ await assert.rejects(store.getLocalBackup(),/Data or fee visibility changed/);
+});
+test('Max local backup returns a verified complete envelope and never treats missing policy as unrestricted',async()=>{
+ await connected();server.exportLevel='max';const backup=await store.getLocalBackup();
+ assert.equal(backup.full_workspace,true);assert.equal(backup.restore_mode,'workspace');assert(backup.sections.workspace.tables.mice.length>0);
+ assert.deepEqual(Object.keys(backup.sections),['workspace']);assert.equal(backup.sections.workspace.source_archive_restricted,undefined);
+ const pages=server.calls.filter(call=>call.url.endsWith('/export_local_backup_records')).map(call=>JSON.parse(call.options.body));assert.equal(pages.length,2);assert.equal(pages[1].p_expected_revision,'42');
+ server.exportResponse=()=>({rows:[],next_offset:null,export_level:'max',cutoff_date:null,as_of_date:'2026-10-14',snapshot_revision:'42'});
+ await assert.rejects(store.getLocalBackup(),/Fee visibility could not be verified/);
+});
+test('local backup rejects an old response after a newer sign-in to the same account',async()=>{
+ await connected();server.exportLevel='max';const baseFetch=fetch;let probes=0;
+ globalThis.fetch=async(url,options)=>{const result=await baseFetch(url,options);if(url.endsWith('/export_local_backup_records')&&++probes===2)await store.signIn('demo@example.test','new-session-password');return result;};
+ await assert.rejects(store.getLocalBackup(),/account changed/);assert.equal(store.getCloudStatus().signedIn,true);
+});
+test('explicit local demo backup remains complete and makes no cloud backup requests',async()=>{
+ await fresh();await store.saveDataset(createSyntheticDataset(),{localOnly:true,localKind:'demo'});const before=server.calls.length;
+ const backup=await store.getLocalBackup();assert.equal(backup.full_workspace,true);assert.equal(backup.permission.level,'max');assert.equal(backup.sections.workspace.tables.mice.length,3);
+ assert.equal(server.calls.length,before);
 });

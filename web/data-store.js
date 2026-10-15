@@ -564,10 +564,10 @@ function checkedExportPermission(value){
 function exportContext(){const c=configuration();return stable({url:c?.url,colony:c?.colonyId,user:session()?.user?.id,mode:mode(),demo:getStorage('localStorage',DEMO_KEY)});}
 function checkExportContext(context){if(exportContext()!==context)throw new Error('Your account or colony changed. Reopen Export.');}
 async function localExportDataset(){
-  const data=await loadDataset();
   // A configured real colony always rechecks server permission, including after
-  // sign-out. Demo and unconfigured private workspaces contain user-owned data.
-  return mode()==='local'&&data&&(!configuration()||getStorage('localStorage',DEMO_KEY)==='true')?data:null;
+  // sign-out. Do not load or refresh its cached dataset to make this decision.
+  if(mode()!=='local'||configuration()&&getStorage('localStorage',DEMO_KEY)!=='true')return null;
+  return await loadDataset();
 }
 function localExportPermission(){return {level:'max',cutoff_date:null,as_of_date:new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()),full_history:true,local:true};}
 export async function getExportPermission(){
@@ -657,7 +657,8 @@ function currentExportRecord(type,row,data){
   }
   return false;
 }
-export async function getExportRecords({scope='current_housing',fromDate=null,toDate=null,entityTypes=null}={}){
+export async function getExportRecords(options={}){return readExportRecords(options,'export_records');}
+async function readExportRecords({scope='current_housing',fromDate=null,toDate=null,entityTypes=null}={},rpcName,boundary=null){
   if(!['current_housing','history'].includes(scope))throw new Error('Choose current housing or historical records.');
   if(entityTypes!==null&&(!Array.isArray(entityTypes)||!entityTypes.length||entityTypes.some(type=>!MANAGED.includes(type))))throw new Error('Choose supported record types to export.');
   for(const value of [fromDate,toDate])if(value!==null&&!exportDate(value))throw new Error('Choose valid export dates.');
@@ -682,10 +683,11 @@ export async function getExportRecords({scope='current_housing',fromDate=null,to
   }
   const c=configuration(),rows=[],seen=new Set();let offset=0,metadata=null;
   while(true){
-    const page=await request('rpc/export_records',{method:'POST',body:{p_colony_id:c.colonyId,p_scope:scope,p_from_date:scope==='history'?start:null,p_to_date:scope==='history'?end:null,p_entity_types:entityTypes,p_offset:offset,p_limit:250}});
+    const page=await request('rpc/'+rpcName,{method:'POST',body:{p_colony_id:c.colonyId,p_scope:scope,p_from_date:scope==='history'?start:null,p_to_date:scope==='history'?end:null,p_entity_types:entityTypes,p_offset:offset,p_limit:250,...(boundary?{p_expected_revision:boundary.snapshot_revision}:{})}});
     if(!page||!Array.isArray(page.rows)||page.rows.length>250||!['low','high','max'].includes(page.export_level)||!exportDate(page.as_of_date)||typeof page.snapshot_revision!=='string')throw new Error('The server returned an unverifiable export page.');
     if(page.export_level!==permission.level||page.cutoff_date!==permission.cutoff_date||page.as_of_date!==permission.as_of_date)throw new Error('Your export permission changed. Reopen Export and try again.');
     if(page.fee_visibility){checkedFeeVisibility(page.fee_visibility);if(metadata?.fee_visibility&&stable(page.fee_visibility)!==stable(metadata.fee_visibility))throw new Error('Fee visibility changed while exporting. Reopen Export.');}
+    if(boundary&&(page.snapshot_revision!==boundary.snapshot_revision||!sameFeeVisibility(checkedFeeVisibility(page.fee_visibility),boundary.fee_visibility)))throw new Error('Data or fee visibility changed while backing up. Try again.');
     if(metadata&&page.snapshot_revision!==metadata.snapshot_revision)throw new Error('Colony data changed while exporting. Try again for a consistent snapshot.');
     checkExportContext(context);
     metadata??={...page,rows:undefined,local:false,scope};
@@ -703,6 +705,47 @@ export async function getExportRecords({scope='current_housing',fromDate=null,to
   if(metadata?.fee_visibility){const finalFee=await refreshFeeVisibility();checkExportContext(context);if(stable(finalFee)!==stable(metadata.fee_visibility))throw new Error('Fee visibility changed while exporting. Reopen Export.');}
   const data=normalizeDataset({tables:{}});for(const row of rows)data.tables[row.entity_type].push({...clone(row.payload),export_record_date:row.record_date??null});
   return {dataset:data,metadata:{...metadata,row_count:rows.length}};
+}
+export async function getLocalBackup(){
+  const context=exportContext(),generation=authGeneration;
+  const check=()=>{checkExportContext(context);if(generation!==authGeneration)throw new Error('Your account changed. Reopen Export.');};
+  const authorize=async()=>{
+    const localData=await localExportDataset();check();
+    if(localData)return localExportPermission();
+    const c=configuration();if(!c)throw new Error('Open a workspace before backing up.');
+    const grant=checkedExportPermission(await request('rpc/get_local_backup_permission',{method:'POST',body:{p_colony_id:c.colonyId}}));
+    check();if(!['high','max'].includes(grant.level))throw new Error('High or Max export access is required for a local backup.');
+    return {...grant,local:false};
+  };
+  const permission=await authorize(),sections={},revisions={};
+  // A one-row projected read supplies the colony-wide audit revision and policy;
+  // its row is discarded. Bracket all full/raw or bounded reads with this fence.
+  const readBoundary=async expected=>{
+    const c=configuration(),page=await request('rpc/export_local_backup_records',{method:'POST',body:{p_colony_id:c.colonyId,p_scope:'current_housing',p_entity_types:['rooms'],p_offset:0,p_limit:1,p_expected_revision:expected?.snapshot_revision??null}});check();
+    if(!page||!Array.isArray(page.rows)||page.rows.length>1||typeof page.snapshot_revision!=='string'||!/^\d{1,100}$/.test(page.snapshot_revision))throw new Error('Backup snapshot could not be verified.');
+    if(page.export_level!==permission.level||page.cutoff_date!==permission.cutoff_date||page.as_of_date!==permission.as_of_date)throw new Error('Backup permission changed. No file was prepared.');
+    const result={snapshot_revision:page.snapshot_revision,fee_visibility:checkedFeeVisibility(page.fee_visibility)};
+    if(expected&&(result.snapshot_revision!==expected.snapshot_revision||!sameFeeVisibility(result.fee_visibility,expected.fee_visibility)))throw new Error('Data or fee visibility changed while backing up. Try again.');
+    return result;
+  };
+  const boundary=permission.local?null:await readBoundary();
+  if(permission.level==='max'&&boundary&&!boundary.fee_visibility.source_archive_allowed)throw new Error('Full workspace backup requires access to source and fee data.');
+  if(permission.level==='max'){sections.workspace=await getFullExportBackup();if(sections.workspace.source_archive_restricted)throw new Error('Full workspace backup requires access to source and fee data.');}
+  else{
+    for(const scope of ['current_housing','history']){
+      const result=await readExportRecords({scope,fromDate:scope==='history'?permission.cutoff_date:null,toDate:scope==='history'?permission.as_of_date:null},'export_local_backup_records',boundary);
+      check();
+      if(result.metadata.export_level!==permission.level||result.metadata.cutoff_date!==permission.cutoff_date||result.metadata.as_of_date!==permission.as_of_date)throw new Error('Backup permission changed. Try again.');
+      sections[scope]={metadata:result.metadata,tables:result.dataset.tables};revisions[scope]=result.metadata.snapshot_revision;
+    }
+    if(!revisions.current_housing||revisions.current_housing!==revisions.history)throw new Error('Data changed while backing up. Try again for a consistent backup.');
+  }
+  const final=await authorize();check();
+  for(const key of ['level','cutoff_date','as_of_date','local'])if(final[key]!==permission[key])throw new Error('Backup permission changed. No file was prepared.');
+  if(boundary)await readBoundary(boundary);
+  const payload={kind:'braintime-local-backup',schema_version:1,application:'mouse-data',created_at:new Date().toISOString(),full_workspace:permission.level==='max',restore_mode:permission.level==='max'?'workspace':'reviewed_merge_only',permission:{level:permission.level,cutoff_date:permission.cutoff_date,as_of_date:permission.as_of_date},sections};
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(payload)));
+  check();return {...payload,integrity:{algorithm:'SHA-256',encoding:'JSON.stringify of envelope without integrity',value:[...new Uint8Array(digest)].map(v=>v.toString(16).padStart(2,'0')).join('')}};
 }
 export async function getFullExportBackup(){
   const context=exportContext(),permission=await assertFullExportPermission();checkExportContext(context);

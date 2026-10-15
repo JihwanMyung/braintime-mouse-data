@@ -14,6 +14,7 @@ async function mount(options={},overrides={}) {
     getPermission:async()=>{calls.permissions++;return structuredClone(state.grant)},
     getRecords:async request=>{calls.records.push(structuredClone(request));return {dataset:structuredClone(state.fresh),metadata:{export_level:state.grant.level,cutoff_date:state.grant.cutoff_date,as_of_date:state.grant.as_of_date,captured_at:'2026-10-14T04:12:34Z',scope:request.scope,from_date:request.fromDate,to_date:request.toDate,excluded_undated:0,snapshot_revision:'revision-1',local:false}}},
     getBackup:async()=>{calls.backups++;return structuredClone(state.fresh)},
+    getLocalBackup:async()=>{calls.backups++;return {kind:'braintime-local-backup',schema_version:1,full_workspace:state.grant.level==='max',permission:structuredClone(state.grant),sections:state.grant.level==='max'?{workspace:structuredClone(state.fresh)}:{current_housing:{tables:state.fresh.tables},history:{tables:{mice:[]}}}}},
     getSourceArchive:async()=>{calls.sources++;return {sources:[{title:'Synthetic source'}],sheets:[{title:'Sheet'}],cells:[[0,'A1','TEST']]}},
     download:async(blob,filename)=>calls.downloads.push({blob,filename}),print:async(html,context)=>calls.prints.push({html,context}),close:()=>{calls.closed++},
   };
@@ -57,9 +58,9 @@ test('permission downgrade invalidates a preview and does not export or fetch st
   await click(container,'preview');await click(container,'export');assert.equal(calls.downloads.length,1);
 });
 
-test('raw backups and source archives require fresh Max and never use a local fallback',async()=>{
+test('local backup requires High or Max; full source archive still requires Max',async()=>{
   const {container,calls,state}=await mount({scope:'backup'});
-  await click(container,'preview');assert.equal(calls.backups,0);assert.match(container.innerHTML,/Max export access is required/);
+  await click(container,'preview');assert.equal(calls.backups,0);assert.match(container.innerHTML,/High or Max export access is required/);
   state.grant=permission('max');await click(container,'preview');assert.equal(calls.backups,1);
   state.grant=permission('low');await click(container,'export');assert.equal(calls.backups,1);assert.equal(calls.downloads.length,0);
   change(container,'scope','source-archive');await click(container,'preview');assert.equal(calls.sources,0);
@@ -194,4 +195,27 @@ test('Locobox CSV keeps nested intervals and makes clipped report boundaries vis
  state.fresh.tables.husbandry_events=[{event_id:'LOCO',event_type:'locobox_protocol',export_event_date_withheld:true,locobox_protocol:{title:'Timeline',cage_sid:'C1',phase_count:2,phases_truncated:false,phases:[{phase_id:'P1',scheme:'DD',export_interval_clipped:true,export_window_start:'2023-10-14',end_date:'2026-10-01',treatments:[{treatment_id:'T',name:'Recorded compound',status:'cancelled'}],treatment_count:1,treatments_truncated:false}]}}];
  await click(container,'preview');assert.match(container.innerHTML,/Locobox protocols have intervals clipped/);await click(container,'export');const csv=await text(calls.downloads[0]);
  for(const field of ['locobox_title','locobox_cage_sid','locobox_phases','locobox_phase_count','locobox_phases_truncated','export_event_date_withheld'])assert(csv.includes('"'+field+'"'),field);assert(csv.includes('export_interval_clipped'));assert(csv.includes('cancelled'));assert(calls.permissions>=3);
+});
+
+ test('High local backup labels its partial six-year scope and denies a downgrade at download',async()=>{
+  const {container,calls,state}=await mount({scope:'backup'});state.grant=permission('high');
+  await click(container,'preview');assert.equal(calls.backups,1);assert.match(container.innerHTML,/2020-10-14 to 2026-10-14/);assert.match(container.innerHTML,/Partial backup/);
+  await click(container,'export');const payload=JSON.parse(await text(calls.downloads[0]));assert.equal(payload.full_workspace,false);assert.equal(payload.permission.level,'high');assert.equal(payload.permission.cutoff_date,'2020-10-14');assert.equal(payload.sections.workspace,undefined);assert.match(calls.downloads[0].filename,/local-backup/);
+  state.grant=permission('low');await click(container,'export');assert.equal(calls.downloads.length,1);assert.equal(calls.backups,2);
+ });
+ test('local backup rejects a full or wrong-window response for High',async()=>{
+  for(const bad of [{full_workspace:true},{permission:permission('max')},{permission:{...permission('high'),cutoff_date:'2019-01-01'}}]){
+   const {container,calls,state}=await mount({scope:'backup'},({hooks})=>{const original=hooks.getLocalBackup;return {getLocalBackup:async()=>({...await original(),...bad})}});state.grant=permission('high');
+   await click(container,'preview');await click(container,'export');assert.equal(calls.downloads.length,0);assert.match(container.innerHTML,/could not be verified|permission changed|Preview/);
+  }
+ });
+
+
+test('local backup refuses unexpected full sections for High and redacted Max envelopes',async()=>{
+ for(const level of ['high','max']){
+  const {container,calls,state}=await mount({scope:'backup'},({hooks})=>{const original=hooks.getLocalBackup;return {getLocalBackup:async()=>{
+   const result=await original();if(level==='high')result.sections.workspace=dataset();else result.sections.workspace.source_archive_restricted=true;return result;
+  }}});state.grant=permission(level);
+  await click(container,'preview');assert.match(container.innerHTML,/Backup scope could not be verified/);await click(container,'export');assert.equal(calls.downloads.length,0);
+ }
 });
