@@ -37,6 +37,17 @@ await test('operation allowlist, signed-out, pending and recovery sessions never
  await assert.rejects(store.callReagents('list',[]),/Unsupported/);
  for(const extra of [{passwordRecovery:true},{setupRequired:true},{role:'pending',setupRequired:false}]){sessionStorage.setItem('mouse-colony.session.v1',JSON.stringify({...saved,...extra}));s.calls=[];await assert.rejects(store.callReagents('list'),e=>e.reagentsAccessChanged===true);assert.equal(s.calls.length,0);}
 });
+await test('purchase actions keep the authenticated transport and cannot override the colony',async()=>{
+ const s=fixture();await signIn();
+ for(const action of ['order_search','order_list','order_submit','order_transition','order_locations','order_set_location','order_import_offers']){
+  s.calls=[];await store.callReagents(action,{p_colony_id:'foreign-colony'});
+  assert.equal(s.calls.length,2);assert.ok(s.calls[0].url.includes('/memberships?'));
+  assert.ok(s.calls[1].url.endsWith('/rpc/reagents_'+action));assert.equal(s.calls[1].body.p_colony_id,colony);
+  assert.equal(s.calls[1].init.cache,'no-store');
+ }
+ for(const action of ['order_mail_claim','order_mail_finish','order_delete','order_approve_all'])await assert.rejects(store.callReagents(action),/Unsupported/);
+ s.active=false;s.calls=[];await assert.rejects(store.callReagents('order_submit',{}),e=>e.reagentsAccessChanged===true);assert.equal(s.calls.length,1);
+});
 await test('revoked membership rejects before RPC and marks private UI for invalidation',async()=>{
  const s=fixture();await signIn();s.active=false;s.calls=[];
  await assert.rejects(store.callReagents('list'),e=>e.reagentsAccessChanged===true);assert.equal(s.calls.length,1);

@@ -185,7 +185,8 @@ export async function verifyCloudMembership(){
   return getCloudStatus();
 }
 // Shared lab-tool transport; authorization and history limits are enforced again by each RPC.
-const REAGENT_ACTIONS=new Set(['list','save','history','sources','observations','import','record_usage','access','set_access']);
+const REAGENT_ACTIONS=new Set(['list','save','history','sources','observations','import','record_usage','access','set_access',
+ 'order_search','order_list','order_submit','order_transition','order_locations','order_set_location','order_import_offers']);
 export async function callReagents(action,args={}){
  if(!REAGENT_ACTIONS.has(action)||!args||Array.isArray(args)||typeof args!=='object')throw new Error('Unsupported reagent operation.');
  const generation=authGeneration,c=configuration(),identity=session()?.user?.id;
