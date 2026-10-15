@@ -99,3 +99,10 @@ test('source-position editor obtains Locobox choices only from the export-author
  const h=harness(d,{initialCage:null,initialPosition:'SRC1',initialSide:'locobox'});assert.doesNotMatch(h.container.innerHTML,/Source timeline|PRIVATE OUTSIDE HISTORY|RAW SOURCE HISTORY/);await h.preview();assert.equal(h.previews[0].backDraft.rows.length,0);
  const scoped=clone(d.tables.husbandry_events.at(-1));scoped.locobox_protocol.notes=null;scoped.locobox_protocol.phases=[{phase_id:'RECENT',scheme:'LD',start_date:'2026-10-15',notes:null}];h.hooks.locoboxDataset={tables:{husbandry_events:[scoped]}};h.render();assert.match(h.container.innerHTML,/Source timeline/);await h.preview();assert.equal(h.previews[1].backDraft.protocol_id,'','position history still requires an explicit choice');h.set('back_protocol','SOURCE-LB');await h.preview();assert.equal(h.previews[2].backDraft.rows[0].scheme,'LD');assert.doesNotMatch(h.previews[2].documentHTML,/PRIVATE OUTSIDE HISTORY|RAW SOURCE HISTORY|2020-01-01/);
 });
+
+test('caption overflow across a row boundary blocks printing even when it stays inside the outer card',()=>{
+ const outer={left:0,top:0,right:450,bottom:270,width:450,height:270},rowBox={left:0,top:90,right:270,bottom:135,width:270,height:45};
+ const row={getBoundingClientRect:()=>rowBox},caption={getBoundingClientRect:()=>({left:5,top:95,right:65,bottom:140,width:60,height:45}),closest:selector=>selector==='.lac-label-row'?row:null,scrollWidth:60,clientWidth:60,scrollHeight:45,clientHeight:45};
+ const label={getBoundingClientRect:()=>outer,querySelectorAll:selector=>selector.includes('.lac-label-caption')?[caption]:[],scrollWidth:450,clientWidth:450,scrollHeight:270,clientHeight:270};
+ assert.equal(cageLabelHasOverflow({querySelector:()=>label}),true);caption.getBoundingClientRect=()=>({left:5,top:95,right:65,bottom:130,width:60,height:35});caption.scrollHeight=35;caption.clientHeight=35;assert.equal(cageLabelHasOverflow({querySelector:()=>label}),false);
+});

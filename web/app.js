@@ -20,7 +20,7 @@ import { projectCageHistory, getCageHistoryDates } from './cage-history.js?v=24'
 import { projectAnimalSheet } from './animal-sheet-export.js?v=48';
 import { sortRooms, compareRooms } from './room-order.js?v=24';
 import { renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts, cageSheetHelpHTML } from './cage-sheet.js?v=57';
-import { renderCageLabelEditor } from './cage-label.js?v=57';
+import { renderCageLabelEditor } from './cage-label.js?v=58';
 import { renderAccountSetup } from './account-setup.js';
 import { renderAccountAcronym } from './account-acronym.js';
 import { userAcronymHelpHTML, setLabUserDirectory } from './user-acronyms.js?v=24';
