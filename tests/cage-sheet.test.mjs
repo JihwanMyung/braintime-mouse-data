@@ -55,9 +55,18 @@ test('source position notes stay separate from immutable source text',()=>{
 });
 
 // Exercise delegated input handlers through a small host, without a browser or external DOM library.
+const decode=value=>String(value??'').replaceAll('&quot;','"').replaceAll('&#39;',"'").replaceAll('&lt;','<').replaceAll('&gt;','>').replaceAll('&amp;','&');
+const attributes=source=>Object.fromEntries([...source.matchAll(/([\w-]+)="([^"]*)"/g)].map(([,key,value])=>[key,decode(value)]));
+const datasetAttributes=attrs=>Object.fromEntries(Object.entries(attrs).filter(([key])=>key.startsWith('data-')).map(([key,value])=>[key.slice(5).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase()),value]));
 function sheetHost(){
- let html='',nodes=new Map();
- return {get innerHTML(){return html;},set innerHTML(value){html=value;nodes=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{disabled:false,textContent:'',querySelector(){return {textContent:''};}}]));},querySelector(selector){return nodes.get(selector.slice(1))||null;}};
+ let html='',nodes=new Map(),editors=[];
+ const host={get innerHTML(){return html;},set innerHTML(value){
+  html=value;nodes=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{disabled:false,textContent:'',querySelector(){return {textContent:''};}}]));
+  editors=[...html.matchAll(/<div class="sheet-animal-editor"([^>]*)>/g)].map(([,attrs])=>{
+   let content='',controls=[];const node={dataset:datasetAttributes(attributes(attrs)),hidden:true,get innerHTML(){return content;},set innerHTML(value){content=value;controls=[...value.matchAll(/<(input|textarea)\b([^>]*)>([^<]*)/g)].map(([,tag,attrs,body])=>{const all=attributes(attrs);return {tag,attrs:all,dataset:datasetAttributes(all),value:tag==='textarea'?decode(body):all.value||'',focus(){},classList:{toggle(){}}};});},querySelector(selector){if(selector==='textarea,input')return controls[0];const match=selector.match(/^\[([^=]+)="([^"]*)"\]$/);return match?controls.find(c=>c.attrs[match[1]]===match[2])||null:null;},contains(target){return target===node||controls.includes(target);}};return node;
+  });
+ },querySelector(selector){return nodes.get(selector.slice(1))||null;},querySelectorAll(selector){return selector==='[data-sheet-inline-editor]'?editors:[];}};
+ return host;
 }
 function movementSample(){
  const data=sample();data.tables.rooms.push({room_id:'R2',name:'Rat room'});data.tables.racks.push({rack_id:'K2',room_id:'R2',name:'Rack B'});
@@ -103,7 +112,7 @@ test('withdrawn current positions have no grid or selectable destination and fre
  ui.input({sheetLink:'P2'},'C1');assert.equal(hasCageSheetDrafts(),false);assert.match(ui.host.innerHTML,/withdrawn/);
  Object.assign(data.tables.cages[0],{location_id:'P2',room_id:'R2',rack_id:'K2'});ui=renderHarness(data);
  assert.match(ui.host.innerHTML,/Position needs review/);assert.match(ui.host.innerHTML,/<option value="P2" selected disabled>B2 \(withdrawn\)<\/option>/);
- assert.match(ui.host.innerHTML,/data-sheet-open-mouse="M1"/);assert.doesNotMatch(ui.host.innerHTML,/data-sheet-slot="P2"/);
+ assert.match(ui.host.innerHTML,/data-sheet-edit-animal="note"/);assert.match(ui.host.innerHTML,/>P1<\/button>/);assert.doesNotMatch(ui.host.innerHTML,/data-sheet-slot="P2"/);
  const clean=movementSample(),fresh=structuredClone(clean);fresh.tables.locations[1].source_current=false;
  ui=renderHarness(clean,{loadFresh:async()=>fresh});ui.input({sheetLink:'P2'},'C1');await ui.sync();
  assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.innerHTML,/withdrawn/);clearCageSheetDrafts();
@@ -132,7 +141,7 @@ function renderedButtonTarget(host,attribute,value){
  assert.ok(article,`Rendered cage card containing ${attribute}=${value}`);
  const match=[...article[2].matchAll(/<button\b([^>]*)>/g)].find(([,attrs])=>attrs.includes(`${attribute}="${value}"`));
  assert.ok(match,'Rendered button exists');
- const attributes=Object.fromEntries([...match[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(([,key,val])=>[key,val]));
+ const attributes=Object.fromEntries([...match[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(([,key,val])=>[key,decode(val)]));
  const dataset=Object.fromEntries(Object.entries(attributes).filter(([key])=>key.startsWith('data-')).map(([key,val])=>[key.slice(5).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase()),val]));
  const cardAttributes=Object.fromEntries([...article[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(([,key,val])=>[key,val]));
  const card={dataset:{cage:cardAttributes['data-cage'],sheetSlot:cardAttributes['data-sheet-slot']}};
@@ -193,4 +202,101 @@ test('historical views block cage and source-position print dispatch even for st
   assert.doesNotMatch(ui.host.innerHTML,/data-sheet-label=|data-sheet-position-label=/);
   ui.host.onclick({target:cageTarget});ui.host.onclick({target:positionTarget});assert.equal(calls,0);assert.equal(hasCageSheetDrafts(),false);
  }
+});
+
+function observationSample(){
+ const data=sample();data.tables.cages=[];
+ Object.assign(data.tables.mice[0],{cage_sid:null,cage_tag:null,physical_tag:"PB'-M3193",date_of_birth:'2026-07-20',ear_mark:'L0R0',comment:'Older note',manager:'Vuong'});
+ Object.assign(data.tables.locations[0],{label:'L7',manager:'Vuong Truong',source_cage_observation:{schemaVersion:1,managerName:'Vuong',startedDate:'2025-12-23',intensityLux:150,animals:[{tag:"PB'-M3193",note:'0039 PB',dateOfBirth:'2026-07-20',left:1,right:1,sourceCell:'T10'}]}});
+ return data;
+}
+function doneTarget(){return {closest(selector){return selector.includes('[data-sheet-editor-done]')?{dataset:{sheetEditorDone:'true'}}:null;}};}
+async function openEditor(ui,mode){await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-edit-animal',mode)});return ui.host.querySelectorAll('[data-sheet-inline-editor]').find(node=>!node.hidden);}
+function enter(ui,node,field,value){const target=node.querySelector(`[data-sheet-field="${field}"]`);assert.ok(target,`editor ${field} present`);target.value=value;ui.host.oninput({target});return target;}
+
+test('compact source cages show manager, recording date/lux and one-line tag, ear, age with hover details',()=>{
+ const ui=renderHarness(observationSample(),{selectedDate:'2026-10-12'}),article=[...ui.host.innerHTML.matchAll(/<article\b[^>]*data-sheet-slot="P1"[^>]*>([\s\S]*?)<\/article>/g)][0][1];
+ assert.match(article,/>Vuong<\/span>/);assert.match(article,/datetime="2025-12-23"/);assert.match(article,/>150 lux<\/span>/);
+ assert.match(article,/title="0039 PB"/);assert.match(article,/>PB&#39;-M3193<\/button>/);assert.match(article,/>L1R1<\/button>/);assert.match(article,/title="DOB 2026-07-20"[^>]*>12wk<\/button>/);
+ assert.doesNotMatch(article,/source labels|Source labels|Unlinked position|data-sheet-field="date_of_birth"|data-sheet-field="ear_mark"|data-sheet-field="physical_tag"/);
+});
+
+test('note editor uses displayed observation, saves on Done to exact mouse, and preserves raw note plus concurrent overrides',async()=>{
+ const data=observationSample(),fresh=structuredClone(data);fresh.tables.mice[0].cage_sheet_overrides={ear_mark:true};
+ const ui=renderHarness(data,{loadFresh:async()=>fresh}),editor=await openEditor(ui,'note');
+ assert.ok(editor);assert.equal(editor.querySelector('[data-sheet-field="comment"]').value,'0039 PB');assert.match(editor.innerHTML,/data-sheet-open-mouse="M1"/);
+ enter(ui,editor,'comment','Reviewed note');assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);
+ await ui.host.onclick({target:doneTarget()});
+ assert.equal(ui.saved.length,1);const mouse=ui.saved[0].tables.mice[0];assert.equal(mouse.comment,'Reviewed note');assert.deepEqual(mouse.cage_sheet_overrides,{ear_mark:true,comment:true});
+ assert.equal(ui.saved[0].tables.locations[0].source_cage_observation.animals[0].note,'0039 PB');assert.equal(mouse.cage_sid,null);assert.equal(hasCageSheetDrafts(),false);
+});
+
+test('ear editor uses source L/R counts, retains zero, and writes canonical mark to Mice',async()=>{
+ const ui=renderHarness(observationSample()),editor=await openEditor(ui,'ear'),left=editor.querySelector('[data-sheet-ear-side="L"]'),right=editor.querySelector('[data-sheet-ear-side="R"]');
+ assert.equal(left.value,'1');assert.equal(right.value,'1');left.value='0';ui.host.oninput({target:left});right.value='2';ui.host.oninput({target:right});
+ await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].ear_mark,'L0R2');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.ear_mark,true);
+});
+
+test('DOB editor saves exact mouse DOB and updates compact age without changing source observation',async()=>{
+ const ui=renderHarness(observationSample(),{selectedDate:'2026-10-12'}),editor=await openEditor(ui,'dob');
+ assert.equal(editor.querySelector('[data-sheet-field="date_of_birth"]').value,'2026-07-20');enter(ui,editor,'date_of_birth','2026-07-13');
+ await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved[0].tables.mice[0].date_of_birth,'2026-07-13');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.date_of_birth,true);
+ assert.match(ui.host.innerHTML,/title="DOB 2026-07-13"[^>]*>13wk<\/button>/);assert.equal(ui.saved[0].tables.locations[0].source_cage_observation.animals[0].dateOfBirth,'2026-07-20');
+});
+
+test('pre-existing sheet drafts prevent inline auto-save and remain a single explicit Sync',async()=>{
+ const ui=renderHarness(observationSample());ui.input({sheetType:'locations',sheetId:'P1',sheetField:'notes'},'Cage note');
+ const editor=await openEditor(ui,'note');enter(ui,editor,'comment','Mouse note');await ui.host.onclick({target:doneTarget()});
+ assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.locations[0].notes,'Cage note');assert.equal(ui.saved[0].tables.mice[0].comment,'Mouse note');
+});
+
+test('inline auto-save rechecks permission and concurrent same-field edits without overwriting them',async()=>{
+ const data=observationSample(),fresh=structuredClone(data);fresh.tables.mice[0].ear_mark='L2R2';
+ const ui=renderHarness(data,{loadFresh:async()=>fresh}),editor=await openEditor(ui,'ear'),left=editor.querySelector('[data-sheet-ear-side="L"]');left.value='0';ui.host.oninput({target:left});
+ await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);assert.equal(fresh.tables.mice[0].ear_mark,'L2R2');assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.querySelector('#cage-sheet-status').textContent,/Changed by another editor/);clearCageSheetDrafts();
+});
+
+test('ambiguous and historical rows cannot open editable controls or navigate to guessed Mice',async()=>{
+ const data=observationSample();data.tables.mice.push({...data.tables.mice[0],mouse_sid:'M2'});
+ let ui=renderHarness(data),editor=await openEditor(ui,'note');assert.ok(editor);assert.doesNotMatch(editor.innerHTML,/data-sheet-field=|data-sheet-open-mouse=/);assert.match(ui.host.innerHTML,/Multiple mouse matches/);
+ ui=renderHarness(observationSample(),{readOnly:true,selectedDate:'2026-10-12'});assert.match(ui.host.innerHTML,/data-sheet-edit-animal="dob"[^>]* disabled/);assert.equal(await openEditor(ui,'note'),undefined);assert.equal(hasCageSheetDrafts(),false);
+});
+
+test('future DOB is rejected without saving an earlier draft or changing Mice',async()=>{
+ const ui=renderHarness(observationSample()),editor=await openEditor(ui,'dob');enter(ui,editor,'date_of_birth','2999-01-01');await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);assert.equal(editor.hidden,false);assert.match(ui.host.querySelector('#cage-sheet-status').textContent,/DOB cannot be in the future/);
+ assert.throws(()=>applyCageSheetDrafts(observationSample(),[edit('mice','M1','date_of_birth','2026-07-20','2999-01-01')],{at:'2026-10-16T12:00:00Z'}),/DOB cannot be in the future/);
+});
+
+test('leaving an inline editor saves, but tabbing between controls does not save while typing',async()=>{
+ const ui=renderHarness(observationSample()),editor=await openEditor(ui,'note'),target=enter(ui,editor,'comment','Saved on leaving');
+ ui.host.onfocusout({target,relatedTarget:target});await new Promise(resolve=>setTimeout(resolve,3));assert.equal(ui.saved.length,0);
+ ui.host.onfocusout({target,relatedTarget:null});await new Promise(resolve=>setTimeout(resolve,3));assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].comment,'Saved on leaving');
+});
+
+test('source-linked inline save rejects a changed identity match or revoked permission on fresh reload',async()=>{
+ const data=observationSample(),fresh=structuredClone(data);fresh.tables.mice[0].physical_tag='Different mouse';
+ let ui=renderHarness(data,{loadFresh:async()=>fresh}),editor=await openEditor(ui,'note');enter(ui,editor,'comment','Must not save');await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);assert.match(ui.host.querySelector('#cage-sheet-status').textContent,/Animal match changed/);clearCageSheetDrafts();
+ let allowed=true;ui=renderHarness(observationSample(),{canEdit:()=>allowed});editor=await openEditor(ui,'note');enter(ui,editor,'comment','Must not save');allowed=false;await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);assert.match(ui.host.querySelector('#cage-sheet-status').textContent,/permission/);clearCageSheetDrafts();
+});
+
+test('deliberately choosing the stored value still overrides differing source notes and earmarks',async()=>{
+ const data=observationSample();data.tables.mice[0].comment=null;
+ let ui=renderHarness(data),editor=await openEditor(ui,'note');enter(ui,editor,'comment','');await ui.host.onclick({target:doneTarget()});
+ assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].comment,null);assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.comment,true);
+ ui=renderHarness(observationSample());editor=await openEditor(ui,'ear');const left=editor.querySelector('[data-sheet-ear-side="L"]'),right=editor.querySelector('[data-sheet-ear-side="R"]');left.value='0';ui.host.oninput({target:left});right.value='0';ui.host.oninput({target:right});await ui.host.onclick({target:doneTarget()});
+ assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].ear_mark,'L0R0');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.ear_mark,true);
+ const sourceCard=[...ui.host.innerHTML.matchAll(/<article\b[^>]*data-sheet-slot="P1"[^>]*>([\s\S]*?)<\/article>/g)][0][1];assert.match(sourceCard,/>L0R0<\/button>/);
+});
+
+test('pending source-linked mouse edits survive a sheet repaint before explicit Sync',async()=>{
+ const ui=renderHarness(observationSample(),{selectedDate:'2026-10-12'});ui.input({sheetType:'locations',sheetId:'P1',sheetField:'notes'},'Pending cage note');
+ let editor=await openEditor(ui,'dob');enter(ui,editor,'date_of_birth','2026-07-13');await ui.host.onclick({target:doneTarget()});
+ ui.host.querySelector('#cage-sheet-rack').onchange({target:{value:''}});
+ let card=[...ui.host.innerHTML.matchAll(/<article\b[^>]*data-sheet-slot="P1"[^>]*>([\s\S]*?)<\/article>/g)][0][1];
+ assert.match(card,/title="DOB 2026-07-13"[^>]*>13wk<\/button>/);assert.doesNotMatch(card,/data-sheet-edit-animal="dob"[^>]* disabled/);
+ editor=await openEditor(ui,'note');enter(ui,editor,'comment','Current note only');await ui.host.onclick({target:doneTarget()});
+ ui.host.querySelector('#cage-sheet-rack').onchange({target:{value:''}});
+ card=[...ui.host.innerHTML.matchAll(/<article\b[^>]*data-sheet-slot="P1"[^>]*>([\s\S]*?)<\/article>/g)][0][1];assert.match(card,/title="Current note only"/);assert.doesNotMatch(card,/title="Current note only · 0039 PB"/);
+ assert.equal(ui.saved.length,0);await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].date_of_birth,'2026-07-13');assert.equal(ui.saved[0].tables.mice[0].comment,'Current note only');
+ assert.equal(ui.saved[0].tables.locations[0].source_cage_observation.animals[0].note,'0039 PB');
 });

@@ -10,7 +10,7 @@ const CLOUD_CACHE_KEY='mouse-colony.cloud-cache-context.v1';
 const SOURCE_PROJECTION_VERSION=2;
 // Keep aligned with colony_private.managed_location_keys(). Raw Sheet blocks
 // can include financial cells and must never enter a restricted cache or save.
-const MANAGED_LOCATION_KEYS=new Set(['location_id','room_id','rack_id','label','row','column','capacity','locobox_id','active','state','manager','manager_acronym','notes','app_created_at','app_updated_at','app_archived_at','archived','record_origin','evidence_status','requires_review','source_current','source_last_seen_at','source_snapshot_date','source_label_conflict','source_manager_name','source_manager_acronym','source_manager_status','source_observed_mouse_sids','source_observed_cage_sids','source_candidate_mouse_sids','source_candidate_cage_sids','source_unresolved_explicit_mouse_sids','source_observed_tags']);
+const MANAGED_LOCATION_KEYS=new Set(['location_id','room_id','rack_id','label','row','column','capacity','locobox_id','active','state','manager','manager_acronym','notes','app_created_at','app_updated_at','app_modified_at','app_archived_at','archived','record_origin','evidence_status','requires_review','source_current','source_last_seen_at','source_snapshot_date','source_label_conflict','source_manager_name','source_manager_acronym','source_manager_status','source_observed_mouse_sids','source_observed_cage_sids','source_candidate_mouse_sids','source_candidate_cage_sids','source_unresolved_explicit_mouse_sids','source_observed_tags','source_cage_observation']);
 const MANAGED=Object.keys(ID_FIELDS);
 const clone=value=>structuredClone(value);
 let feeVisibility=null,feeVisibilityContext=null;
@@ -381,7 +381,14 @@ function checkedFeeVisibility(value){
  if(!value||!Number.isInteger(value.version)||value.version<0||typeof value.owner!=='boolean'||typeof value.estimate!=='boolean'||typeof value.actual!=='boolean'||value.source_archive_allowed!==(value.estimate&&value.actual))throw new Error('Fee visibility could not be verified. Reconnect before loading financial data.');
  return value;
 }
-function managedLocationPayload(payload){return payload&&typeof payload==='object'&&!Array.isArray(payload)&&Object.keys(payload).every(key=>MANAGED_LOCATION_KEYS.has(key));}
+function validCageObservation(value){
+ const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v),keys=(v,list)=>object(v)&&Object.keys(v).length===list.length&&list.every(k=>Object.hasOwn(v,k));
+ const nullable=(v,fn)=>v===null||fn(v),text=(v,max)=>typeof v==='string'&&v.length<=max,cell=v=>nullable(v,x=>typeof x==='string'&&/^[A-Z]{1,3}[1-9]\d{0,5}$/.test(x));
+ const date=v=>nullable(v,x=>{if(typeof x!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(x))return false;const ms=Date.parse(x+'T00:00:00Z');return Number.isFinite(ms)&&new Date(ms).toISOString().slice(0,10)===x;});
+ if(!keys(value,['schemaVersion','animals','startedDate','intensityLux','managerName','managerCell','startedCell','intensityCell'])||value.schemaVersion!==1||!Array.isArray(value.animals)||value.animals.length>100||!date(value.startedDate)||!nullable(value.intensityLux,x=>typeof x==='number'&&Number.isFinite(x)&&x>=0&&x<=1000000)||!nullable(value.managerName,x=>text(x,160))||!['managerCell','startedCell','intensityCell'].every(k=>cell(value[k])))return false;
+ return value.animals.every(a=>keys(a,['key','tag','note','dateOfBirth','earMark','left','right','sex','sourceCell','requiresReview'])&&text(a.key,512)&&a.key.length>0&&text(a.tag,240)&&a.tag.length>0&&text(a.note,2000)&&date(a.dateOfBirth)&&nullable(a.earMark,x=>typeof x==='string'&&/^L\d{1,2}R\d{1,2}$/.test(x))&&['left','right'].every(k=>nullable(a[k],x=>Number.isInteger(x)&&x>=0&&x<=99))&&nullable(a.sex,x=>['Male','Female'].includes(x))&&cell(a.sourceCell)&&typeof a.requiresReview==='boolean'&&(a.earMark===null||a.left===null||a.right===null||a.earMark===`L${a.left}R${a.right}`));
+}
+function managedLocationPayload(payload){return payload&&typeof payload==='object'&&!Array.isArray(payload)&&Object.keys(payload).every(key=>MANAGED_LOCATION_KEYS.has(key))&&(!Object.hasOwn(payload,'source_cage_observation')||payload.source_cage_observation===null||validCageObservation(payload.source_cage_observation));}
 function currentRestrictedCache(data,mark,policy){
  return data?.source_archive_restricted===true&&data.source_projection_version===SOURCE_PROJECTION_VERSION&&mark?.source_projection_version===SOURCE_PROJECTION_VERSION&&mark.estimate===policy.estimate&&mark.actual===policy.actual&&(data.tables?.locations||[]).every(managedLocationPayload);
 }

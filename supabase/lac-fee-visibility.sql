@@ -185,12 +185,12 @@ grant execute on function public.export_records(uuid,text,date,date,text[],integ
 create or replace function colony_private.managed_location_keys()
 returns text[] language sql immutable set search_path='' as $$select array[
  'location_id','room_id','rack_id','label','row','column','capacity','locobox_id',
- 'active','state','manager','manager_acronym','notes','app_created_at','app_updated_at',
+ 'active','state','manager','manager_acronym','notes','app_created_at','app_updated_at','app_modified_at',
  'app_archived_at','archived','record_origin','evidence_status','requires_review',
  'source_current','source_last_seen_at','source_snapshot_date','source_label_conflict',
  'source_manager_name','source_manager_acronym','source_manager_status',
  'source_observed_mouse_sids','source_observed_cage_sids','source_candidate_mouse_sids',
- 'source_candidate_cage_sids','source_unresolved_explicit_mouse_sids','source_observed_tags']$$;
+ 'source_candidate_cage_sids','source_unresolved_explicit_mouse_sids','source_observed_tags','source_cage_observation']$$;
 create or replace function colony_private.managed_location_payload(p jsonb)
 returns jsonb language sql immutable set search_path='' as $$select colony_private.export_fields(p,colony_private.managed_location_keys())$$;
 revoke all on function colony_private.managed_location_keys(),colony_private.managed_location_payload(jsonb) from public,anon,authenticated;

@@ -239,3 +239,8 @@ supabase/tests/app-access-log.test.mjs
 tests/member-invitation-store.test.mjs
 web/local-backup.js
 tests/local-backup.test.mjs
+web/cage-observations.js
+tests/cage-observations.test.mjs
+supabase/cage-observations.sql
+supabase/tests/cage-observations.test.mjs
+scripts/prepare-cage-observations.mjs

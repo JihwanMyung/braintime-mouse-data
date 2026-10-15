@@ -1,0 +1,89 @@
+/* Literal Animal Sheet cage observations. This module never assigns a mouse to
+ * a cage, invents an SID, or changes a saved record. */
+const text=value=>typeof value==='string'?value.trim():typeof value==='number'&&Number.isFinite(value)?String(value):'';
+const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+const active=value=>value&&!value.app_archived_at&&value.archived!==true;
+const date=value=>{const raw=text(value),match=raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:T.*|\s+00:00:00)?$/);if(!match)return null;const iso=`${match[1]}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}`;return Number.isFinite(Date.parse(iso+'T00:00:00Z'))&&new Date(iso+'T00:00:00Z').toISOString().slice(0,10)===iso?iso:null;};
+const hole=value=>/^(?:0|[1-9]\d?)(?:\.0+)?$/.test(text(value))&&Number(value)<=99?Number(value):null;
+const sex=value=>/^(?:male|m)$/i.test(text(value))?'Male':/^(?:female|f)$/i.test(text(value))?'Female':null;
+const tagSex=tag=>{const match=text(tag).match(/(?:-|\s)([MF])\s*-?\s*\d+[A-Za-z]?$/);return match?match[1]==='M'?'Male':'Female':null;};
+const lifecycle=value=>/\b(?:dead|died|ended|sacrificed|removed|euthanized|transfer(?:red)?)\b/i.test(text(value));
+const shorthand=value=>/^[('’′)]*(?:(?:AD|WT|P|B|E|F|V|M|32|96)[('’′)]*)+$/.test(value);
+const validCell=value=>/^[A-Z]{1,3}[1-9]\d{0,5}$/.test(text(value));
+const column=value=>[...value].reduce((total,ch)=>total*26+ch.charCodeAt(0)-64,0);
+const coordinate=(row,col)=>{let s='';for(let n=col;n>0;n=Math.floor((n-1)/26))s=String.fromCharCode(65+(n-1)%26)+s;return s+row;};
+const empty=()=>({schemaVersion:1,animals:[],startedDate:null,intensityLux:null,managerName:null,managerCell:null,startedCell:null,intensityCell:null});
+function fallbackObservation(position){
+ const result=empty(),tags=[...(Array.isArray(position.source_observed_tags)?position.source_observed_tags:[])];
+ for(const line of text(position.source_block_text).split('\n')){const m=line.match(/^[A-Z]+\d+:\s*(.+)$/);if(m&&tagSex(m[1]))tags.push(m[1]);}
+ result.animals=[...new Set(tags.map(text).filter(v=>v&&!date(v)&&!/^=|^\d+(?:\.\d+)?$|\$/.test(v)))].slice(0,100).map((tag,i)=>cleanAnimal({tag,sourceCell:null,requiresReview:true},position,i)).filter(Boolean);
+ return result;
+}
+function cleanAnimal(value,position,index){
+ if(!object(value))return null;
+ const tag=text(value.tag).slice(0,240);if(!tag)return null;
+ const sourceCell=validCell(value.sourceCell)?text(value.sourceCell):null,left=hole(value.left),right=hole(value.right),ear=left!==null&&right!==null?`L${left}R${right}`:text(value.earMark).match(/^L(\d{1,2})R(\d{1,2})$/)?.[0]??null;
+ const note=text(value.note).slice(0,2000);
+ return {key:`${text(position.location_id)||text(position.source_cell)||'position'}:${sourceCell||index}`,tag,note,dateOfBirth:date(value.dateOfBirth),earMark:ear,left:left??(ear?Number(ear.match(/^L(\d+)/)[1]):null),right:right??(ear?Number(ear.match(/R(\d+)$/)[1]):null),sex:sex(value.sex)||tagSex(tag),sourceCell,requiresReview:value.requiresReview===true||lifecycle(tag+' '+note)};
+}
+function structuredObservation(value,position){
+ if(!object(value)||value.schemaVersion!==1||!Array.isArray(value.animals))return null;
+ const result=empty();result.animals=value.animals.slice(0,100).map((a,i)=>cleanAnimal(a,position,i)).filter(Boolean);
+ result.startedDate=date(value.startedDate);result.intensityLux=typeof value.intensityLux==='number'&&Number.isFinite(value.intensityLux)&&value.intensityLux>=0&&value.intensityLux<=1000000?value.intensityLux:null;
+ for(const key of ['managerCell','startedCell','intensityCell'])result[key]=validCell(value[key])?text(value[key]):null;
+ result.managerName=text(value.managerName).slice(0,160)||null;
+ return result;
+}
+/** Read the current cage grid by its retained coordinates. Older or
+ * unusual layouts remain literal observations, never guessed identities. */
+export function cageObservations(position={}){
+ const structured=structuredObservation(position.source_cage_observation,position);if(structured)return structured;
+ const result=empty(),anchor=text(position.source_cell).match(/^([A-Z]{1,3})([1-9]\d{0,5})$/),range=text(position.source_block_range).match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
+ if(!anchor)return fallbackObservation(position);
+ const row=Number(anchor[2]),col=column(anchor[1]),end=range?Number(range[4]):row+6,width=range?column(range[3])-column(range[1])+1:6;
+ // The right-side five-column SPF templates do not share the six-column data layout.
+ if(![6,7,8].includes(width)||end-row<6||end-row>7)return fallbackObservation(position);
+ const cells=new Map(),comments=new Map();
+ for(const line of text(position.source_block_text).split('\n')){const m=line.match(/^([A-Z]{1,3}[1-9]\d{0,5})( comment)?:\s*(.*)$/);if(m)(m[2]?comments:cells).set(m[1],m[3]);}
+ // Wider grids merge the animal tag across two/three columns; the final five
+ // columns remain note, DOB, left, right and weeks, in that order.
+ const noteCol=col+width-5,dobCol=col+width-4,leftCol=col+width-3,rightCol=col+width-2;
+ const at=(r,c)=>cells.get(coordinate(r,c))??'',managerCell=coordinate(row-1,leftCol),manager=at(row-1,leftCol);
+ if(manager&&!/^(?:mating|genotyping|fixed|male|female|sex|age|dob|date of birth|\(wk\)|weeks?|LD|DD|LL|LP\d+|SP\d+|CLOSE(?:D)?|GUEST)$/i.test(manager)&&!/^\d/.test(manager)){result.managerName=manager.slice(0,160);result.managerCell=managerCell;}
+ for(let r=row+1;r<end;r++){
+  const sourceCell=coordinate(r,col),tag=at(r,col);if(!tag||date(tag)||/^=|^(?:\(wk\)|weeks?|experiment)$/i.test(tag))continue;
+  const note=[at(r,noteCol),comments.get(sourceCell)].filter(Boolean).join('\n');
+  const animal=cleanAnimal({tag,note,dateOfBirth:at(r,dobCol),left:at(r,leftCol),right:at(r,rightCol),sourceCell},position,r);if(animal)result.animals.push(animal);
+ }
+ const startedCell=coordinate(end,col),intensityCell=coordinate(end,noteCol),lux=at(end,noteCol).match(/^\s*(\d+(?:\.\d+)?)\s*(?:lux|lx)\s*$/i);
+ result.startedDate=date(at(end,col));result.startedCell=result.startedDate?startedCell:null;
+ result.intensityLux=lux&&Number(lux[1])<=1000000?Number(lux[1]):null;result.intensityCell=result.intensityLux!==null?intensityCell:null;
+ return result;
+}
+export function todayTaipei(now=new Date()){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);}
+export function ageWeeks(dob,asOf=todayTaipei()){
+ const born=date(dob),today=date(asOf);if(!born||!today||born>today)return null;return Math.floor((Date.parse(today+'T00:00:00Z')-Date.parse(born+'T00:00:00Z'))/604800000);
+}
+const override=(mouse,key)=>mouse?.cage_sheet_overrides?.[key]===true;
+function managedRow(mouse,locationId){
+ const id=text(mouse.mouse_sid),tag=text(mouse.physical_tag)||id;
+ // SoftMouse keeps the genotype/sex prefix separately from its numeric SID.
+ const displayTag=/[-\s][MF]$/.test(tag)&&/^\d+$/.test(id)?tag+id:shorthand(tag)&&sex(mouse.sex)&&/^\d+$/.test(id)?`${tag}-${sex(mouse.sex)[0]}${id}`:tag;
+ return {key:'mouse:'+id,tag:displayTag,mouseSid:id,dateOfBirth:date(mouse.date_of_birth),earMark:text(mouse.ear_mark)||null,note:text(mouse.comment),sourceNote:'',sex:sex(mouse.sex),sourceCell:null,locationId,matchStatus:'registered'};
+}
+/** Join only literal unique identifiers. Numeric suffixes and genotype
+ * similarity never establish identity, and source rows never move cages. */
+export function cageSheetAnimals(dataset,item={}){
+ const position=item.position||{},locationId=text(position.location_id)||null;
+ if(item.cage)return (item.mice||[]).filter(active).map(mouse=>managedRow(mouse,locationId));
+ const observations=cageObservations(position),mice=(dataset?.tables?.mice||[]).filter(active),index=new Map();
+ for(const mouse of mice){const tag=text(mouse.physical_tag),id=text(mouse.mouse_sid);if(!id||!tag)continue;const identifiers=[{value:tag,requiresDob:false}];if(/[-\s][MF]$/.test(tag)&&/^\d+$/.test(id))identifiers.push({value:tag+id,requiresDob:false});if(shorthand(tag)&&sex(mouse.sex)&&/^\d+$/.test(id))identifiers.push({value:`${tag}-${sex(mouse.sex)[0]}${id}`,requiresDob:true});for(const {value,requiresDob} of identifiers){const matches=index.get(value)||[];if(!matches.some(m=>m.mouse===mouse))matches.push({mouse,requiresDob});index.set(value,matches);}}
+ const sourceCounts=new Map();for(const animal of observations.animals)sourceCounts.set(animal.tag,(sourceCounts.get(animal.tag)||0)+1);
+ return observations.animals.map(animal=>{
+  const candidates=(animal.sourceCell?index.get(animal.tag)||[]:[]).filter(m=>!m.requiresDob||(animal.dateOfBirth&&(animal.dateOfBirth===date(m.mouse.date_of_birth)||override(m.mouse,'date_of_birth')))).map(m=>m.mouse),unique=candidates.length===1&&sourceCounts.get(animal.tag)===1?candidates[0]:null;
+  const conflicting=unique&&(unique.state==='Ended'||animal.requiresReview||(animal.sex&&sex(unique.sex)&&animal.sex!==sex(unique.sex))||(animal.dateOfBirth&&date(unique.date_of_birth)&&animal.dateOfBirth!==date(unique.date_of_birth)&&!override(unique,'date_of_birth')));
+  const status=candidates.length>1||sourceCounts.get(animal.tag)>1?'ambiguous':conflicting?'conflict':unique?'matched':'unlinked',mouse=status==='matched'?unique:null;
+  const take=(key,source,stored)=>mouse&&override(mouse,key)?stored:source??stored;
+  return {...animal,mouseSid:mouse?text(mouse.mouse_sid):null,dateOfBirth:take('date_of_birth',animal.dateOfBirth,mouse?date(mouse.date_of_birth):null),earMark:take('ear_mark',animal.earMark,mouse?text(mouse.ear_mark)||null:null),note:mouse&&override(mouse,'comment')?text(mouse.comment):animal.note||text(mouse?.comment),sourceNote:animal.note,sex:animal.sex||sex(mouse?.sex),locationId,matchStatus:status};
+ });
+}

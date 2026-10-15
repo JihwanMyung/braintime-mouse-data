@@ -101,7 +101,7 @@ test('selected parents prefill new records and room changes clear incompatible r
 test('editing imported positions retains source evidence and does not label them as new empty space',async t=>{
   const source={location_id:'P-SOURCE',room_id:'R1',rack_id:'K1',label:'Source A1',record_origin:'source_layout',source_block_text:'A1: M12',source_title:'Synthetic historical map',source_cell:'A1'};
   const h=await harness(t,{rooms:[room('R1','Room')],racks:[rack('K1','R1','Rack')],locations:[source]});
-  assert.match(h.container.innerHTML,/>Unlinked<\/span>/);assert.match(h.container.innerHTML,/Source-listed animals/);assert.match(h.container.innerHTML,/Synthetic historical map/);
+  assert.match(h.container.innerHTML,/>Unlinked<\/span>/);assert.doesNotMatch(h.container.innerHTML,/Source-listed animals|Manager · Animal Sheet|Asia\/Taipei local time/);assert.match(h.container.innerHTML,/Synthetic historical map/);
   await h.click({housingEdit:'P-SOURCE',type:'locations'});h.setField('label','Reviewed A1');await h.submit();
   assert.equal(h.saved.length,1);const result=h.dataset.tables.locations[0];
   for(const key of ['location_id','record_origin','source_block_text','source_title','source_cell'])assert.equal(result[key],source[key]);
