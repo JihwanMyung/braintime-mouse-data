@@ -46,8 +46,10 @@ test('deliberate mouse edits override the imported DOB, ear mark and note while 
  const row=cageSheetAnimals(d,{position:position()})[0];assert.equal(row.mouseSid,'101');assert.equal(row.dateOfBirth,'2026-07-24');assert.equal(row.earMark,'L2R2');assert.equal(row.note,'Edited note');assert.equal(row.sourceNote,'Protocol note');
  m.comment='';m.ear_mark='';m.date_of_birth='';const blank=cageSheetAnimals(d,{position:position()})[0];assert.equal(blank.note,'');assert.equal(blank.earMark,null);assert.equal(blank.dateOfBirth,null);
 });
-test('registered cages show only actual residents and do not adopt source animals',()=>{
- const d=dataset(),m=d.tables.mice[0];m.ear_mark='L3R2';const rows=cageSheetAnimals(d,{cage:{cage_sid:'OLD'},mice:[m],position:position()});assert.equal(rows.length,1);assert.equal(rows[0].matchStatus,'registered');assert.equal(rows[0].tag,"PB'-M101");assert.equal(rows[0].earMark,'L3R2');assert.equal(rows[0].note,'Older note');assert.equal(rows[0].sourceNote,'');
+test('registered cages overlay uniquely agreeing source details for actual residents without adopting extra animals',()=>{
+ const d=dataset(),m=d.tables.mice[0];m.ear_mark='L3R2';const before=structuredClone(d),rows=cageSheetAnimals(d,{cage:{cage_sid:'OLD'},mice:[m],position:position()});assert.equal(rows.length,1);assert.equal(rows[0].matchStatus,'matched');assert.equal(rows[0].tag,"PB'-M101");assert.equal(rows[0].earMark,'L1R1');assert.equal(rows[0].note,'Protocol note');assert.equal(rows[0].sourceNote,'Protocol note');assert.equal(rows[0].key,'mouse:101');assert.equal(rows[0].sourceCell,'T10');assert.deepEqual(d,before);
+ m.cage_sheet_overrides={ear_mark:true,comment:true};const overridden=cageSheetAnimals(d,{cage:{cage_sid:'OLD'},mice:[m],position:position()})[0];assert.equal(overridden.earMark,'L3R2');assert.equal(overridden.note,'Older note');assert.equal(overridden.sourceNote,'Protocol note');
+ m.date_of_birth='2026-07-24';const conflicted=cageSheetAnimals(d,{cage:{cage_sid:'OLD'},mice:[m],position:position()})[0];assert.equal(conflicted.matchStatus,'registered');assert.equal(conflicted.note,'Older note');assert.equal(conflicted.earMark,'L3R2');assert.equal(conflicted.sourceCell,null);
 });
 test('exact genotype, recorded sex and SID combination requires DOB agreement and never accepts changed genotypes',()=>{
  const d=dataset(),m=d.tables.mice[0];m.physical_tag="PB'";let row=cageSheetAnimals(d,{position:position()})[0];assert.equal(row.mouseSid,'101');assert.equal(row.matchStatus,'matched');
@@ -60,4 +62,13 @@ test('exact genotype, recorded sex and SID combination requires DOB agreement an
 });
 test('unsupported old templates retain literal source tags without guessing fields or editable identities',()=>{
  const p={location_id:'OLD',source_observed_tags:["PB'-M101",'2026-01-01','123.45','$300']},out=cageObservations(p);assert.equal(out.animals.length,1);assert.equal(out.animals[0].tag,"PB'-M101");assert.equal(out.animals[0].dateOfBirth,null);assert.equal(cageSheetAnimals(dataset(),{position:p})[0].mouseSid,null);
+});
+test('only the delimiter before terminal sex/SID is normalized for registered and unlinked positions',()=>{
+ const d=dataset(),m=d.tables.mice[0],p=position();m.physical_tag="PB' M";
+ const source=cageSheetAnimals(d,{position:p})[0],registered=cageSheetAnimals(d,{cage:{cage_sid:'OLD'},mice:[m],position:p})[0];assert.equal(source.mouseSid,'101');assert.equal(registered.mouseSid,'101');assert.equal(registered.matchStatus,'matched');assert.equal(registered.earMark,'L1R1');assert.equal(registered.note,'Protocol note');assert.equal(registered.sourceCell,source.sourceCell);assert.equal(registered.tag,source.tag);
+ for(const tag of ["PB'-M M","(P)B' M","PB’ M"]){m.physical_tag=tag;const rows=cageSheetAnimals(d,{position:p}),saved=cageSheetAnimals(d,{cage:{cage_sid:'OLD'},mice:[m],position:p})[0];assert.equal(rows[0].mouseSid,null);assert.equal(saved.matchStatus,'registered');assert.equal(saved.earMark,null);assert.equal(saved.note,'Older note');}
+ m.physical_tag="PB'-M";p.source_block_text=p.source_block_text.replace("PB'-M101","PB' M101");assert.equal(cageSheetAnimals(d,{position:p})[0].mouseSid,'101');
+});
+test('delimiter-equivalent duplicate source tags cannot create a unique overlay',()=>{
+ const d=dataset(),p=position();p.source_block_text=p.source_block_text.replace("PB'-M102","PB' M101");const rows=cageSheetAnimals(d,{position:p});assert.equal(rows[0].matchStatus,'ambiguous');assert.equal(rows[1].matchStatus,'ambiguous');const registered=cageSheetAnimals(d,{cage:{cage_sid:'OLD'},mice:[d.tables.mice[0]],position:p})[0];assert.equal(registered.matchStatus,'registered');assert.equal(registered.note,'Older note');assert.equal(registered.sourceNote,'');
 });

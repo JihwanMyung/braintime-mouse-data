@@ -2,8 +2,8 @@ import { planCageMove, planCageRemoval, validateCageMovementOccupancy } from './
 import { sortRooms } from './room-order.js?v=24';
 import { projectAnimalSheet } from './animal-sheet-export.js?v=48';
 import { mouseManager, validateRecord, buildCageLocationEvent } from './model.js?v=48';
-import { lightClock, sourceListedAnimals } from './husbandry.js?v=59';
-import { cageObservations, cageSheetAnimals, ageWeeks, todayTaipei } from './cage-observations.js?v=59';
+import { lightClock, sourceListedAnimals } from './husbandry.js?v=60';
+import { cageObservations, cageSheetAnimals, ageWeeks, todayTaipei } from './cage-observations.js?v=60';
 
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const keys={mice:'mouse_sid',cages:'cage_sid',locations:'location_id'};

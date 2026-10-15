@@ -7,6 +7,9 @@ const date=value=>{const raw=text(value),match=raw.match(/^(\d{4})[-/](\d{1,2})[
 const hole=value=>/^(?:0|[1-9]\d?)(?:\.0+)?$/.test(text(value))&&Number(value)<=99?Number(value):null;
 const sex=value=>/^(?:male|m)$/i.test(text(value))?'Male':/^(?:female|f)$/i.test(text(value))?'Female':null;
 const tagSex=tag=>{const match=text(tag).match(/(?:-|\s)([MF])\s*-?\s*\d+[A-Za-z]?$/);return match?match[1]==='M'?'Male':'Female':null;};
+// Only the delimiter before an explicit terminal sex/SID can vary. Genotype
+// spelling, primes, parentheses and internal separators remain unchanged.
+const identifierKey=value=>text(value).replace(/^(.*?)(?:\s+|-)([MF]\d+)$/,'$1-$2');
 const lifecycle=value=>/\b(?:dead|died|ended|sacrificed|removed|euthanized|transfer(?:red)?)\b/i.test(text(value));
 const shorthand=value=>/^[('’′)]*(?:(?:AD|WT|P|B|E|F|V|M|32|96)[('’′)]*)+$/.test(value);
 const validCell=value=>/^[A-Z]{1,3}[1-9]\d{0,5}$/.test(text(value));
@@ -75,15 +78,19 @@ function managedRow(mouse,locationId){
  * similarity never establish identity, and source rows never move cages. */
 export function cageSheetAnimals(dataset,item={}){
  const position=item.position||{},locationId=text(position.location_id)||null;
- if(item.cage)return (item.mice||[]).filter(active).map(mouse=>managedRow(mouse,locationId));
  const observations=cageObservations(position),mice=(dataset?.tables?.mice||[]).filter(active),index=new Map();
- for(const mouse of mice){const tag=text(mouse.physical_tag),id=text(mouse.mouse_sid);if(!id||!tag)continue;const identifiers=[{value:tag,requiresDob:false}];if(/[-\s][MF]$/.test(tag)&&/^\d+$/.test(id))identifiers.push({value:tag+id,requiresDob:false});if(shorthand(tag)&&sex(mouse.sex)&&/^\d+$/.test(id))identifiers.push({value:`${tag}-${sex(mouse.sex)[0]}${id}`,requiresDob:true});for(const {value,requiresDob} of identifiers){const matches=index.get(value)||[];if(!matches.some(m=>m.mouse===mouse))matches.push({mouse,requiresDob});index.set(value,matches);}}
- const sourceCounts=new Map();for(const animal of observations.animals)sourceCounts.set(animal.tag,(sourceCounts.get(animal.tag)||0)+1);
- return observations.animals.map(animal=>{
-  const candidates=(animal.sourceCell?index.get(animal.tag)||[]:[]).filter(m=>!m.requiresDob||(animal.dateOfBirth&&(animal.dateOfBirth===date(m.mouse.date_of_birth)||override(m.mouse,'date_of_birth')))).map(m=>m.mouse),unique=candidates.length===1&&sourceCounts.get(animal.tag)===1?candidates[0]:null;
+ for(const mouse of mice){const tag=text(mouse.physical_tag),id=text(mouse.mouse_sid);if(!id||!tag)continue;const identifiers=[{value:tag,requiresDob:false}];if(/[-\s][MF]$/.test(tag)&&/^\d+$/.test(id))identifiers.push({value:tag+id,requiresDob:false});if(shorthand(tag)&&sex(mouse.sex)&&/^\d+$/.test(id))identifiers.push({value:`${tag}-${sex(mouse.sex)[0]}${id}`,requiresDob:true});for(const {value,requiresDob} of identifiers){const key=identifierKey(value),matches=index.get(key)||[];if(!matches.some(m=>m.mouse===mouse))matches.push({mouse,requiresDob});index.set(key,matches);}}
+ const sourceCounts=new Map();for(const animal of observations.animals){const key=identifierKey(animal.tag);sourceCounts.set(key,(sourceCounts.get(key)||0)+1);}
+ const rows=observations.animals.map(animal=>{
+  const key=identifierKey(animal.tag),candidates=(animal.sourceCell?index.get(key)||[]:[]).filter(m=>!m.requiresDob||(animal.dateOfBirth&&(animal.dateOfBirth===date(m.mouse.date_of_birth)||override(m.mouse,'date_of_birth')))).map(m=>m.mouse),unique=candidates.length===1&&sourceCounts.get(key)===1?candidates[0]:null;
   const conflicting=unique&&(unique.state==='Ended'||animal.requiresReview||(animal.sex&&sex(unique.sex)&&animal.sex!==sex(unique.sex))||(animal.dateOfBirth&&date(unique.date_of_birth)&&animal.dateOfBirth!==date(unique.date_of_birth)&&!override(unique,'date_of_birth')));
-  const status=candidates.length>1||sourceCounts.get(animal.tag)>1?'ambiguous':conflicting?'conflict':unique?'matched':'unlinked',mouse=status==='matched'?unique:null;
+  const status=candidates.length>1||sourceCounts.get(key)>1?'ambiguous':conflicting?'conflict':unique?'matched':'unlinked',mouse=status==='matched'?unique:null;
   const take=(key,source,stored)=>mouse&&override(mouse,key)?stored:source??stored;
   return {...animal,mouseSid:mouse?text(mouse.mouse_sid):null,dateOfBirth:take('date_of_birth',animal.dateOfBirth,mouse?date(mouse.date_of_birth):null),earMark:take('ear_mark',animal.earMark,mouse?text(mouse.ear_mark)||null:null),note:mouse&&override(mouse,'comment')?text(mouse.comment):animal.note||text(mouse?.comment),sourceNote:animal.note,sex:animal.sex||sex(mouse?.sex),locationId,matchStatus:status};
  });
+ if(item.cage)return (item.mice||[]).filter(active).map(mouse=>{
+  const saved=managedRow(mouse,locationId),matches=rows.filter(row=>row.matchStatus==='matched'&&row.mouseSid===saved.mouseSid);
+  return matches.length===1?{...matches[0],key:saved.key}:saved;
+ });
+ return rows;
 }

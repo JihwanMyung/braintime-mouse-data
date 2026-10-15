@@ -105,3 +105,25 @@ test('read-only housing retains browsing and printing without mutation controls'
   assert.equal(failures.length,2);
   assert(failures.every(message=>message.includes('read only')));
 });
+
+test('registered cages show current position manager, recording start and lux before an old imported owner',async()=>{
+ const observation={schemaVersion:1,managerName:'Vuong',managerCell:'W6',startedDate:'2026-01-01',startedCell:'T13',intensityLux:150,intensityCell:'U13',animals:[]};
+ const position={location_id:'LOC34',label:'L34',manager:'Vuong Truong',source_current:true,source_cage_observation:observation};
+ const {container,dataset}=await housing({cages:[cage('C34',{owner:'Jihwan',location_id:'LOC34'})],locations:[position],mice:[mouse('M34','C34')]});
+ const html=card(container.innerHTML,'C34');assert.match(html,/<strong>Vuong<\/strong>/);assert.match(html,/Started 2026-01-01 · \d+wk · 150 lux/);assert.doesNotMatch(html,/Jihwan|Manager · Animal Sheet|Source-listed animals/);
+ assert.equal(dataset.tables.cages[0].owner,'Jihwan');assert.equal(dataset.tables.cages[0].manager,undefined);assert.deepEqual(dataset.tables.locations[0].source_cage_observation,observation);
+});
+
+test('explicit cage manager including a cleared assignment takes precedence over position observations',async()=>{
+ const locations=['P1','P2'].map(location_id=>({location_id,label:location_id,source_current:true,source_cage_observation:{schemaVersion:1,managerName:'Source caretaker',animals:[],startedDate:'2026-01-01',intensityLux:0}}));
+ const {container}=await housing({cages:[cage('EXPLICIT',{manager:'Assigned caretaker',owner:'Old owner',location_id:'P1'}),cage('CLEARED',{manager:null,owner:'Old owner',location_id:'P2'})],locations});
+ assert.match(card(container.innerHTML,'EXPLICIT'),/<strong>Assigned caretaker<\/strong>/);assert.doesNotMatch(card(container.innerHTML,'EXPLICIT'),/Source caretaker|Old owner/);
+ assert.match(card(container.innerHTML,'CLEARED'),/Needs manager/);assert.doesNotMatch(card(container.innerHTML,'CLEARED'),/Source caretaker|Old owner/);assert.match(card(container.innerHTML,'EXPLICIT'),/0 lux/);
+});
+
+test('manual position managers override observations and withdrawn position data never replaces registered cage owner',async()=>{
+ const observation={schemaVersion:1,managerName:'Source caretaker',animals:[],startedDate:'2026-01-01',intensityLux:150};
+ const {container}=await housing({cages:[cage('MANUAL',{owner:'Old owner',location_id:'P1'}),cage('WITHDRAWN',{owner:'Recorded caretaker',location_id:'P2'})],locations:[{location_id:'P1',label:'L1',manager:'Manual caretaker',app_modified_at:'2026-10-16T00:00:00Z',source_cage_observation:observation},{location_id:'P2',label:'L2',source_current:false,source_cage_observation:observation}]});
+ assert.match(card(container.innerHTML,'MANUAL'),/<strong>Manual caretaker<\/strong>/);assert.doesNotMatch(card(container.innerHTML,'MANUAL'),/Source caretaker|Old owner/);
+ assert.match(card(container.innerHTML,'WITHDRAWN'),/Recorded caretaker/);assert.doesNotMatch(card(container.innerHTML,'WITHDRAWN'),/Source caretaker|Started 2026-01-01|150 lux/);
+});
