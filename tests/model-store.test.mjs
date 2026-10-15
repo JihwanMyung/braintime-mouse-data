@@ -1237,3 +1237,38 @@ test('a stalled first password sign-in returns without persisting unverified cre
  finally{globalThis.fetch=originalFetch;globalThis.setTimeout=originalTimeout;}
  await store.signIn('demo@example.test','test-password');assert.equal(store.getCloudStatus().signedIn,true);
 });
+
+test('a silently stalled IndexedDB open times out and a late success cannot replace the retry connection',async()=>{
+ const before=await connected(),originalIDB=indexedDB,originalTimeout=setTimeout,key='mouse-colony.session.v1',savedSession=sessionStorage.getItem(key);let request,lateClosed=0;
+ const isolated=await import(`../web/data-store.js?storage-open-${crypto.randomUUID()}`);
+ globalThis.setTimeout=(callback,delay,...args)=>originalTimeout(callback,delay===30000?10:delay,...args);
+ globalThis.indexedDB={open(){request={};return request;}};
+ try{
+  await assert.rejects(isolated.loadDataset(),error=>error.storageTimeout===true&&/opening the saved workspace/.test(error.message));
+  assert.equal(sessionStorage.getItem(key),savedSession);assert.deepEqual(idbData.get('current'),before);
+  globalThis.indexedDB=originalIDB;assert.deepEqual(await isolated.loadDataset(),before);
+  request.result={close(){lateClosed++;}};request.onsuccess();assert.equal(lateClosed,1);assert.deepEqual(await isolated.loadDataset(),before);
+ }finally{globalThis.indexedDB=originalIDB;globalThis.setTimeout=originalTimeout;}
+});
+
+test('a stalled IndexedDB read aborts without deleting the old workspace or sign-in and can be retried',async()=>{
+ const before=await connected(),originalTransaction=db.transaction,originalTimeout=setTimeout,key='mouse-colony.session.v1',savedSession=sessionStorage.getItem(key);let aborted=0;
+ db.transaction=function(_name,mode){if(mode!=='readonly')return originalTransaction.apply(this,arguments);const tx={objectStore:()=>({get:()=>({})}),abort(){aborted++;queueMicrotask(()=>tx.onabort?.());}};return tx;};
+ globalThis.setTimeout=(callback,delay,...args)=>originalTimeout(callback,delay===30000?10:delay,...args);
+ try{await assert.rejects(store.loadDataset(),error=>error.storageTimeout===true&&/reading the saved workspace/.test(error.message));assert.equal(aborted,1);assert.equal(sessionStorage.getItem(key),savedSession);assert.deepEqual(idbData.get('current'),before);}
+ finally{db.transaction=originalTransaction;globalThis.setTimeout=originalTimeout;}
+ assert.deepEqual(await store.loadDataset(),before);
+});
+
+test('a stalled cloud cache commit is aborted and cannot become ready or publish data after its timeout',async()=>{
+ const before=await connected(),key='mouse-colony.session.v1',savedSession=sessionStorage.getItem(key),oldMark=localStorage.getItem('mouse-colony.cloud-cache-context.v1'),originalTimeout=setTimeout;
+ const changed=server.records.get('mice:SYN-M001');changed.payload.comment='New cloud record, not yet cached';changed.version++;
+ let releaseCommit,entered=false;idbHooks.beforeCommit=changes=>{if(changes.has('current')){entered=true;return new Promise(resolve=>{releaseCommit=resolve;});}};
+ globalThis.setTimeout=(callback,delay,...args)=>originalTimeout(callback,delay===30000?10:delay,...args);
+ try{
+  await assert.rejects(store.pullFromCloud(),error=>error.storageTimeout===true&&/saving the workspace/.test(error.message));assert(entered);
+  assert.equal(store.getCloudStatus().readyForEdits,false);assert.equal(sessionStorage.getItem(key),savedSession);assert.equal(localStorage.getItem('mouse-colony.cloud-cache-context.v1'),oldMark);assert.deepEqual(idbData.get('current'),before);
+  releaseCommit();await new Promise(resolve=>originalTimeout(resolve,0));assert.equal(store.getCloudStatus().readyForEdits,false);assert.deepEqual(idbData.get('current'),before,'a resumed late transaction stays aborted');
+ }finally{idbHooks.beforeCommit=null;globalThis.setTimeout=originalTimeout;}
+ const reloaded=await store.pullFromCloud();assert.equal(reloaded.tables.mice[0].comment,changed.payload.comment);assert.equal(store.getCloudStatus().readyForEdits,true);
+});

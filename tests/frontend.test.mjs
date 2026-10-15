@@ -417,6 +417,7 @@ const slowContext=bootContext();vm.createContext(slowContext);vm.runInContext(so
 assert(element('main').innerHTML.includes('Loading Braintime Mouse Data'));
 await new Promise(resolve=>setTimeout(resolve,0));assert.equal(startupPulled,1);assert.equal(element('navigation').innerHTML,'');assert(!element('main').innerHTML.includes('CACHED-PRIVATE-MARKER'));assert.equal(element('export-button').disabled,true);
 assert.equal(vm.runInContext('canEditRecords()',slowContext),false);assert.equal(vm.runInContext('canWriteCloud()',slowContext),false);
+assert(element('main').innerHTML.includes('data-action="reload-workspace"'));let loadingReloads=0;slowContext.location.reload=()=>{loadingReloads++;};await vm.runInContext("action('reload-workspace')",slowContext);assert.equal(loadingReloads,1);assert.equal(startupPulled,1,'reload action does not launch another pull inside the old document');
 await vm.runInContext("action('cloud-pull');action('help');action('import');navigate('mice');",slowContext);
 assert.equal(startupPulled,1);assert.equal(slowContext.location.hash,'#mice');assert(element('main').innerHTML.includes('Loading Braintime Mouse Data'));
 startupProgressHook({phase:'archive',recordsLoaded:1000,archiveBlocksLoaded:3});assert(element('main').innerHTML.includes('Loading archived history'));assert(element('main').innerHTML.includes('1,000 records · 3 archive blocks'));
@@ -433,6 +434,7 @@ assert.equal(vm.runInContext('dataset',switchedContext),null);assert(!element('m
 startupStatus.email='owner@example.test';startupVerified=true;const pullsBeforeVerifiedCache=startupPulled,alreadyVerified=bootContext();vm.createContext(alreadyVerified);vm.runInContext(source,alreadyVerified);await new Promise(resolve=>setTimeout(resolve,10));assert.equal(startupPulled,pullsBeforeVerifiedCache,'a permission-checked load that already completed the pull is not pulled a second time');
 
 const deniedBoot=bootContext();deniedBoot.store={...startupStore,getLacFeeVisibility:async()=>{throw Error('Permission could not be verified')}};vm.createContext(deniedBoot);vm.runInContext(source,deniedBoot);await new Promise(resolve=>setTimeout(resolve,10));assert(element('main').innerHTML.includes('Connection settings'));assert.equal(vm.runInContext('dataset',deniedBoot),null);assert.equal(vm.runInContext('startupLoading',deniedBoot),false);
+assert(element('main').innerHTML.includes('data-action="retry-startup"'));deniedBoot.store.getLacFeeVisibility=async()=>({});await vm.runInContext("action('retry-startup')",deniedBoot);assert.equal(vm.runInContext('startupLoading',deniedBoot),false);assert.equal(vm.runInContext('cloudReady',deniedBoot),true,'retry rechecks the permitted workspace after a recoverable startup failure');
 
 // A slow fee access lookup must never replace the page selected afterward.
 for(const fail of [false,true]){

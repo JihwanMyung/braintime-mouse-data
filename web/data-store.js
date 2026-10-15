@@ -31,24 +31,30 @@ function stable(value){if(Array.isArray(value))return `[${value.map(stable).join
 function advanceAuthGeneration(){authGeneration++;for(const cancel of guardedCacheWrites)cancel();return authGeneration;}
 function beginAuthAction(){const generation=advanceAuthGeneration(),config=stable(configuration());const current=()=>generation===authGeneration&&stable(configuration())===config;return {current,check(){if(!current())throw new Error('The account or cloud configuration changed. Start sign-in again.');}};}
 
-let dbPromise;
+let dbPromise,dbHandle;
+function storageTimeout(operation){const error=new Error(`Browser storage stopped responding while ${operation}. Close other Mouse Data tabs, then try again.`);error.storageTimeout=true;return error;}
+function closeDatabase(db){try{db.close();}catch{}if(dbHandle===db){dbHandle=null;dbPromise=null;}}
 function database(){
   if(!globalThis.indexedDB)return Promise.reject(new Error('Local database storage is unavailable in this browser.'));
   if(!dbPromise)dbPromise=new Promise((resolve,reject)=>{
-    const request=indexedDB.open('mouse-colony',1);
-    request.onupgradeneeded=()=>{if(!request.result.objectStoreNames.contains('datasets'))request.result.createObjectStore('datasets');};
-    request.onerror=()=>reject(new Error('Unable to open the local colony database.'));
-    request.onsuccess=()=>resolve(request.result);
-    request.onblocked=()=>reject(new Error('Close older colony tabs before updating local storage.'));
+    const request=indexedDB.open('mouse-colony',1);let settled=false;
+    const fail=error=>{if(settled)return;settled=true;clearTimeout(timer);reject(error);};
+    const timer=setTimeout(()=>fail(storageTimeout('opening the saved workspace')),30000);
+    request.onupgradeneeded=()=>{if(settled){try{request.transaction?.abort();}catch{}return;}if(!request.result.objectStoreNames.contains('datasets'))request.result.createObjectStore('datasets');};
+    request.onerror=()=>fail(new Error('Unable to open the local colony database.'));
+    request.onsuccess=()=>{if(settled){try{request.result.close();}catch{}return;}settled=true;clearTimeout(timer);dbHandle=request.result;dbHandle.onversionchange=()=>closeDatabase(request.result);resolve(request.result);};
+    request.onblocked=()=>fail(new Error('Close older colony tabs before updating local storage.'));
   }).catch(e=>{dbPromise=null;throw e;});
   return dbPromise;
 }
 async function discardCloudWrite(id){
   const db=await database();
   return new Promise((resolve,reject)=>{
-    const tx=db.transaction('datasets','readwrite'),store=tx.objectStore('datasets'),request=store.get(CACHE_WRITE_KEY);
-    request.onsuccess=()=>{if(request.result?.id===id){store.delete('current');store.delete(CACHE_WRITE_KEY);}};
-    tx.oncomplete=()=>resolve();tx.onerror=tx.onabort=()=>reject(new Error('Unable to clear a cancelled cloud cache write.'));
+    const tx=db.transaction('datasets','readwrite'),store=tx.objectStore('datasets'),request=store.get(CACHE_WRITE_KEY);let settled=false;
+    const finish=(error=null)=>{if(settled)return;settled=true;clearTimeout(timer);error?reject(error):resolve();};
+    const timer=setTimeout(()=>{const error=storageTimeout('checking the cloud cache');try{tx.abort();}catch{}finish(error);closeDatabase(db);},30000);
+    request.onsuccess=()=>{if(!settled&&request.result?.id===id){store.delete('current');store.delete(CACHE_WRITE_KEY);}};
+    tx.oncomplete=()=>finish();tx.onerror=tx.onabort=()=>finish(new Error('Unable to clear a cancelled cloud cache write.'));
   });
 }
 function ownCacheWrite(mark){
@@ -62,13 +68,16 @@ async function local(action,value,{check,cacheWrite}={}){
     const request=action==='get'?store.get('current'):action==='delete'?store.delete('current'):store.put(clone(value),'current');
     // The sidecar and dataset commit atomically. It never enters a dataset/export.
     const markRequest=action==='get'?store.get(CACHE_WRITE_KEY):cacheWrite?store.put(cacheWrite,CACHE_WRITE_KEY):store.delete(CACHE_WRITE_KEY);
-    let result,mark,guardError;
-    const cancel=()=>{try{check?.();}catch(error){guardError=error;try{tx.abort();}catch{/* A committed write is removed by its own ID below. */}}};
+    let result,mark,guardError,settled=false;
+    const cleanup=()=>{clearTimeout(timer);guardedCacheWrites.delete(cancel);};
+    const fail=error=>{if(settled)return;settled=true;cleanup();reject(error);};
+    const cancel=()=>{if(settled)return;try{check?.();}catch(error){guardError=error;try{tx.abort();}catch{/* A committed write is removed by its own ID below. */}}};
+    const timer=setTimeout(()=>{guardError=storageTimeout(action==='get'?'reading the saved workspace':'saving the workspace');try{tx.abort();}catch{}fail(guardError);closeDatabase(db);},30000);
     if(check)guardedCacheWrites.add(cancel);
-    request.onsuccess=()=>{result=request.result;cancel();};
-    markRequest.onsuccess=()=>{if(action==='get')mark=markRequest.result;cancel();};
+    request.onsuccess=()=>{if(settled)return;result=request.result;cancel();};
+    markRequest.onsuccess=()=>{if(settled)return;if(action==='get')mark=markRequest.result;cancel();};
     tx.oncomplete=()=>{
-      guardedCacheWrites.delete(cancel);
+      if(settled)return;settled=true;cleanup();
       try{
         check?.();if(guardError)throw guardError;
         if(action==='get'&&mark&&(!ownCacheWrite(mark)||mark.id!==readJSON('localStorage',CLOUD_CACHE_KEY)?.write_id)){
@@ -80,8 +89,8 @@ async function local(action,value,{check,cacheWrite}={}){
       }
       catch(error){if(cacheWrite)void discardCloudWrite(cacheWrite.id).then(()=>reject(error),()=>reject(error));else reject(error);}
     };
-    tx.onerror=()=>{guardedCacheWrites.delete(cancel);reject(guardError||new Error('Local database write failed. No save was confirmed.'));};
-    tx.onabort=()=>{guardedCacheWrites.delete(cancel);reject(guardError||new Error('Local database transaction was cancelled.'));};
+    tx.onerror=()=>fail(guardError||new Error('Local database write failed. No save was confirmed.'));
+    tx.onabort=()=>fail(guardError||new Error('Local database transaction was cancelled.'));
   });
 }
 export async function loadDataset(){
@@ -578,7 +587,7 @@ export async function pullFromCloud({onProgress}={}){
     progress({phase:'saving',recordsLoaded:rows.filter(row=>row.entity_type!=='archive').length,archiveBlocksLoaded:rows.filter(row=>row.entity_type==='archive').length});
     await local('put',data,{check,cacheWrite});check();
     rememberCloudCache(cacheWrite.id);remember(rows);setStorage('localStorage',DEMO_KEY,null);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
-  }catch(error){await discardCloudWrite(cacheWrite.id).catch(()=>{});throw error;}
+  }catch(error){const cleanup=discardCloudWrite(cacheWrite.id).catch(()=>{});if(error.storageTimeout!==true)await cleanup;throw error;}
 }
 async function writeAtomic(pending){
   if(!pending.length)return [];
