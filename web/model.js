@@ -4,7 +4,7 @@ import { validateLacFeeRecord } from './lac-fee-model.js?v=33';
 import { validateUserAcronym } from './user-acronyms.js';
 import { validateCageSummaryOptions } from './cage-summary-options.js?v=33';
 import { validateBreedingOptions } from './breeding-options.js?v=24';
-import { validateStrainDefinition } from './strain-registry.js?v=24';
+import { validateStrainDefinition } from './strain-registry.js?v=36';
 import { validateGeneticProfile } from './genotype-schema.js?v=24';
 import { validateScenario } from './genetics.js?v=24';
 import { validateExperimentRecord } from './experiment-model.js?v=24';

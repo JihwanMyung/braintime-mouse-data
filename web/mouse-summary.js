@@ -1,11 +1,12 @@
 /* Current recorded line counts, not assay confirmation or allele dosage.
  * Animal Sheet abbreviations are interpreted only in the animal's own fields.
  */
+import {explicitCreName,legacyVgatCreName} from './strain-registry.js?v=36';
 export const MOUSE_LINE_GROUPS = Object.freeze([
   {key:'P',name:'PER2::LUC'},
   {key:'E',name:'Bmal1-ELuc'},
   {key:'B',name:'Bmal1-flox'},
-  {key:'F',name:'Foxj1-Cre'},
+  {key:'F',name:'FoxJ1-Cre'},
   {key:'V',name:'Vip-Cre'},
   {key:'AD',name:'APP/PS1'},
 ].map(Object.freeze));
@@ -14,7 +15,7 @@ const keys=MOUSE_LINE_GROUPS.map(group=>group.key);
 const assignmentKeys=[...keys,'A','32','Vg','Gt','96'];
 const zero=()=>Object.fromEntries(keys.map(key=>[key,0]));
 const text=value=>typeof value==='string'?value:'';
-const patterns={P:/PER2\s*:{1,2}\s*LUC/gi,E:/Bmal1-ELuc/gi,B:/Bmal1(?:[-\s]+flox(?:ed)?)?/gi,F:/FoxJ1-Cre/gi,V:/Vip-Cre/gi,AD:/APP\s*\/\s*PS1/gi,A:/Avp-Cre/gi,'32':/Ai32/gi,Vg:/Vgat(?:[-\s]+flox(?:ed)?)?/gi,Gt:/GAD67-tTA(?:2)?/gi,'96':/Ai96/gi};
+const patterns={P:/PER2\s*:{1,2}\s*LUC/gi,E:/Bmal1-ELuc/gi,B:/Bmal1(?:[-\s]+flox(?:ed)?)?/gi,F:/FoxJ(?:1)?-Cre/gi,V:/Vip-Cre/gi,AD:/APP\s*\/\s*PS1/gi,A:/Avp-Cre/gi,'32':/Ai32/gi,Vg:/Vgat(?:-Cre|[-\s]+flox(?:ed)?)?/gi,Gt:/GAD67-tTA(?:2)?/gi,'96':/Ai96/gi};
 const tokenPattern=/AD|Vg|Gt|WT|32|96|[PEBFVA]/y;
 const target=key=>assignmentKeys.includes(key);
 const floxed=key=>key==='B'||key==='Vg';
@@ -26,7 +27,7 @@ function groupForName(value) {
   if(/^per2(?:\s*:{1,2}\s*|-)luc$/i.test(name))return 'P';
   if(/^bmal1-eluc$/i.test(name))return 'E';
   if(/^bmal1(?:[- ]flox(?:ed)?)?$/i.test(name))return 'B';
-  if(/^foxj1-cre$/i.test(name))return 'F';
+  if(/^foxj(?:1)?-cre$/i.test(name))return 'F';
   if(/^vip-cre$/i.test(name))return 'V';
   if(/^APP\s*\/\s*PS1$/i.test(name))return 'AD';
   if(/^avp-cre$/i.test(name))return 'A';
@@ -98,6 +99,7 @@ function namedLines(value) {
     if(suffix!==undefined) {
       const tokens=suffix.trim().split('/').map(item=>item.trim());
       if(tokens.some(item=>/\?|unknown|untested/i.test(item))){add(key,'uncertain');continue;}
+      if(legacyVgatCreName(match[0])&&!tokens.some(flox)){add(key,'uncertain');continue;}
       if(floxed(key)) {
         if(tokens.some(flox))add(key,'present');
         else if(tokens.every(negative))add(key,'absent');
@@ -117,7 +119,7 @@ function profileLines(profile) {
   if(profile?.schema_version!==1||!Array.isArray(profile.loci)||!profile.calls||typeof profile.calls!=='object')return result;
   for(const locus of profile.loci) {
     if(!locus||typeof locus!=='object')continue;
-    const namedKey=groupForName(locus.name)||groupForName(locus.id);
+    const namedKey=legacyVgatCreName(locus.name)&&locus.kind==='flox'?'Vg':groupForName(locus.name)||(explicitCreName(locus.name)?null:groupForName(locus.id));
     const rosa26=/^(?:Gt\(ROSA\)26Sor|rosa26)$/i.test(text(locus.name))||/^rosa26$/i.test(text(locus.id));
     const locusKeys=namedKey?[namedKey]:rosa26?[...new Set((Array.isArray(locus.alleles)?locus.alleles:[]).map(groupForName).filter(key=>key==='32'||key==='96'))]:[];
     for(const key of locusKeys) {

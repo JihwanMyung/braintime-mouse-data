@@ -1,4 +1,9 @@
 import test from 'node:test';
+
+test('corrected names retain flox assay semantics and exact FoxJ-Cre alias',()=>{
+  for(const genotype of ['Meis1-flox(fl/+)','Vgat-flox(fl/fl)','Bmal1-flox(+/+)','FoxJ-Cre(+/-)'])assert.equal(isMouseGenotyped({genotype}),true,genotype);
+  for(const genotype of ['Meis1-flox(+/-)','Vgat-Cre(+/-)','FoxJ-CreERT2(+/-)'])assert.equal(isMouseGenotyped({genotype}),false,genotype);
+});
 import assert from 'node:assert/strict';
 import { summarizeBreeding, isMouseGenotyped, estimateBreedingGroups, classifyAnimalSheetBreedingBlock } from '../web/breeding-summary.js';
 import { buildBreedingOptions, DEFAULT_BREEDING_OPTIONS } from '../web/breeding-options.js';

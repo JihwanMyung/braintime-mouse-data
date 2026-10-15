@@ -1,24 +1,25 @@
 /* Desired offspring targets only. This bridge never supplies parental calls. */
 import { rankPairs } from './genetics.js?v=24';
-import { discoverGenotypes } from './genotype-catalog.js?v=24';
+import { discoverGenotypes } from './genotype-catalog.js?v=36';
+import {canonicalLocusName,explicitCreName} from './strain-registry.js?v=36';
 
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
 const clone=value=>structuredClone(value);
 const unique=values=>[...new Set(values)];
 const norm=value=>typeof value==='string'?value.toLowerCase().replace(/[^a-z0-9]/g,''):'';
-const fields=locus=>({id:locus.id,name:locus.name,kind:locus.kind,chromosome:locus.chromosome,alleles:[...locus.alleles]});
-const signature=locus=>JSON.stringify([locus.id,locus.name,locus.kind,locus.chromosome,[...locus.alleles].sort()]);
+const fields=locus=>({id:locus.id,name:canonicalLocusName(locus),kind:locus.kind,chromosome:locus.chromosome,alleles:[...locus.alleles]});
+const signature=locus=>JSON.stringify([locus.id,canonicalLocusName(locus),locus.kind,locus.chromosome,[...locus.alleles].sort()]);
 const config=(loci,targets)=>({loci,targets,sex:'Any',independentAssortment:true,desiredCount:1,confidence:0.95,litterSize:6});
 const definition=(id,name,kind,allele,aliases=[],chromosome='unknown')=>({locus:{id,name,kind,chromosome,alleles:['+',allele]},allele,aliases:[id,name,...aliases].map(norm)});
 const definitions={
   P:definition('per2-luc','PER2::LUC','reporter','PER2::LUC'),
   E:definition('bmal1-eluc','Bmal1-ELuc','reporter','Bmal1-ELuc'),
-  B:definition('bmal1','Bmal1','flox','fl',['Bmal1-flox']),
-  F:definition('foxj1-cre','FoxJ1-Cre','cre','FoxJ1-Cre'),
+  B:definition('bmal1','Bmal1-flox','flox','fl',['Bmal1']),
+  F:definition('foxj1-cre','FoxJ1-Cre','cre','FoxJ1-Cre',['FoxJ-Cre']),
   V:definition('vip-cre','Vip-Cre','cre','Vip-Cre'),
   AD:definition('app-ps1','APP/PS1','other','APP/PS1',['Tg(APPswe,PSEN1dE9)85Dbo']),
   A:definition('avp-cre','Avp-Cre','cre','Avp-Cre'),
-  Vg:definition('vgat','Vgat','flox','fl',['Vgat-flox']),
+  Vg:definition('vgat','Vgat-flox','flox','fl',['Vgat']),
   Gt:definition('gad67-tta','GAD67-tTA','other','GAD67-tTA',['GAD67-tTA2'])
 };
 for(const code of ['32','96'])definitions[code]={locus:{id:'rosa26',name:'Gt(ROSA)26Sor',kind:'reporter',chromosome:'6',alleles:['+','Ai32','Ai96']},allele:'Ai'+code,aliases:['rosa26','gtrosa26sor','ai'+code]};
@@ -26,7 +27,7 @@ const entryFor=code=>Object.hasOwn(definitions,code)?definitions[code]:null;
 
 function matchesCode(locus,code) {
   const entry=entryFor(code);if(!entry||!object(locus))return false;
-  if(['B','Vg'].includes(code)&&locus.kind!=='flox')return false;
+  if(['B','Vg'].includes(code)&&(locus.kind!=='flox'||explicitCreName(locus.name)))return false;
   if(locus.id===code||locus.name===code)return true;
   const names=[locus.id,locus.name].map(norm);
   return names.some(name=>entry.aliases.includes(name));

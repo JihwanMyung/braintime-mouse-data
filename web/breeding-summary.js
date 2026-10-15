@@ -1,5 +1,6 @@
+import {explicitCreName,legacyVgatCreName} from './strain-registry.js?v=36';
 import { getBreedingOptions } from './breeding-options.js?v=24';
-import { mouseLineAssignments } from './mouse-summary.js?v=24';
+import { mouseLineAssignments } from './mouse-summary.js?v=36';
 import { validateGeneticProfile } from './genotype-schema.js';
 
 const text=value=>typeof value==='string'?value:'';
@@ -7,12 +8,12 @@ const rows=value=>Array.isArray(value)?value:[];
 const archived=record=>Boolean(record?.app_archived_at)||record?.archived===true;
 const aliases=[
   ['P',/^PER2\s*:{1,2}\s*LUC$/i],['E',/^Bmal1-ELuc$/i],
-  ['B',/^Bmal1(?:[- ]flox(?:ed)?)?$/i],['F',/^FoxJ1-Cre$/i],
+  ['B',/^Bmal1(?:[- ]flox(?:ed)?)?$/i],['F',/^FoxJ(?:1)?-Cre$/i],
   ['V',/^Vip-Cre$/i],['AD',/^APP\s*\/\s*PS1$/i],['A',/^Avp-Cre$/i],
   ['32',/^Ai32$/i],['96',/^Ai96$/i],['Vg',/^Vgat(?:[- ]flox(?:ed)?)?$/i],
-  ['Gt',/^GAD67-tTA(?:2)?$/i],['Meis1',/^Meis1$/i],
+  ['Gt',/^GAD67-tTA(?:2)?$/i],['Meis1',/^Meis1(?:[- ]flox(?:ed)?)?$/i],
 ];
-const sourceLabel=/^(PER2\s*:{1,2}\s*LUC|Bmal1-ELuc|Bmal1(?:[- ]flox(?:ed)?)?|FoxJ1-Cre|Vip-Cre|APP\s*\/\s*PS1|Avp-Cre|Ai32|Ai96|Vgat(?:[- ]flox(?:ed)?)?|GAD67-tTA(?:2)?|Meis1|WT)(?=$|[\s(])\s*(.*)$/i;
+const sourceLabel=/^(PER2\s*:{1,2}\s*LUC|Bmal1-ELuc|Bmal1(?:[- ]flox(?:ed)?)?|FoxJ(?:1)?-Cre|Vip-Cre|APP\s*\/\s*PS1|Avp-Cre|Ai32|Ai96|Vgat(?:-Cre|[- ]flox(?:ed)?)?|GAD67-tTA(?:2)?|Meis1(?:[- ]flox(?:ed)?)?|WT)(?=$|[\s(])\s*(.*)$/i;
 const keyFor=value=>aliases.find(([,pattern])=>pattern.test(text(value).trim()))?.[0];
 const profileKey=value=>['P','E','B','F','V','AD','A','32','96','Vg','Gt'].includes(text(value).trim())?text(value).trim():keyFor(value);
 const genericKey=value=>`locus:${text(value).trim().toLowerCase()}`;
@@ -105,11 +106,12 @@ function sourceResults(values) {
       if(generic){required.add(genericKey(generic[1]));continue;}
       invalid=true;continue;
     }
-    const key=keyFor(match[1])||'WT';required.add(key);
+    const key=legacyVgatCreName(match[1])?'Vg':keyFor(match[1])||'WT';required.add(key);
     const suffix=match[2].trim();
     if(!suffix)continue; // A name is a target, never an assay result.
     const parenthesized=suffix.match(/^\(([^()]*)\)$/);
-    const result=sourcePair(key,parenthesized?parenthesized[1]:suffix);
+    const body=parenthesized?parenthesized[1]:suffix;
+    const result=legacyVgatCreName(match[1])&&!/(?:^|\/)\s*fl\s*(?:\/|$)/i.test(body)?null:sourcePair(key,body);
     if(!result){unresolved.add(key);continue;}
     if(!calls.has(key))calls.set(key,new Set());calls.get(key).add(result);
   }
@@ -117,7 +119,7 @@ function sourceResults(values) {
 }
 
 function profileKeys(locus) {
-  const named=profileKey(locus.name)||profileKey(locus.id);
+  const named=profileKey(locus.name)||(explicitCreName(locus.name)?null:profileKey(locus.id));
   if(named)return [named];
   if(isRosa26(locus)) {
     return [...new Set(locus.alleles.map(profileKey).filter(key=>key==='32'||key==='96'))];

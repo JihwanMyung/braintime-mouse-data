@@ -1,4 +1,11 @@
 import test from 'node:test';
+
+test('canonical flox names and exact FoxJ alias retain separate custom Cre evidence',()=>{
+  const meis=animal({genotype:'Meis1(fl/+)'});assert.equal(meis.traits[0].name,'Meis1-flox');assert.equal(meis.traits[0].code,'locus:meis1');assert.equal(meis.traits[0].presence,'present');
+  assert.equal(trait({genotype:'FoxJ-Cre(+/-)'},'F').presence,'present');
+  const weird=animal({genetic_profile:{schema_version:1,loci:[{id:'vgat',name:'Vgat-Cre',kind:'cre',chromosome:'unknown',alleles:['+','Vgat-Cre']}],calls:{vgat:{alleles:['fl','+'],evidence:'confirmed'}}}});
+  assert.equal(weird.traits.some(row=>row.code==='Vg'),false);assert.equal(weird.traits[0].name,'Vgat-Cre');assert.match(weird.warnings.join(' '),/Saved Vgat Cre model needs review/);
+});
 import assert from 'node:assert/strict';
 import {buildFamilyGenotypes,filterFamilyAnimals} from '../web/family-genotypes.js';
 const dataset=(mice,genes=[],extra={})=>({tables:{mice:mice.map((mouse,index)=>({mouse_sid:`SYN-${index}`,state:'Stock',...mouse})),mouse_genes:genes,...extra}});
@@ -82,7 +89,7 @@ test('custom structured allele identities and named source ambiguity are retaine
   const a=animal({genetic_profile:profile([custom],{'custom-dose':call(['variant-A','variant-B'])})});
   assert.equal(a.traits[0].code,'locus:custom-dose');assert.deepEqual(a.traits[0].locus,custom);assert.equal(a.shorthand,'My custom allele[variant-A/variant-B]');assert.equal(a.confirmed,true);
   const summary=buildFamilyGenotypes(dataset([a.mouse]));assert.deepEqual(summary.traits.find(row=>row.code==='locus:custom-dose').declaredAlleles,['+','variant-A','variant-B']);
-  const ambiguous=animal({genotype:'Meis1(+/-)'});assert.equal(ambiguous.traits[0].name,'Meis1');assert.equal(ambiguous.traits[0].presence,'uncertain');
+  const ambiguous=animal({genotype:'Meis1(+/-)'});assert.equal(ambiguous.traits[0].name,'Meis1-flox');assert.equal(ambiguous.traits[0].presence,'uncertain');
 });
 
 test('Rosa26 pairs classify allele presence once without inventing independent reporter loci',()=>{

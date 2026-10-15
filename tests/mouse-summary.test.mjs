@@ -1,4 +1,13 @@
 import test from 'node:test';
+
+test('legacy Vgat-CRE names retain dosage uncertainty and saved Cre models cannot use a flox ID',()=>{
+  for(const genotype of ['Vgat-Cre','Vgat-CRE(+/-)','Vgat-CRE(+/+)'])assert.deepEqual(mouseLineAssignments({genotype}),{Vg:'uncertain'});
+  assert.deepEqual(mouseLineAssignments({genotype:'Vgat-CreERT2(+/+)'}),{});
+  assert.deepEqual(mouseLineAssignments({genotype:'Vgat-CRE(fl/+)'}),{Vg:'recorded'});
+  const genetic_profile={schema_version:1,loci:[{id:'vgat',name:'Vgat-Cre',kind:'cre',chromosome:'unknown',alleles:['+','Vgat-Cre']}],calls:{vgat:{alleles:['Vgat-Cre','+'],evidence:'confirmed'}}};
+  assert.deepEqual(mouseLineAssignments({genetic_profile}),{});
+  assert.deepEqual(mouseLineAssignments({genotype:'FoxJ-Cre(+/-)'}),{F:'recorded'});
+});
 import assert from 'node:assert/strict';
 import {MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments} from '../web/mouse-summary.js';
 

@@ -1,5 +1,5 @@
-import { buildFamilyGenotypes, filterFamilyAnimals } from './family-genotypes.js?v=24';
-import { familyTargetDraft, createFamilyTargetResolver } from './family-targets.js?v=24';
+import { buildFamilyGenotypes, filterFamilyAnimals } from './family-genotypes.js?v=36';
+import { familyTargetDraft, createFamilyTargetResolver } from './family-targets.js?v=36';
 
 const mounts=new WeakMap();
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

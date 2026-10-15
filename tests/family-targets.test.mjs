@@ -143,3 +143,12 @@ test('malformed selection and non-record source containers return review errors 
   assert.deepEqual(familyTargetDraft([choice('P')],bad).errors,[]);
   assert.deepEqual(familyTargetDraft([choice('P')],null).errors,[]);
 });
+
+
+test('family targets canonicalize names without replacing saved flox IDs or adopting Cre model aliases',()=>{
+  const source=dataset([{id:'bmal1',name:'Bmal1',kind:'flox',chromosome:'unknown',alleles:['+','fl']}],{bmal1:{alleles:['fl','+'],evidence:'confirmed'}}),before=structuredClone(source);
+  const draft=familyTargetDraft([choice('B')],source);assert.deepEqual(draft.errors,[]);assert.equal(draft.loci[0].id,'bmal1');assert.equal(draft.loci[0].name,'Bmal1-flox');assert.deepEqual(source,before);
+  const conflicting=dataset([{id:'vgat',name:'Vgat-CRE',kind:'cre',chromosome:'unknown',alleles:['+','Vgat-CRE']}],{vgat:{alleles:['Vgat-CRE','+'],evidence:'confirmed'}});
+  const vgat=familyTargetDraft([choice('Vg')],conflicting);assert(vgat.loci.every(row=>row.kind==='flox'));assert(vgat.loci.every(row=>!row.alleles.includes('Vgat-CRE')));
+  const fox=familyTargetDraft([choice('F')],{tables:{mice:[{mouse_sid:'SYN',genotype:'FoxJ-Cre(+/-); FoxJ1-Cre(+/-)'}]}});assert.deepEqual(fox.errors,[]);assert.equal(fox.loci.length,1);assert.equal(fox.loci[0].id,'foxj1-cre');assert.equal(fox.loci[0].name,'FoxJ1-Cre');
+});

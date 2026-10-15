@@ -5,12 +5,36 @@ export const INSERTION_TYPES=Object.freeze([
   Object.freeze({value:'knock_in',label:'Knock-in'})
 ]);
 const insertionTypes=new Set(INSERTION_TYPES.map(row=>row.value));
+// Laboratory naming clarification. These aliases never rewrite imported text,
+// stable locus IDs or saved Cre models, and do not define a new acronym.
+export const FLOX_STRAIN_NAMES=Object.freeze(['Bmal1-flox','Meis1-flox','Vgat-flox']);
+export const legacyVgatCreName=value=>typeof value==='string'&&/^Vgat-Cre$/i.test(value.trim());
+export function canonicalStrainName(value){
+  const text=typeof value==='string'?value.trim():'';if(/^FoxJ(?:1)?-Cre$/i.test(text))return 'FoxJ1-Cre';if(legacyVgatCreName(text))return 'Vgat-flox';const match=text.match(/^(Bmal1|Meis1|Vgat)(?:[- ]+flox(?:ed)?)?$/i);
+  return match?FLOX_STRAIN_NAMES.find(name=>name.toLowerCase().startsWith(match[1].toLowerCase()+'-')):text;
+}
+export function strainNameAliases(value){
+  const canonical=canonicalStrainName(value);
+  if(canonical==='FoxJ1-Cre')return ['FoxJ1-Cre','FoxJ-Cre'];
+  if(!FLOX_STRAIN_NAMES.includes(canonical))return [value];
+  const gene=canonical.slice(0,-5);return [canonical,gene,`${gene} flox`,`${gene}-floxed`,`${gene} floxed`,...(gene==='Vgat'?['Vgat-Cre']:[])];
+}
+export const explicitCreName=value=>typeof value==='string'&&/-Cre(?:ERT?2?)?$/i.test(value.trim());
+export function canonicalLocusName(locus){return locus?.kind==='cre'&&FLOX_STRAIN_NAMES.includes(canonicalStrainName(locus.name))?locus.name:canonicalStrainName(locus?.name);}
+export function strainNamingWarning(locus){
+  const name=typeof locus==='string'?locus:locus?.name;
+  if(locus?.kind==='cre'&&(legacyVgatCreName(name)||/^Vgat$/i.test(name||'')))return 'Saved Vgat Cre model needs review: the lab uses Vgat-CRE as a legacy name for Vgat-flox. Original Cre alleles were retained; verify the floxed allele before changing this model.';
+  if(legacyVgatCreName(name))return 'Vgat-CRE is a legacy lab name for Vgat-flox. Explicit floxed-allele evidence is required; old Cre +/- notation does not establish flox zygosity.';
+  return /^Vgat-CreERT?2?$/i.test(name||'')?'This Vgat Cre variant is not covered by the lab’s Vgat-CRE alias. Review the original stock or allele.':'';
+}
+export function strainNamingHelpHTML(){return '<p class="subtle">Laboratory names: Bmal1 = Bmal1-flox; Meis1 = Meis1-flox; Vgat = Vgat-flox (Vg). Meis1-flox has no confirmed shorthand. Bmal1-ELuc (E) is separate. FoxJ-Cre means FoxJ1-Cre (F). Vgat-CRE is a legacy lab name for Vgat-flox; old Cre +/- notation does not establish flox zygosity. Saved Cre models require review before conversion. Original source text is preserved.</p>';}
+
 const definition=(key,name,insertionType='unknown',notes='',origin='Animal Sheet legend',stockReference='')=>Object.freeze({key,name,insertionType,notes,origin,stockReference});
 export const STRAIN_ACRONYMS=Object.freeze([
   definition('P','PER2::LUC','knock_in','','Animal Sheet legend; laboratory confirmation'),
   definition('E','Bmal1-ELuc','transgenic','','Animal Sheet legend; laboratory confirmation'),
   definition('B','Bmal1-flox','knock_in','','Animal Sheet legend; laboratory confirmation'),
-  definition('F','Foxj1-Cre','knock_in','','Animal Sheet legend; laboratory confirmation'),
+  definition('F','FoxJ1-Cre','knock_in','','Animal Sheet legend; laboratory confirmation'),
   definition('V','Vip-Cre','knock_in','','Animal Sheet legend; laboratory confirmation'),
   definition('AD','APP/PS1','transgenic','APPswe and PSEN1dE9 transgenes share a chromosome 9 insertion site (MGI:3524957).','Animal Sheet stock reference and MGI','JAX 005864; Tg(APPswe,PSEN1dE9)85Dbo'),
   definition('A','Avp-Cre'),
@@ -36,7 +60,7 @@ export function validateStrainDefinition(record,old=null) {
   if(value.schema_version!==1)errors.push('Unsupported strain definition version.');
   const reference=defaults.get(value.code);
   if(!reference)errors.push('Choose a strain code from the Animal Sheet legend.');
-  if(reference&&value.name!==reference.name)errors.push('The strain name must match its Animal Sheet code.');
+  if(reference&&canonicalStrainName(value.name)!==reference.name)errors.push('The strain name must match its Animal Sheet code.');
   if(record.event_id!==eventId(value.code))errors.push('A strain definition must use its stable strain ID.');
   if(old?.strain_definition?.code&&old.strain_definition.code!==value.code)errors.push('A saved strain code cannot change.');
   if(old?.event_id&&old.event_id!==record.event_id)errors.push('A saved strain definition ID cannot change.');

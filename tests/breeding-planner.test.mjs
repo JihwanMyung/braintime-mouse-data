@@ -85,12 +85,12 @@ test('candidate ranking respects Stock and confirmed calls, shows parent context
 
 test('source catalogue additions start unknown and explicit source suggestions remain inferred',async t=>{
   const h=await harness(t,{mice:[mouse('100','Male',{genotype:'Bmal1(fl/+)',genetic_profile:null}),mouse('200','Female',{genotype:'Bmal1',genetic_profile:null})],historical_observations:[{observation_id:'OBS1',raw_text:'M100: source note including cage mates',source_title:'Synthetic sheet',source_sheet:'Room',source_cell:'A1',source_url:'https://example.org/source'}]});
-  const entry=discoverGenotypes(h.dataset).find(row=>row.name==='Bmal1');assert(entry);
+  const entry=discoverGenotypes(h.dataset).find(row=>row.name==='Bmal1-flox');assert(entry);
   assert.doesNotMatch(h.container.innerHTML,/Illustrative example · no colony parents assumed/);assert.match(h.container.innerHTML,/data-planner-catalogue open/);
   await h.click('clear-loci');await h.click('catalogue-locus',{locus:entry.id});h.change('parent','100',{role:'sire'});h.change('parent','200',{role:'dam'});
   assert.match(h.container.innerHTML,/Linked Animal Sheet excerpts \(1\)/);assert.match(h.container.innerHTML,/They do not confirm this animal/);
   await h.click('source-parent',{role:'sire'});assert.match(h.container.innerHTML,/loaded as inferred/);
-  await h.click('calculate');assert.match(h.container.innerHTML,/Dam, Bmal1: genotype evidence is unknown/);assert.equal(h.saves.length,0);
+  await h.click('calculate');assert.match(h.container.innerHTML,/Dam, Bmal1-flox: genotype evidence is unknown/);assert.equal(h.saves.length,0);
   await h.click('tab',{tab:'genotypes'});h.change('profile-mouse','100');await h.click('source-profile');await h.click('save-profile');
   assert.equal(h.saves.length,1);assert.equal(h.dataset.tables.mice[0].genetic_profile.calls[entry.id].evidence,'inferred');assert.equal(h.dataset.tables.mice[0].genotype,'Bmal1(fl/+)');
 });
@@ -178,4 +178,39 @@ test('invalid Family tree draft preserves the current scenario and reports error
   h.hooks.initialTargetDraft={loci:[{...locus,chromosome:'X'}],targets:{[locus.id]:{mode:'carrier',allele:'fl'}}};h.render();
   assert.match(h.container.innerHTML,/Family tree target needs review/);assert.match(h.container.innerHTML,/only autosomes/);assert.match(h.container.innerHTML,/Keep my draft/);assert.match(h.container.innerHTML,/>25%<\/strong>/);
   h.hooks.initialTargetDraft=null;await h.savePlan('Preserved target');assert.deepEqual(h.dataset.tables.husbandry_events.at(-1).breeding_plan.scenario,scenario());
+});
+
+
+test('canonical flox names reuse confirmed saved definitions without rewriting source or stable locus IDs',async t=>{
+  for(const gene of ['Bmal1','Meis1','Vgat']){
+    const id=gene.toLowerCase(),old={id,name:gene,kind:'flox',chromosome:'unknown',alleles:['+','fl']};
+    const animals=[mouse('M1','Male',{genotype:gene+'(fl/+)',genetic_profile:profile({[id]:call()},[old])}),mouse('F1','Female',{genotype:gene+'(fl/+)',genetic_profile:profile({[id]:call()},[old])})];
+    const h=await harness(t,{mice:animals});const before=structuredClone(h.dataset.tables.mice);
+    await h.click('catalogue-locus',{locus:id});h.change('parent','M1',{role:'sire'});h.change('parent','F1',{role:'dam'});
+    h.change('target','exact',{locus:id,key:'mode'});h.change('target','fl',{locus:id,key:'alleles',index:'0'});h.change('target','fl',{locus:id,key:'alleles',index:'1'});
+    await h.click('calculate');assert.match(h.container.innerHTML,/>25%<\/strong>/);assert.doesNotMatch(h.container.innerHTML,/definition differs/);
+    await h.savePlan();const saved=h.dataset.tables.husbandry_events.at(-1).breeding_plan.scenario;
+    assert.equal(saved.loci[0].name,gene+'-flox');assert.equal(saved.loci[0].id,id);assert.equal(saved.sire.calls[id].evidence,'confirmed');assert.deepEqual(h.dataset.tables.mice,before);
+  }
+});
+
+test('separate Ai32 and Ai96 catalogue buttons retain one Rosa26 locus, compound target and saved snapshots',async t=>{
+  const rosa={id:'rosa26',name:'Gt(ROSA)26Sor',kind:'reporter',chromosome:'6',alleles:['+','Ai32','Ai96']};
+  const animals=[mouse('M1','Male',{genotype:'Ai32(+/-)',genetic_profile:profile({rosa26:call(['Ai32','+'])},[rosa])}),mouse('F1','Female',{genotype:'Ai96(+/-)',genetic_profile:profile({rosa26:call(['Ai96','+'])},[rosa])})];
+  const h=await harness(t,{mice:animals,husbandry_events:[]}),original=structuredClone(h.dataset.tables.mice);
+  assert.match(h.container.innerHTML,/<strong>Ai32<\/strong>/);assert.match(h.container.innerHTML,/<strong>Ai96<\/strong>/);assert.equal((h.container.innerHTML.match(/Shared Rosa26 locus/g)||[]).length,2);
+  await h.click('catalogue-locus',{locus:'rosa26',allele:'Ai32'});await h.click('catalogue-locus',{locus:'rosa26',allele:'Ai96'});
+  assert.equal((h.container.innerHTML.match(/<h3>Locus \d+<\/h3>/g)||[]).length,1);assert.match(h.container.innerHTML,/Exact genotype: Ai32 \/ Ai96/);
+  h.change('parent','M1',{role:'sire'});h.change('parent','F1',{role:'dam'});h.change('target','exact',{locus:'rosa26',key:'mode'});h.change('target','Ai32',{locus:'rosa26',key:'alleles',index:'0'});h.change('target','Ai96',{locus:'rosa26',key:'alleles',index:'1'});
+  await h.click('calculate');assert.match(h.container.innerHTML,/>25%<\/strong>/);await h.savePlan('Compound Rosa26');
+  const event=h.dataset.tables.husbandry_events.at(-1);assert.deepEqual(event.breeding_plan.scenario.loci,[rosa]);assert.deepEqual(event.breeding_plan.scenario.targets.rosa26,{mode:'exact',alleles:['Ai32','Ai96']});assert.deepEqual(h.dataset.tables.mice,original);
+  await h.click('clear-loci');await h.load(event.event_id);assert.match(h.container.innerHTML,/>25%<\/strong>/);assert.deepEqual(h.dataset.tables.mice,original);
+});
+
+test('legacy Vgat-CRE catalogue names merge but saved explicit Cre models stay intact and require review',async t=>{
+  const old={id:'locus:Vgat-CRE',name:'Vgat-CRE',kind:'cre',chromosome:'unknown',alleles:['+','Vgat-CRE']},snapshot={...scenario(),loci:[old],sire:{sex:'Male',calls:{[old.id]:call(['Vgat-CRE','+'])}},dam:{sex:'Female',calls:{[old.id]:call(['Vgat-CRE','+'])}},targets:{[old.id]:{mode:'carrier',allele:'Vgat-CRE'}}};
+  const h=await harness(t,{mice:[mouse('M1','Male',{genotype:'Vgat-CRE(+/-)',genetic_profile:profile({[old.id]:call(['Vgat-CRE','+'])},[old])})],husbandry_events:[plan(snapshot)]}),before=structuredClone(h.dataset);
+  assert.match(h.container.innerHTML,/<strong>Vgat-flox<\/strong>/);assert.doesNotMatch(h.container.innerHTML,/<strong>Vgat-CRE<\/strong>/);
+  await h.load();assert.match(h.container.innerHTML,/Saved Vgat Cre model needs review/);assert.match(h.container.innerHTML,/value="Vgat-CRE"/);assert.doesNotMatch(h.container.innerHTML,/Target probability/);
+  await h.click('calculate');await h.savePlan();assert.equal(h.saves.length,0);assert.deepEqual(h.dataset,before);
 });

@@ -1,17 +1,48 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {discoverGenotypes,sourceProfile} from '../web/genotype-catalog.js';
+import {discoverGenotypes,sourceProfile,catalogueStrains} from '../web/genotype-catalog.js';
 
 const dataset=(genotypes,extra={})=>({tables:{mice:genotypes.map((genotype,index)=>({mouse_sid:`SYN-${index}`,genotype,source_filename:'synthetic.xlsx',source_sheet:'Mice',source_row:index+2})),mouse_genes:[],historical_observations:[],locations:[],...extra}});
 const locus=(name,kind='other',alleles=['+',name])=>({id:name,name,kind,chromosome:'unknown',alleles,sourceLabels:[name]});
+
+test('lab flox aliases merge under stable locus IDs without changing source records',()=>{
+  const d=dataset(['Bmal1(fl/+); Bmal1-flox(fl/+); Meis1(fl/fl); Meis1-flox(fl/fl); Vgat(fl/+); Vgat-flox(fl/+)']),before=structuredClone(d),catalog=discoverGenotypes(d);
+  assert.deepEqual(catalog.map(row=>[row.id,row.name,row.kind]),[['bmal1','Bmal1-flox','flox'],['meis1','Meis1-flox','flox'],['vgat','Vgat-flox','flox']]);
+  for(const row of catalog){assert.deepEqual(row.alleles,['+','fl']);assert(row.sourceLabels.includes(row.name.slice(0,-5)));}
+  const parsed=sourceProfile(d.tables.mice[0],catalog,d);assert.deepEqual(parsed.calls.bmal1.alleles,['fl','+']);assert.deepEqual(parsed.calls.meis1.alleles,['fl','fl']);assert.deepEqual(parsed.calls.vgat.alleles,['fl','+']);assert.deepEqual(d,before);
+  for(const gene of ['Bmal1','Meis1','Vgat'])for(const suffix of ['(+/-)','(-/-)',''])assert.deepEqual(sourceProfile({genotype:gene+suffix},catalog,{}).calls,{});
+});
+test('legacy Vgat-CRE merges into Vgat-flox without converting old Cre presence notation',()=>{
+  const d=dataset(['Vgat(fl/fl); Vgat-CRE(+/-); Vgat-CreERT2(+/+); Bmal1-Cre(+/-)']),before=structuredClone(d),catalog=discoverGenotypes(d),result=sourceProfile(d.tables.mice[0],catalog,d);
+  const row=catalog.find(row=>row.id==='vgat');assert.equal(row.name,'Vgat-flox');assert(row.sourceLabels.includes('Vgat-CRE'));assert.equal(catalog.some(row=>/^Vgat-Cre$/i.test(row.name)),false);
+  assert.equal(result.calls.vgat,undefined);assert.match(result.warnings.join(' '),/legacy lab name/);
+  const variant=catalog.find(row=>row.name==='Vgat-CreERT2');assert.equal(variant.kind,'cre');assert.equal(variant.reviewRequired,true);assert.equal(result.calls[variant.id],undefined);
+  assert.equal(catalog.find(row=>row.name==='Bmal1-Cre').kind,'cre');
+  assert.deepEqual(sourceProfile({genotype:'Vgat-flox(+/+); Vgat-CRE(+/+)'},[row],{}).calls,{});
+  for(const suffix of ['(+/-)','(+/+)','(-/-)',''])assert.deepEqual(sourceProfile({genotype:'Vgat-CRE'+suffix},[row],{}).calls,{});
+  assert.deepEqual(sourceProfile({genotype:'Vgat-CRE(fl/+)'},[row],{}).calls.vgat.alleles,['fl','+']);
+  assert.deepEqual(d,before);
+});
+test('FoxJ-Cre and FoxJ1-Cre merge while unrelated extended FoxJ names remain separate',()=>{
+  const d=dataset(['FoxJ-Cre(+/-); FoxJ1-Cre(+/-); FoxJ-CreERT2(+/-)']),catalog=discoverGenotypes(d),row=catalog.find(row=>row.id==='foxj1-cre');
+  assert.equal(row.name,'FoxJ1-Cre');assert(row.sourceLabels.includes('FoxJ-Cre'));assert.equal(catalog.length,2);assert.equal(catalog.find(row=>row.name==='FoxJ-CreERT2').id,'locus:FoxJ-CreERT2');
+  assert.deepEqual(sourceProfile(d.tables.mice[0],catalog,d).calls['foxj1-cre'].alleles,['FoxJ1-Cre','+']);
+});
+test('Ai32 and Ai96 have separate selectable strain provenance with one unchanged physical locus',()=>{
+  const d=dataset(['Ai32(+/-)','Ai96(+/-)','Ai32(+/+)']),before=structuredClone(d),loci=discoverGenotypes(d),strains=catalogueStrains(loci);
+  assert.equal(loci.length,1);assert.equal(loci[0].id,'rosa26');assert.deepEqual(loci[0].alleles,['+','Ai32','Ai96']);
+  assert.deepEqual(strains.map(row=>[row.name,row.allele,row.occurrences]),[['Ai32','Ai32',2],['Ai96','Ai96',1]]);
+  assert.equal(strains[0].sources.length,2);assert.equal(strains[1].sources.length,1);assert.equal(strains[1].sources[0].cell,'row 3');assert(strains.every(row=>row.id==='rosa26'));assert.deepEqual(d,before);
+  assert.deepEqual(catalogueStrains(discoverGenotypes(dataset(['Ai32(+/-)']))).map(row=>row.name),['Ai32']);
+});
 
 test('runtime catalog discovers names and exact source provenance without treating WT as a locus',()=>{
   const d=dataset(['PER2::LUC(+/-), Bmal1(fl/fl), WT'],{mouse_genes:[{mouse_sid:'SYN-0',gene_value:'Novel-Cre(+/-)',source_column:'K',source_record_id:'synthetic-record'}],historical_observations:[{raw_text:'Legend: GAD67-tTA and Ai32',source_title:'Synthetic archive',source_sheet:'Legend',source_cell:'B2',source_url:'https://example.test/archive#range=B2'}],locations:[{source_block_text:'Ai96 (+/-); Bmal1-ELuc',source_title:'Synthetic archive',source_sheet:'Rack',source_cell:'A1'}]});
   const original=JSON.stringify(d),found=discoverGenotypes(d);
   assert.equal(JSON.stringify(d),original);
-  assert.deepEqual(found.map(item=>item.name).sort(),['Bmal1','Bmal1-ELuc','GAD67-tTA','Gt(ROSA)26Sor','Novel-Cre','PER2::LUC'].sort());
-  assert.deepEqual(found.find(item=>item.name==='Bmal1').alleles,['+','fl']);
+  assert.deepEqual(found.map(item=>item.name).sort(),['Bmal1-flox','Bmal1-ELuc','GAD67-tTA','Gt(ROSA)26Sor','Novel-Cre','PER2::LUC'].sort());
+  assert.deepEqual(found.find(item=>item.name==='Bmal1-flox').alleles,['+','fl']);
   const cre=found.find(item=>item.name==='Novel-Cre');assert.equal(cre.chromosome,'unknown');assert.equal(cre.sources[0].cell,'K2');
   const rosa=found.find(item=>item.id==='rosa26');assert.equal(rosa.chromosome,'6');assert.deepEqual(rosa.alleles,['+','Ai32','Ai96']);assert(rosa.sourceLabels.includes('Ai32'));assert(rosa.sourceLabels.includes('Ai96'));assert.equal(rosa.sources.length,2);
 });
@@ -84,7 +115,7 @@ test('spreadsheet AI coordinates are not reporter labels; named header columns r
 
 test('generic gene notation is not a named transgene and canonical label IDs cannot collide',()=>{
   const d=dataset(['Vgat(+/+), Meis1(+/-), Gene.A(+/-), Gene/A(+/-)']),catalog=discoverGenotypes(d);
-  const result=sourceProfile(d.tables.mice[0],catalog,d);assert.deepEqual(result.calls,{});assert.match(result.warnings.join(' '),/semantics are ambiguous/);
+  const result=sourceProfile(d.tables.mice[0],catalog,d);assert.deepEqual(result.calls,{vgat:{alleles:['+','+'],evidence:'inferred'}});assert.match(result.warnings.join(' '),/semantics are ambiguous/);
   const a=catalog.find(item=>item.name==='Gene.A'),b=catalog.find(item=>item.name==='Gene/A');assert.notEqual(a.id,b.id);
   assert.equal(discoverGenotypes(dataset(['Gene.A(+/-)']))[0].id,a.id);
 });

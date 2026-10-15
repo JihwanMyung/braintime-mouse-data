@@ -2,9 +2,9 @@
  * confirmed; source notation and tag primes never establish assay verification.
  * Omitted loci are unrecorded, never wild type. No archive prose is attributed
  * to a mouse. Ai32/Ai96 retain their shared Rosa26 locus. */
-import {mouseLineAssignments} from './mouse-summary.js?v=24';
-import {getStrainRegistry} from './strain-registry.js?v=24';
-import {discoverGenotypes,sourceProfile} from './genotype-catalog.js?v=24';
+import {mouseLineAssignments} from './mouse-summary.js?v=36';
+import {getStrainRegistry,canonicalLocusName,canonicalStrainName,explicitCreName,strainNameAliases,strainNamingWarning,legacyVgatCreName} from './strain-registry.js?v=36';
+import {discoverGenotypes,sourceProfile} from './genotype-catalog.js?v=36';
 import {validateGeneticProfile} from './genotype-schema.js?v=24';
 const str=value=>typeof value==='string'?value:'';
 const archived=row=>Boolean(row?.app_archived_at)||row?.archived===true;
@@ -12,10 +12,10 @@ const unique=values=>[...new Set(values)];
 const sorted=values=>[...values].sort((a,b)=>a.localeCompare(b));
 const pairKey=pair=>JSON.stringify(sorted(pair));
 const wild=value=>/^(?:\+|-|wt|wild[- ]?type|negative|neg|absent)$/i.test(str(value).trim());
-const flox=value=>/^(?:fl|f|flox|floxed|(?:Bmal1|Vgat)[- ]flox)$/i.test(str(value).trim());
+const flox=value=>/^(?:fl|f|flox|floxed|(?:Bmal1|Meis1|Vgat)[- ]flox)$/i.test(str(value).trim());
 const normalize=value=>str(value).trim().toLowerCase().replace(/[^a-z0-9]/g,'');
 const codes=['P','E','B','F','V','AD','A','32','Vg','Gt','96'];
-const aliases={P:['PER2::LUC','PER2:LUC'],E:['Bmal1-ELuc'],B:['Bmal1','Bmal1-flox'],F:['Foxj1-Cre'],V:['Vip-Cre'],AD:['APP/PS1'],A:['Avp-Cre'],'32':['Ai32'],Vg:['Vgat','Vgat-flox'],Gt:['GAD67-tTA','GAD67-tTA2'],'96':['Ai96']};
+const aliases={P:['PER2::LUC','PER2:LUC'],E:['Bmal1-ELuc'],B:['Bmal1-flox','Bmal1'],F:['FoxJ1-Cre','FoxJ-Cre'],V:['Vip-Cre'],AD:['APP/PS1'],A:['Avp-Cre'],'32':['Ai32'],Vg:['Vgat-flox','Vgat','Vgat-Cre'],Gt:['GAD67-tTA','GAD67-tTA2'],'96':['Ai96']};
 const byName=new Map(Object.entries(aliases).flatMap(([code,names])=>names.map(name=>[normalize(name),code])));
 const codeFor=value=>codes.includes(str(value).trim())?str(value).trim():byName.get(normalize(value))||null;
 const rosa=locus=>['rosa26','gtrosa26sor'].includes(normalize(locus?.name))||normalize(locus?.id)==='rosa26';
@@ -62,7 +62,7 @@ function shorthand(trait) {
 }
 function fromPair(code,locus,call,registry) {
   const known=registry.find(item=>item.key===code),custom=code.startsWith('locus:');
-  const trait={code,name:known?.name||locus.name,presence:'uncertain',dosage:'unknown',evidence:'uncertain',locus,declaredAlleles:Array.isArray(locus.alleles)?locus.alleles.filter(allele=>typeof allele==='string'):[]};
+  const trait={code,name:known?.name||canonicalLocusName(locus),presence:'uncertain',dosage:'unknown',evidence:'uncertain',locus,declaredAlleles:Array.isArray(locus.alleles)?locus.alleles.filter(allele=>typeof allele==='string'):[]};
   if(!['confirmed','inferred'].includes(call?.evidence)||!Array.isArray(call.alleles)||call.alleles.length!==2||!Array.isArray(locus.alleles)||!call.alleles.every(allele=>typeof allele==='string'&&locus.alleles.includes(allele)&&!/^(?:\?|unknown|undetermined|not[ -]?tested|untested|n\/?a)$/i.test(allele.trim())))return trait;
   const mutant=allele=>custom?!/^(?:\+|wt|wild[- ]?type)$/i.test(allele):['B','Vg'].includes(code)?flox(allele):codeFor(allele)===code;
   const valid=call.alleles.every(allele=>(!custom||allele!=='-')&&(wild(allele)||mutant(allele)||rosa(locus)&&['32','96'].includes(codeFor(allele))));
@@ -75,9 +75,9 @@ function profileTraits(profile,registry) {
   const invalid=validateGeneticProfile(profile).length>0;
   for(const locus of profile.loci) {
     if(!locus||typeof locus.id!=='string'||!locus.id||['__proto__','prototype','constructor'].includes(locus.id)||typeof locus.name!=='string')continue;
-    const known=codeFor(locus.name)||codeFor(locus.id),keys=rosa(locus)?['32','96']:known?[known]:[`locus:${locus.id}`];
+    const known=legacyVgatCreName(locus.name)&&locus.kind!=='flox'?null:codeFor(locus.name)||(explicitCreName(locus.name)?null:codeFor(locus.id)),keys=rosa(locus)?['32','96']:known?[known]:[`locus:${locus.id}`];
     for(const code of keys) {
-      const trait=fromPair(code,locus,invalid?null:profile.calls?.[locus.id],registry),old=result.get(code);
+      const trait=fromPair(code,locus,invalid||locus.kind==='cre'&&legacyVgatCreName(locus.name)?null:profile.calls?.[locus.id],registry),old=result.get(code);
       if(!old)result.set(code,trait);
       else if(old.evidence==='confirmed'&&trait.evidence!=='confirmed')continue;
       else if(trait.evidence==='confirmed'&&old.evidence!=='confirmed')result.set(code,trait);
@@ -97,6 +97,7 @@ function explicitNamedStatuses(values,registry) {
       if(/\?|unknown|untested/i.test(body))statuses.push('uncertain');
       // Gene-only minus notation may describe a different disrupted allele,
       // so it cannot establish absence of the floxed allele.
+      else if(legacyVgatCreName(alias)&&!tokens.includes('fl'))statuses.push('uncertain');
       else if(['B','Vg'].includes(item.key)&&tokens.includes('-'))statuses.push('uncertain');
       else if(['B','Vg'].includes(item.key)&&tokens.every(wild)||!['B','Vg'].includes(item.key)&&tokens.every(value=>/^(?:-|WT|wild[- ]?type|negative|neg|absent)$/i.test(value)))statuses.push('absent');
     }
@@ -114,23 +115,24 @@ function classify(mouse,genes,loci,registry) {
     if(status||explicit)traits.set(code,{code,name:reference.name,presence:status==='uncertain'||explicit==='uncertain'?'uncertain':status?'present':'absent',dosage:tag?.dosage||'unknown',dosageUncertain:tag?.dosageUncertain||false,evidence:status==='uncertain'||explicit==='uncertain'||tag?.dosageUncertain?'uncertain':'recorded'});
   }
   for(const locus of loci) {
-    const known=codeFor(locus.name)||codeFor(locus.id),keys=rosa(locus)?['32','96']:known?[known]:[`locus:${locus.id}`],call=parsed.calls[locus.id];
+    const known=legacyVgatCreName(locus.name)&&locus.kind!=='flox'?null:codeFor(locus.name)||(explicitCreName(locus.name)?null:codeFor(locus.id)),keys=rosa(locus)?['32','96']:known?[known]:[`locus:${locus.id}`],call=parsed.calls[locus.id];
     for(const code of keys) {
       if(call) {
         const proposed=fromPair(code,locus,call,registry),old=traits.get(code);
         if(old?.presence==='uncertain')traits.set(code,{...proposed,presence:'uncertain',dosage:'unknown',evidence:'uncertain',alleles:undefined});else traits.set(code,proposed);
-      } else if(code.startsWith('locus:')&&values.some(value=>new RegExp(`(?:^|[^A-Za-z0-9_:-])${escape(locus.name)}(?=$|[^A-Za-z0-9_:-])`,'i').test(value)))traits.set(code,fromPair(code,locus,null,registry));
+      } else if(code.startsWith('locus:')&&values.some(value=>new RegExp(`(?:^|[^A-Za-z0-9_:-])(?:${[...strainNameAliases(locus.name),...(locus.sourceLabels||[])].map(escape).join('|')})(?=$|[^A-Za-z0-9_:-])`,'i').test(value)))traits.set(code,fromPair(code,locus,null,registry));
     }
   }
   const contextual=values.some(value=>/^\s*(?:previously|formerly|historical|old|sire|dam|parents?)\b/i.test(value));
   if(contextual)for(const [code,trait] of traits)traits.set(code,{...trait,presence:'uncertain',dosage:'unknown',evidence:'uncertain',alleles:undefined});
   const reviewed=profileTraits(mouse.genetic_profile,registry);
   for(const [code,trait] of reviewed) {
-    const sourceAlias=code.startsWith('locus:')?[...traits.values()].find(old=>old.code.startsWith('locus:')&&old.code!==code&&normalize(old.name)===normalize(trait.name)):null;
+    const sourceAlias=code.startsWith('locus:')?[...traits.values()].find(old=>old.code.startsWith('locus:')&&old.code!==code&&normalize(canonicalStrainName(old.name))===normalize(canonicalStrainName(trait.name))):null;
     const old=traits.get(code)||sourceAlias;if(sourceAlias)traits.delete(sourceAlias.code);
     if(trait.evidence==='inferred'&&old&&(old.presence==='uncertain'||old.presence!==trait.presence||old.alleles&&pairKey(old.alleles)!==pairKey(trait.alleles||[])))traits.set(code,{...trait,presence:'uncertain',dosage:'unknown',evidence:'uncertain',alleles:undefined});else traits.set(code,trait);
   }
   const warnings=contextual?['Contextual or historical genotype prose requires review before use as a current allele call.']:[];
+  for(const locus of [...loci,...(Array.isArray(mouse.genetic_profile?.loci)?mouse.genetic_profile.loci:[])]){const warning=strainNamingWarning(locus);if(warning&&[...traits.values()].some(trait=>trait.locus?.id===locus.id))warnings.push(warning);}
   if(['32','96'].every(code=>traits.get(code)?.presence==='present')&&!['32','96'].every(code=>reviewed.get(code)?.alleles?.length===2&&rosa(reviewed.get(code)?.locus))) {
     for(const code of ['32','96'])traits.set(code,{...traits.get(code),dosage:'unknown',evidence:'uncertain',alleles:undefined,dosageUncertain:true});
     warnings.push('Ai32 and Ai96 share Rosa26. Review one two-allele call before planning this combination.');
@@ -139,7 +141,7 @@ function classify(mouse,genes,loci,registry) {
   if(compactCalls.has('WT'))traits.set('WT',{...compactCalls.get('WT'),name:'Wild type (recorded)',dosage:'unknown'});
   if(values.some(value=>/^\s*WT\s*\(\s*\+\s*\/\s*\+\s*\)\s*$/i.test(value)))traits.set('WT',{code:'WT',name:'Wild type (recorded)',presence:'present',dosage:'unknown',evidence:'recorded'});
   if(traits.has('WT')&&[...traits.values()].some(trait=>trait.code!=='WT'&&trait.presence==='present')) {traits.set('WT',{...traits.get('WT'),presence:'uncertain',evidence:'uncertain'});warnings.push('The broad WT label conflicts with a recorded variant; review its intended scope.');}
-  for(const warning of parsed.warnings)if(!/no explicit source genotype|Source-parsed calls/.test(warning)&&loci.some(locus=>values.some(value=>value.includes(locus.name))))warnings.push(warning);
+  for(const warning of parsed.warnings)if(!/no explicit source genotype|Source-parsed calls/.test(warning)&&loci.some(locus=>values.some(value=>[...strainNameAliases(locus.name),...(locus.sourceLabels||[])].some(label=>value.toLowerCase().includes(label.toLowerCase())))))warnings.push(warning);
   const order=new Map(registry.map((item,index)=>[item.key,index])),list=[...traits.values()].sort((a,b)=>(order.get(a.code)??100)-(order.get(b.code)??100)||a.name.localeCompare(b.name)).map(trait=>({...trait,shorthand:shorthand(trait)}));
   const confirmed=list.length>0&&list.every(trait=>trait.evidence==='confirmed'&&trait.presence!=='uncertain'),unresolved=!list.length||list.some(trait=>trait.evidence==='uncertain'||trait.presence==='uncertain'||trait.presence==='present'&&trait.dosage==='unknown'&&trait.code!=='WT');
   const evidenceLabel=confirmed?'Confirmed':unresolved?'Needs review':list.some(trait=>trait.evidence==='inferred')?'Inferred':'Recorded';

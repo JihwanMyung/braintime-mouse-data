@@ -1,11 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { STRAIN_ACRONYMS, INSERTION_TYPES, getStrainRegistry, validateStrainDefinition, buildStrainDefinition } from '../web/strain-registry.js';
+import { STRAIN_ACRONYMS, INSERTION_TYPES, getStrainRegistry, validateStrainDefinition, buildStrainDefinition, canonicalStrainName, strainNamingHelpHTML } from '../web/strain-registry.js';
 
 const empty=()=>({tables:{mice:[{mouse_sid:'SYNTHETIC-1'}],husbandry_events:[]}});
 const input=(code='P',extra={})=>({code,insertion_type:'knock_in',stock_reference:'Synthetic stock',notes:'Reviewed synthetic definition',...extra});
 const clock={now:'2025-03-05T09:00:00Z',eventDate:'2025-03-05'};
 const make=(code='P',extra={},dataset=empty())=>buildStrainDefinition(dataset,input(code,extra),clock);
+
+test('strain guide documents corrected names without inventing a Meis1 acronym or modifying Cre variants',()=>{
+  for(const gene of ['Bmal1','Meis1','Vgat'])assert.equal(canonicalStrainName(gene),gene+'-flox');
+  assert.equal(canonicalStrainName('FoxJ-Cre'),'FoxJ1-Cre');assert.equal(canonicalStrainName('Vgat-Cre'),'Vgat-flox');assert.equal(canonicalStrainName('FoxJ-CreERT2'),'FoxJ-CreERT2');
+  assert.equal(STRAIN_ACRONYMS.some(row=>row.key==='M'||row.name==='Meis1-flox'),false);assert.match(strainNamingHelpHTML(),/Meis1-flox has no confirmed shorthand/);assert.match(strainNamingHelpHTML(),/Vgat-CRE is a legacy lab name/);
+  const old=make('F').record;old.strain_definition.name='Foxj1-Cre';assert.deepEqual(validateStrainDefinition(old),[]);assert.equal(getStrainRegistry({tables:{husbandry_events:[old]}}).find(row=>row.key==='F').name,'FoxJ1-Cre');
+});
 
 test('registry preserves confirmed acronyms and separates unknown insertion types',()=>{
   const rows=getStrainRegistry(empty()),byCode=Object.fromEntries(rows.map(row=>[row.key,row]));
