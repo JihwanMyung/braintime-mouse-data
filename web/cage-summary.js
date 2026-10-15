@@ -1,5 +1,5 @@
 import { getCageSummaryOptions, getCageSummaryOptionsStatus } from './cage-summary-options.js?v=38';
-import { classifyAnimalSheetBreedingBlock } from './breeding-summary.js?v=39';
+import { classifyAnimalSheetBreedingBlock, sourceChangeBlocks } from './breeding-summary.js?v=48';
 
 const list=value=>Array.isArray(value)?value.filter(record=>record&&typeof record==='object'&&!Array.isArray(record)):[];
 const id=value=>typeof value==='string'?value.trim():typeof value==='number'&&Number.isFinite(value)?String(value):'';
@@ -27,23 +27,6 @@ function sourceUnit(group,assignment,cageId=null) {
   if(mode==='box_id')return boxId?JSON.stringify([assignment.roomId,'box',boxId]):null;
   if(mode==='cage'&&cageId)return JSON.stringify([assignment.roomId,'cage',cageId]);
   return assignment.locationId?JSON.stringify([assignment.roomId,'position',assignment.locationId]):null;
-}
-function sourceChangeBlocks(position,events,asOf) {
-  const seenAt=Date.parse(position.source_last_seen_at),changes=[];
-  for(const event of events) {
-    const change=event.animal_sheet_change;
-    if(archived(event)||event.event_type!=='animal_sheet_source_change'||change?.schema_version!==1||change.entity_type!=='locations'||id(change.entity_id)!==id(position.location_id))continue;
-    if(position.source_file_id&&event.source_file_id!==position.source_file_id)continue;
-    const date=validDate(change.observation_date)?change.observation_date:event.event_date;
-    if(!validDate(date)||date>asOf||date<position.source_snapshot_date)continue;
-    const capture=Date.parse(event.source_capture_at);
-    if(Number.isFinite(seenAt)&&Number.isFinite(capture)&&capture<seenAt)continue;
-    if(!['added','updated','conflict','withdrawn'].includes(change.action))continue;
-    changes.push({date,capture:Number.isFinite(capture)?capture:0,blocked:['conflict','withdrawn'].includes(change.action)});
-  }
-  // A tied unresolved observation wins; a later successful import can clear it.
-  changes.sort((a,b)=>b.date.localeCompare(a.date)||b.capture-a.capture||Number(b.blocked)-Number(a.blocked));
-  return changes[0]?.blocked===true;
 }
 function sourceAnimals(position,asOf,{allowLabelConflict=false}={}) {
   if(position.record_origin!=='current_google_sheet_map'||position.source_current!==true||position.source_historical||position.history_read_only||position.source_label_conflict&&!allowLabelConflict||position.source_import_conflict||!validDate(position.source_snapshot_date)||position.source_snapshot_date>asOf)return [];

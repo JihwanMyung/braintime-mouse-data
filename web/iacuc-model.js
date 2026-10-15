@@ -7,7 +7,12 @@ const string=v=>typeof v==='string'?v.trim():'';
 export function taipeiToday(now=new Date()){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);}
 const events=d=>list(d?.tables?.husbandry_events).filter(live);
 export const IACUC_SECTIONS=Object.freeze({aims:'Research aims',justification:'Why animals are needed',experimental_design:'Experimental design & analysis',animal_procedures:'Animal procedures',breeding:'Breeding plan',monitoring:'Monitoring & pain assessment',humane_endpoints:'Humane endpoints',anesthesia:'Anesthesia',analgesia:'Analgesia',euthanasia:'Euthanasia',replacement:'Replacement',reduction:'Reduction',refinement:'Refinement',personnel:'Trained personnel',notes:'Additional notes'});
-export function normalizeIacucNumber(value){return string(value).toUpperCase().replace(/[‐‑–—]/g,'-').replace(/\s+/g,'').replace(/^(SHLAC|LAC)-(?=\d{4})/,'$1')}
+export function normalizeIacucNumber(value){
+ const key=string(value).toUpperCase().replace(/[‐‑–—]/g,'-').replace(/\s+/g,'').replace(/^(SHLAC|LAC)-(?=\d{4})/,'$1');
+ // The explicit SH campus suffix is the legacy spelling of SHLAC. Bare LAC
+ // remains a different institution; resolution still requires one registry match.
+ return key.replace(/^LAC(20\d{2}-\d{4})\(SH\)$/,'SHLAC$1');
+}
 export function listIacucProtocols(dataset){return events(dataset).filter(r=>r.event_type==='iacuc_protocol'&&r.iacuc_protocol).sort((a,b)=>String(b.iacuc_protocol.start_date||'').localeCompare(String(a.iacuc_protocol.start_date||'')))}
 export function resolveIacucProtocol(value,dataset){const key=normalizeIacucNumber(value);if(!key)return null;const matches=listIacucProtocols(dataset).filter(r=>r.event_id===value||[r.iacuc_protocol.number,...list(r.iacuc_protocol.aliases)].some(n=>normalizeIacucNumber(n)===key));return matches.length===1?matches[0]:null}
 export function protocolDateStatus(protocol,today=taipeiToday()){const p=protocol?.iacuc_protocol||protocol||{};if(p.status!=='approved')return p.status||'unknown';if(date(p.start_date)&&p.start_date>today)return 'upcoming';if(date(p.end_date)&&p.end_date<today)return 'expired';return 'active'}

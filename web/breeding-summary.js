@@ -205,6 +205,25 @@ export function classifyAnimalSheetBreedingBlock(position={}){
  return {male,female,mixed:male>0&&female>0,evidence,unresolved};
 }
 
+// Shared with cage estimates: unresolved current source evidence cannot establish occupancy.
+export function sourceChangeBlocks(position,events,asOf) {
+  const seenAt=Date.parse(position.source_last_seen_at),changes=[];
+  for(const event of events) {
+    const change=event.animal_sheet_change;
+    if(archived(event)||event.event_type!=='animal_sheet_source_change'||change?.schema_version!==1||change.entity_type!=='locations'||recordId(change.entity_id)!==recordId(position.location_id))continue;
+    if(position.source_file_id&&event.source_file_id!==position.source_file_id)continue;
+    const date=calendarDay(change.observation_date)!==null?change.observation_date:event.event_date;
+    if(calendarDay(date)===null||date>asOf||date<position.source_snapshot_date)continue;
+    const capture=Date.parse(event.source_capture_at);
+    if(Number.isFinite(seenAt)&&Number.isFinite(capture)&&capture<seenAt)continue;
+    if(!['added','updated','conflict','withdrawn'].includes(change.action))continue;
+    changes.push({date,capture:Number.isFinite(capture)?capture:0,blocked:['conflict','withdrawn'].includes(change.action)});
+  }
+  // A tied unresolved observation wins; a later successful import can clear it.
+  changes.sort((a,b)=>b.date.localeCompare(a.date)||b.capture-a.capture||Number(b.blocked)-Number(a.blocked));
+  return changes[0]?.blocked===true;
+}
+
 /** User's operational rule: known male and female currently sharing a cage
  * are a breeding group. This is a housing estimate, not proof of fertility.
  * Source-only positions remain distinct from individually linked animals. */
@@ -221,10 +240,15 @@ export function estimateBreedingGroups(dataset,{asOf=localDate()}={}){
   const unresolvedMembers=['male','female'].some(role=>!rows(m[role+'_sids']).length||rows(m[role+'_sids']).some(member=>!matches.some(g=>g[role+'_sids'].includes(recordId(member)))));
   for(const g of matches)g.registered_mating_sids.push(sid);registered.push({mating_sid:sid,cage_sids:matches.map(g=>g.cage_sid),resolved:matches.length>0&&!unresolvedMembers,reason:ambiguous?'conflicting_registered_group':invalidDates?'invalid_mating_dates':!matches.length?'no_confirmed_current_mixed_sex_cage':unresolvedMembers?'some_registered_members_not_confirmed_current':'current_mixed_sex_members'});
  }
- const sourceGroups=[],sourceOverlaps=[],sourceConflicts=[],positionIndex=recordIndex(t.locations,'location_id',p=>JSON.stringify([archived(p),p.source_current,p.record_origin,p.source_snapshot_date,p.source_block_text]));
+ const sourceGroups=[],sourceOverlaps=[],sourceConflicts=[],sourceChanges=new Map(),sourceTagPositions=new Map(),sourceTagKey=e=>Number(e.source_animal_number)>=1000?'number:'+e.source_animal_number:'tag:'+e.canonical_tag,positionIndex=recordIndex(t.locations,'location_id',p=>JSON.stringify([archived(p),p.source_current,p.record_origin,p.source_snapshot_date,p.source_block_text,p.source_last_seen_at,p.source_file_id,p.source_historical,p.history_read_only,p.source_label_conflict,p.source_import_conflict]));
+ for(const event of rows(t.husbandry_events)){const change=event?.animal_sheet_change;if(event?.event_type!=='animal_sheet_source_change'||change?.schema_version!==1||change.entity_type!=='locations')continue;const positionId=recordId(change.entity_id),events=sourceChanges.get(positionId)||[];events.push(event);sourceChanges.set(positionId,events);}
  for(const [positionId,entry] of positionIndex){const pos=entry.record;if(entry.ambiguous){issues.push({kind:'conflicting_source_position',location_id:positionId});continue;}
-  if(!pos||archived(pos)||pos.source_current!==true||pos.record_origin!=='current_google_sheet_map'||pos.source_label_conflict)continue;const sourceDay=calendarDay(pos.source_snapshot_date);if(sourceDay===null||sourceDay>day)continue;
-  const observed=classifyAnimalSheetBreedingBlock(pos);if(!observed.mixed)continue;const locationId=recordId(pos.location_id);if(!locationId)continue;
+  if(!pos||archived(pos)||pos.source_current!==true||pos.record_origin!=='current_google_sheet_map'||pos.source_historical||pos.history_read_only||pos.source_label_conflict||pos.source_import_conflict)continue;const sourceDay=calendarDay(pos.source_snapshot_date);if(sourceDay===null||sourceDay>day)continue;
+  if(sourceChangeBlocks(pos,sourceChanges.get(positionId)||[],asOf)){issues.push({kind:'source_conflict_or_withdrawal',location_id:positionId});continue;}
+  const observed=classifyAnimalSheetBreedingBlock(pos),locationId=recordId(pos.location_id);if(!locationId)continue;
+  // A duplicate in a single-sex position is still contradictory housing evidence.
+  for(const e of observed.evidence){const ids=sourceTagPositions.get(sourceTagKey(e))||new Set();ids.add(locationId);sourceTagPositions.set(sourceTagKey(e),ids);}
+  if(!observed.mixed)continue;
   const associated=[...cages].filter(([,c])=>!c.ambiguous&&!archived(c.record)&&recordId(c.record.location_id)===locationId&&byCage.has(recordId(c.record.cage_sid))).map(([id])=>id);
   const item={group_id:'source:'+locationId,location_id:locationId,label:text(pos.label)||text(pos.source_label)||locationId,male_count:observed.male,female_count:observed.female,evidence:observed.evidence,unresolved:observed.unresolved,source_url:text(pos.source_url),source_cell:text(pos.source_cell),source_snapshot_date:pos.source_snapshot_date,source_age_days:day-sourceDay,basis:'current_animal_sheet_position',identity_confirmed:false,fertility_confirmed:false};
   const labelMatches=groups.filter(g=>text(g.cage_tag).replace(/\s+/g,'')===text(pos.label||pos.source_label).replace(/\s+/g,'')),candidateMatches=groups.filter(g=>[...g.male_sids,...g.female_sids].some(sid=>observed.evidence.some(e=>e.source_animal_number===sid)));const overlaps=groups.filter(g=>g.location_id===locationId);if(overlaps.length){sourceOverlaps.push({...item,cage_sids:overlaps.map(g=>g.cage_sid)});continue;}
@@ -232,7 +256,7 @@ export function estimateBreedingGroups(dataset,{asOf=localDate()}={}){
   if(associated.length){sourceConflicts.push({...item,cage_sids:associated,reason:'source_mixed_sex_disagrees_with_linked_current_residents'});continue;}
   if(!sourceGroups.some(g=>g.location_id===locationId))sourceGroups.push(item);
  }
- const sourceTagPositions=new Map(),key=e=>Number(e.source_animal_number)>=1000?'number:'+e.source_animal_number:'tag:'+e.canonical_tag;for(const source of [...sourceGroups,...sourceOverlaps,...sourceConflicts])for(const e of source.evidence){const ids=sourceTagPositions.get(key(e))||new Set();ids.add(source.location_id);sourceTagPositions.set(key(e),ids);}for(let i=sourceGroups.length-1;i>=0;i--){const source=sourceGroups[i];if(source.evidence.some(e=>sourceTagPositions.get(key(e)).size>1)){sourceConflicts.push({...source,reason:'same_animal_tag_or_number_in_multiple_current_positions'});sourceGroups.splice(i,1);}}
+ for(let i=sourceGroups.length-1;i>=0;i--){const source=sourceGroups[i];if(source.evidence.some(e=>sourceTagPositions.get(sourceTagKey(e)).size>1)){sourceConflicts.push({...source,reason:'same_animal_tag_or_number_in_multiple_current_positions'});sourceGroups.splice(i,1);}}
  const unresolvedRegisteredGroups=registered.filter(r=>!r.resolved),activeMouseSids=[...new Set(groups.flatMap(g=>[...g.male_sids,...g.female_sids,...g.unknown_sids]))];
  return {asOf,groups,currentCageCount:groups.length,inferredOnlyGroups:groups.filter(g=>!g.registered_mating_sids.length).length,registeredCount:registered.length,resolvedRegisteredCount:registered.filter(r=>r.resolved).length,unresolvedRegisteredGroups,sourceGroups,sourceOverlaps,sourceConflicts,sourceEstimatedCount:sourceGroups.length,totalGroups:groups.length+sourceGroups.length,activeMouseSids,issues};
 }

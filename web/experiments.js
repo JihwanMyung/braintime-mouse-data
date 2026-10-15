@@ -1,6 +1,6 @@
 import {EXPERIMENT_ASSAYS,EXPERIMENT_ASSAY_LABELS,EXPERIMENT_STATUSES,SAMPLE_STATUSES,EXPERIMENT_TIME_BASES,SAMPLE_DISPOSITIONS,blankExperiment,blankExperimentSample,buildExperiment,buildExperimentSample,listExperiments,listExperimentSamples,listExperimentRevisions,experimentMouseSids,sampleMouseSids,summarizeExperiments} from './experiment-model.js?v=43';
 import {experimentSources,hydrateExperimentSource,sourceAnimalCandidates,sourceParticipants,sourceProvenance,reviewedSourceMap} from './experiment-sources.js?v=47';
-import {sourceTimingEvidence} from './experiment-source-timing.js?v=46';
+import {sourceTimingEvidence} from './experiment-source-timing.js?v=48';
 import {blankEntrainment,calculatePhase,entrainmentHistoryCandidates,entrainmentLabel,calculateEntrainmentDuration} from './experiment-timing.js?v=24';
 import {getUserAcronyms,userLabel,getLabUserDirectoryVersion} from './user-acronyms.js?v=24';
 const mounts=new WeakMap(),esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

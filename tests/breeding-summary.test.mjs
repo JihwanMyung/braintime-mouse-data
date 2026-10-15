@@ -237,3 +237,59 @@ test('unconfirmed matching cage labels or animal numbers cannot add another curr
  }
  const data=dataset([],{locations:[sourcePosition('L1',{source_block_text:"T8: P M1001\nT9: P F1002"}),sourcePosition('L2',{source_block_text:"T8: P' M1001\nT9: P F1003"})]});assert.equal(estimateBreedingGroups(data,{asOf}).totalGroups,0);
 });
+
+const sourceChange=(position,action,extra={})=>({event_id:'SYNTHETIC-'+action,event_type:'animal_sheet_source_change',event_date:asOf,source_file_id:position.source_file_id,source_capture_at:asOf+'T01:00:00Z',animal_sheet_change:{schema_version:1,entity_type:'locations',entity_id:position.location_id,action,observation_date:asOf},...extra});
+const datedSource=()=>sourcePosition('SYNTHETIC-POSITION',{source_file_id:'SYNTHETIC-WORKBOOK',source_last_seen_at:asOf+'T00:00:00Z'});
+
+test('unresolved source conflicts and withdrawals block breeding estimates until a newer successful observation',()=>{
+ for(const action of ['conflict','withdrawn'])for(const resolvedAction of ['updated','added']){
+  const position=datedSource(),data=dataset([],{locations:[position],husbandry_events:[sourceChange(position,action)]}),before=structuredClone(data);
+  let out=estimateBreedingGroups(data,{asOf});assert.equal(out.sourceEstimatedCount,0);assert.equal(out.totalGroups,0);assert.deepEqual(out.issues,[{kind:'source_conflict_or_withdrawal',location_id:position.location_id}]);assert.deepEqual(data,before);
+  data.tables.husbandry_events.push(sourceChange(position,resolvedAction,{source_capture_at:asOf+'T02:00:00Z'}));
+  out=estimateBreedingGroups(data,{asOf});assert.equal(out.sourceEstimatedCount,1);assert.equal(out.totalGroups,1);assert.equal(out.issues.length,0);assert.equal(out.sourceGroups[0].identity_confirmed,false);
+ }
+});
+
+test('a tied unresolved source observation wins regardless of event order',()=>{
+ const position=datedSource();
+ for(const events of [[sourceChange(position,'updated'),sourceChange(position,'conflict')],[sourceChange(position,'withdrawn'),sourceChange(position,'added')]]){
+  assert.equal(estimateBreedingGroups(dataset([],{locations:[position],husbandry_events:events}),{asOf}).sourceEstimatedCount,0);
+  assert.equal(estimateBreedingGroups(dataset([],{locations:[position],husbandry_events:events.toReversed()}),{asOf}).sourceEstimatedCount,0);
+ }
+});
+
+test('older, future, unrelated and archived source changes do not block a current breeding estimate',()=>{
+ const position=datedSource(),change=sourceChange(position,'conflict');
+ for(const extra of [{source_capture_at:'2026-10-13T23:59:59Z'},{source_file_id:'OTHER-WORKBOOK'},{archived:true},{app_archived_at:asOf},{event_type:'other'},
+  {animal_sheet_change:{...change.animal_sheet_change,observation_date:'2026-10-13'}},{animal_sheet_change:{...change.animal_sheet_change,observation_date:'2026-10-15'}},
+  {animal_sheet_change:{...change.animal_sheet_change,entity_id:'OTHER-POSITION'}},{animal_sheet_change:{...change.animal_sheet_change,entity_type:'cages'}},{animal_sheet_change:{...change.animal_sheet_change,schema_version:2}}]){
+  const data=dataset([],{locations:[position],husbandry_events:[{...change,...extra}]});assert.equal(estimateBreedingGroups(data,{asOf}).sourceEstimatedCount,1,JSON.stringify(extra));
+ }
+});
+
+test('historical, read-only or import-conflicted positions cannot count, including conflicting duplicate flags',()=>{
+ for(const flags of [{source_current:false},{source_historical:true},{history_read_only:true},{source_import_conflict:'Needs review'},{source_label_conflict:true}]){
+  const position=datedSource(),blocked={...position,...flags};
+  assert.equal(estimateBreedingGroups(dataset([],{locations:[blocked]}),{asOf}).sourceEstimatedCount,0);
+  for(const locations of [[position,blocked],[blocked,position]]){
+   const out=estimateBreedingGroups(dataset([],{locations}),{asOf});assert.equal(out.sourceEstimatedCount,0);assert.equal(out.issues[0].kind,'conflicting_source_position');
+  }
+ }
+});
+
+test('a sole female repeated in a single-sex position leaves a source breeding group unresolved',()=>{
+ const mixed=sourcePosition('MIXED',{source_block_text:"T7: Synthetic mixed cage\nT8: EB'-M3205\nT9: B'-F3287"}),single=sourcePosition('SINGLE',{source_block_text:"T7: Synthetic female cage\nT8: PB'-F3284\nT9: B'-F3287"});
+ for(const locations of [[mixed,single],[single,mixed]]){
+  const data=dataset([],{locations}),before=structuredClone(data),out=estimateBreedingGroups(data,{asOf});
+  assert.equal(out.sourceEstimatedCount,0);assert.equal(out.totalGroups,0);assert.equal(out.sourceConflicts.length,1);assert.equal(out.sourceConflicts[0].location_id,'MIXED');assert.equal(out.sourceConflicts[0].reason,'same_animal_tag_or_number_in_multiple_current_positions');assert.equal(out.sourceConflicts[0].female_count,1);assert.equal(out.sourceConflicts[0].identity_confirmed,false);assert.deepEqual(data,before);
+ }
+ // Historical and unresolved-source rows cannot contradict eligible current evidence.
+ for(const extra of [{source_current:false},{source_historical:true},{history_read_only:true},{source_import_conflict:true}])assert.equal(estimateBreedingGroups(dataset([],{locations:[mixed,{...single,...extra}]}),{asOf}).sourceEstimatedCount,1);
+ const events=[sourceChange(single,'withdrawn')];assert.equal(estimateBreedingGroups(dataset([],{locations:[mixed,single],husbandry_events:events}),{asOf}).sourceEstimatedCount,1);
+});
+
+test('duplicate source tags do not remove an independently recorded current mixed-sex cage',()=>{
+ const linked=sourcePosition('LINKED',{source_block_text:"T8: P M1001\nT9: B F1002"}),other=sourcePosition('OTHER',{source_block_text:'T8: B F1002'});
+ const data=cohouse(dataset([{mouse_sid:'1001',sex:'Male'},{mouse_sid:'1002',sex:'Female'}],{locations:[linked,other]}),['1001','1002']);data.tables.cages[0].location_id='LINKED';
+ const out=estimateBreedingGroups(data,{asOf});assert.equal(out.currentCageCount,1);assert.equal(out.totalGroups,1);assert.equal(out.sourceEstimatedCount,0);assert.equal(out.sourceOverlaps.length,1);assert.deepEqual(out.activeMouseSids,['1001','1002']);
+});

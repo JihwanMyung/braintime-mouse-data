@@ -2,8 +2,8 @@ import {clearHistoryIndex} from './history-index.js';
 import { projectLocoboxExport } from './locobox-export.js?v=24';
 import { PUBLIC_CONFIG } from './config.js';
 import { validateManagerPermissions } from './permissions.js';
-import { normalizeDataset, ID_FIELDS } from './model.js?v=36';
-import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js?v=36';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=48';
+import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js?v=48';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
 const CLOUD_CACHE_KEY='mouse-colony.cloud-cache-context.v1';
@@ -397,7 +397,7 @@ async function readCloudPage(read,limit,check){
     catch(error){
       check();
       if(error.statementTimeout!==true||limit<=1)throw error;
-      // Keep the same offset: the failed query returned no usable records.
+      // Keep the same cursor/offset: the failed query returned no usable records.
       // Retain the smaller page size for the rest of this stream.
       limit=Math.max(1,Math.floor(limit/2));
     }
@@ -411,16 +411,31 @@ async function allRecords(onProgress=null){
   try{
   // Keep healthy reads efficient; only a confirmed timeout reduces a page.
   // Archive chunks are larger, so their initial page remains much smaller.
-  for(const [filter,initialLimit] of (policy.source_archive_allowed?[['neq.archive',1000],['eq.archive',3]]:[['neq.archive',1000]])){
-    let offset=0,limit=initialLimit;
-    progress(filter==='eq.archive'?'archive':'records');
+  // Bound every page with the primary key before RLS evaluates its payload.
+  // OFFSET repeatedly scans all preceding rows and can time out even at LIMIT 1.
+  for(const type of [...MANAGED,...(policy.source_archive_allowed?['archive']:[])]){
+    let cursor=null,limit=type==='archive'?3:1000;const seen=new Set();
+    progress(type==='archive'?'archive':'records');
     while(true){
-      const loaded=await readCloudPage(size=>request(`entity_records?select=colony_id,entity_type,entity_id,payload,version,archived&colony_id=eq.${encodeURIComponent(c.colonyId)}&entity_type=${filter}&order=entity_type.asc,entity_id.asc&limit=${size}&offset=${offset}`),limit,check);
+      const loaded=await readCloudPage(size=>{
+        const query=new URLSearchParams({select:'colony_id,entity_type,entity_id,payload,version,archived',colony_id:`eq.${c.colonyId}`,entity_type:`eq.${type}`,order:'entity_id.asc',limit:String(size)});
+        // A top-level gt value is literal PostgREST text. URL encoding protects
+        // punctuation, quotes and Unicode without changing the stored ID.
+        if(cursor!==null)query.set('entity_id',`gt.${cursor}`);
+        return request(`entity_records?${query}`);
+      },limit,check);
       const page=loaded.page;limit=loaded.limit;
-      if(!Array.isArray(page))throw new Error('Cloud records were not returned as a list.');
-      if(filter==='eq.archive')archiveBlocksLoaded+=page.length;else recordsLoaded+=page.length;
-      progress(filter==='eq.archive'?'archive':'records');
-      result.push(...(policy.source_archive_allowed?page:page.filter(r=>r.entity_type!=='locations'&&!feeRecord(r))));if(page.length<limit)break;offset+=page.length;
+      if(!Array.isArray(page)||page.length>limit)throw new Error('Cloud records were not returned as a valid page.');
+      for(const row of page){
+        // PostgreSQL btrim(id) excludes only ordinary spaces, not tabs/NBSP.
+        if(!row||typeof row.colony_id!=='string'||row.colony_id.toLowerCase()!==c.colonyId.toLowerCase()||row.entity_type!==type||typeof row.entity_id!=='string'||!row.entity_id.length||row.entity_id.startsWith(' ')||row.entity_id.endsWith(' ')||[...row.entity_id].length>200||!Number.isSafeInteger(row.version)||row.version<1||typeof row.archived!=='boolean'||!row.payload||typeof row.payload!=='object'||Array.isArray(row.payload)||type!=='archive'&&row.payload[ID_FIELDS[type]]!==row.entity_id)throw new Error('Cloud page contains an invalid or unrelated record.');
+        if(seen.has(row.entity_id))throw new Error('Cloud page cursor did not advance. Pull again.');
+        seen.add(row.entity_id);
+      }
+      if(type==='archive')archiveBlocksLoaded+=page.length;else recordsLoaded+=page.length;
+      progress(type==='archive'?'archive':'records');
+      result.push(...(policy.source_archive_allowed?page:page.filter(r=>r.entity_type!=='locations'&&!feeRecord(r))));if(page.length<limit)break;
+      cursor=page.at(-1).entity_id;
     }
   }
   if(!policy.source_archive_allowed){

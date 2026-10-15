@@ -6,6 +6,21 @@ function fixture(){return {tables:{mice:[{mouse_sid:'1',state:'Stock',date_of_bi
 function assignment(d,type,id,purpose='breeding',extra={}){d.tables.husbandry_events.push({event_id:'A'+d.tables.husbandry_events.length,event_type:'iacuc_assignment',event_date:'2026-01-01',iacuc_assignment:{schema_version:1,protocol_id:'P1',entity_type:type,entity_id:id,purpose,valid_from:'2026-01-01',valid_to:null,evidence_status:'confirmed',...extra}})}
 function use(d,ids,date='2026-04-01',category='used',extra={}){d.tables.husbandry_events.push({event_id:'U'+d.tables.husbandry_events.length,event_type:'iacuc_usage',event_date:date,iacuc_usage:{schema_version:1,protocol_id:'P1',mouse_sids:ids,event_date:date,category,unregistered_count:0,evidence_status:'confirmed',...extra}})}
 test('numbers preserve prefixes and only explicit aliases resolve',()=>{const d=fixture();assert.equal(resolveIacucProtocol('LAC-2026-0001',d).event_id,'P1');assert.equal(resolveIacucProtocol('2026-0001',d),null);assert.equal(resolveIacucProtocol('0001',d),null)});
+test('an explicit SH campus suffix resolves the unique SHLAC protocol without merging ordinary LAC',()=>{
+ const d=fixture();d.tables.husbandry_events[0].iacuc_protocol.aliases=[];const before=structuredClone(d);
+ for(const value of ['LAC2026-0001(SH)','LAC-2026-0001 (SH)',' lac-2026-0001 ( sh ) '])assert.equal(resolveIacucProtocol(value,d)?.event_id,'P1');
+ for(const value of ['LAC2026-0001','LAC-2026-0001','LAC2025-0001(SH)','LAC2026-0001(TM)','LAC2026-001(SH)','2026-0001(SH)','LAC2026-0001(SH) notes'])assert.equal(resolveIacucProtocol(value,d),null);
+ assert.deepEqual(d,before);
+});
+test('conflicting explicit SH aliases stay unresolved rather than overriding a registered protocol',()=>{
+ const d=fixture();d.tables.husbandry_events[0].iacuc_protocol.aliases=[];d.tables.husbandry_events.push({...structuredClone(protocol),event_id:'P2',iacuc_protocol:{...structuredClone(protocol.iacuc_protocol),protocol_id:'P2',number:'LAC2026-0001',aliases:['LAC2026-0001(SH)']}});
+ d.tables.mice[0].protocol='LAC2026-0001(SH)';assert.equal(resolveIacucProtocol('LAC2026-0001(SH)',d),null);assert.equal(resolveIacucProtocol('LAC2026-0001',d)?.event_id,'P2');
+ for(const id of ['P1','P2'])assert.equal(summarizeIacuc(d,id,{today:'2026-10-15'}).livingAssigned,0);
+});
+test('legacy SH protocol spelling restores recorded associations without confirming use or births',()=>{
+ const d=fixture();d.tables.husbandry_events[0].iacuc_protocol.aliases=[];d.tables.mice[0].protocol='LAC2026-0001(SH)';d.tables.cages[0].cage_protocol='LAC-2026-0001 (SH)';const before=structuredClone(d);
+ const result=summarizeIacuc(d,'P1',{today:'2026-10-15'});assert.equal(result.livingAssigned,1);assert.equal(result.cagesAssigned,1);assert.equal(result.used,0);assert.equal(result.bred,0);assert.equal(result.breeders,0);assert.equal(protocolsForEntity(d,'mice','1',{day:'2026-10-15'})[0].event_id,'P1');assert.deepEqual(d,before);
+});
 test('repeat usage is deduplicated; unconfirmed and out-of-period evidence does not inflate counts',()=>{const d=fixture();use(d,['1']);use(d,['1','2']);use(d,['3'],'2026-04-01','used',{evidence_status:'source'});use(d,['3'],'2025-04-01');use(d,[],'2026-05-01','used',{unregistered_count:4});const s=summarizeIacuc(d,'P1');assert.equal(s.used,2);assert.equal(s.portalUsed,3);assert.equal(s.unidentified[0].count,4);assert.equal(s.uniqueRecordedAnimals,2);assert.ok(s.issues.length>=2)});
 test('breeding is based on dated litter or mating links and keeps unidentified births separate',()=>{const d=fixture();assignment(d,'matings','M1');const s=summarizeIacuc(d,'P1',{today:'2026-10-15'});assert.equal(s.bred,2);assert.equal(s.breeders,1);assert.equal(s.unidentified[0].count,1);assert.equal(s.used,0)});
 test('cage links do not imply all resident mice were used or born under the protocol',()=>{const d=fixture();d.tables.mice[0].cage_sid='C1';assignment(d,'cages','C1','housing');const s=summarizeIacuc(d,'P1',{today:'2026-10-15'});assert.equal(s.cagesAssigned,1);assert.equal(s.used,0);assert.equal(s.bred,0);assert.equal(s.livingAssigned,0)});

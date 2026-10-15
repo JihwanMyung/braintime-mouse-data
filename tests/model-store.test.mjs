@@ -109,8 +109,8 @@ function installServer(){
       return new Response(server.objects.get(path),{headers:{'Content-Type':'application/json'}});
     }
     if(u.pathname.endsWith('/entity_records')){
-      const type=u.searchParams.get('entity_type');
-      const all=[...server.records.values()].filter(r=>type==='eq.archive'?r.entity_type==='archive':type==='neq.archive'?r.entity_type!=='archive':true).sort((a,b)=>`${a.entity_type}:${a.entity_id}`.localeCompare(`${b.entity_type}:${b.entity_id}`));
+      const type=u.searchParams.get('entity_type'),after=u.searchParams.get('entity_id');
+      const all=[...server.records.values()].filter(r=>(type?.startsWith('eq.')?r.entity_type===type.slice(3):type==='neq.archive'?r.entity_type!=='archive':true)&&(!after||r.entity_id.localeCompare(after.slice(3))>0)).sort((a,b)=>`${a.entity_type}:${a.entity_id}`.localeCompare(`${b.entity_type}:${b.entity_id}`));
       const offset=Number(u.searchParams.get('offset')??0);return response(all.slice(offset,offset+Number(u.searchParams.get('limit')??1000)));
     }
     if(u.pathname.endsWith('/rpc/save_records')){
@@ -236,32 +236,33 @@ test('paginated pull includes more than 1000 mice, batch upload caps at 200, ref
   const d=createSyntheticDataset();d.tables.mice=Array.from({length:2101},(_,i)=>({mouse_sid:`SYN-${String(i).padStart(5,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
   await store.pushToCloud(d);assert.equal((await store.loadDataset()).tables.mice.length,2101);assert(server.refreshes>=1);
   const batches=server.calls.filter(c=>c.url.endsWith('/rpc/save_records')).map(c=>JSON.parse(c.options.body).p_changes.length);assert(batches.every(n=>n<=200));
-  assert(server.calls.some(c=>c.url.includes('offset=2000')));
+  assert(server.calls.some(c=>new URL(c.url).searchParams.get('entity_id')==='gt.SYN-01999'));
+  assert(server.calls.filter(c=>new URL(c.url).pathname.endsWith('/entity_records')).every(c=>!new URL(c.url).searchParams.has('offset')));
 });
-test('cloud pull shrinks only timed-out read pages, keeps offsets and preserves every archive and managed row',async()=>{
+test('cloud pull shrinks only timed-out read pages, keeps keyset cursors and preserves every archive and managed row',async()=>{
  const data=createSyntheticDataset();data.tables.mice=Array.from({length:645},(_,i)=>({mouse_sid:`READ-${String(i).padStart(4,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
  data.tables.source_history=Array.from({length:6},(_,i)=>({source_record_id:`history-${i}`,text:'archived evidence '.repeat(10000)}));
  await connected(data);const originalFetch=fetch,attempts=[],archiveSizes=[],batches=server.batches;
  globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')){
-  const limit=Number(u.searchParams.get('limit')),offset=Number(u.searchParams.get('offset'));
-  if(u.searchParams.get('entity_type')==='neq.archive'){
-   attempts.push({offset,limit});if(limit>(offset===0?100:30))return response({code:'57014',message:'canceling statement due to statement timeout'},500);
-  }else archiveSizes.push(limit);
+  const limit=Number(u.searchParams.get('limit')),cursor=u.searchParams.get('entity_id');
+  if(u.searchParams.get('entity_type')==='eq.mice'){
+   attempts.push({cursor,limit});if(limit>(cursor===null?100:30))return response({code:'57014',message:'canceling statement due to statement timeout'},500);
+  }else if(u.searchParams.get('entity_type')==='eq.archive')archiveSizes.push(limit);
  }return originalFetch(url,options);};
  const result=await store.pullFromCloud();
  assert.deepEqual(result.tables.mice.map(r=>r.mouse_sid),data.tables.mice.map(r=>r.mouse_sid));assert.deepEqual(result.tables.source_history,data.tables.source_history);
- assert.deepEqual(attempts.slice(0,8),[{offset:0,limit:1000},{offset:0,limit:500},{offset:0,limit:250},{offset:0,limit:125},{offset:0,limit:62},{offset:62,limit:62},{offset:62,limit:31},{offset:62,limit:15}]);
+ assert.deepEqual(attempts.slice(0,8),[{cursor:null,limit:1000},{cursor:null,limit:500},{cursor:null,limit:250},{cursor:null,limit:125},{cursor:null,limit:62},{cursor:'gt.READ-0061',limit:62},{cursor:'gt.READ-0061',limit:31},{cursor:'gt.READ-0061',limit:15}]);
  assert(attempts.slice(8).every(row=>row.limit===15));assert(archiveSizes.length>1);assert(archiveSizes.every(size=>size===3));assert.equal(server.batches,batches);assert.equal(store.getCloudStatus().readyForEdits,true);
 });
 test('exhausted statement-timeout retries stop at one row and preserve the previous cache after partial progress',async()=>{
  const data=createSyntheticDataset();data.tables.mice=Array.from({length:1005},(_,i)=>({mouse_sid:`KEEP-${String(i).padStart(4,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
  const before=await connected(data),mark=localStorage.getItem('mouse-colony.cloud-cache-context.v1'),originalFetch=fetch,attempts=[];
- globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='neq.archive'){
-  const offset=Number(u.searchParams.get('offset')),limit=Number(u.searchParams.get('limit'));attempts.push({offset,limit});
-  if(offset>=1000)return response({code:'57014',message:'canceling statement due to statement timeout'},500);
+ globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.mice'){
+  const cursor=u.searchParams.get('entity_id'),limit=Number(u.searchParams.get('limit'));attempts.push({cursor,limit});
+  if(cursor!==null)return response({code:'57014',message:'canceling statement due to statement timeout'},500);
  }return originalFetch(url,options);};
  await assert.rejects(store.pullFromCloud(),/statement timeout/);
- assert.deepEqual(attempts,[{offset:0,limit:1000},...[1000,500,250,125,62,31,15,7,3,1].map(limit=>({offset:1000,limit}))]);
+ assert.deepEqual(attempts,[{cursor:null,limit:1000},...[1000,500,250,125,62,31,15,7,3,1].map(limit=>({cursor:'gt.KEEP-0999',limit}))]);
  assert.deepEqual(idbData.get('current'),before);assert.equal(localStorage.getItem('mouse-colony.cloud-cache-context.v1'),mark);assert.equal(store.getCloudStatus().readyForEdits,false);
 });
 test('permission, network and other query cancellation failures are never retried',async()=>{
@@ -280,6 +281,46 @@ test('account changes during a timed-out read prevent any retry with the changed
  await connected();const originalFetch=fetch;let attempts=0;
  globalThis.fetch=async(url,options)=>{if(new URL(url).pathname.endsWith('/entity_records')){attempts++;await store.signOut();return response({code:'57014',message:'canceling statement due to statement timeout'},500);}return originalFetch(url,options);};
  await assert.rejects(store.pullFromCloud(),/account or colony changed/);assert.equal(attempts,1);assert.equal(store.getCloudStatus().signedIn,false);assert.equal(idbData.get('current'),undefined);
+});
+test('keyset cursor keeps punctuation and Unicode IDs literal without adding filters',async()=>{
+ const data=createSyntheticDataset(),ids=['ID,colon:(x)"\\ & = 雪','ID.+%/é','ID)\"&entity_type=eq.archive','\tTAB','NBSP\u00a0','\u2003WIDE'];
+ data.tables.mice=ids.map(mouse_sid=>({mouse_sid,sex:'Unknown',sire_sids:[],dam_sids:[]}));
+ await connected(data);const originalFetch=fetch,queries=[];
+ globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.mice'){
+  if(Number(u.searchParams.get('limit'))>1)return response({code:'57014',message:'canceling statement due to statement timeout'},500);
+  queries.push(u.searchParams);
+ }return originalFetch(url,options);};
+ const result=await store.pullFromCloud();assert.deepEqual(result.tables.mice.map(row=>row.mouse_sid).sort(),[...ids].sort());
+ assert.deepEqual(new Set(queries.filter(q=>q.has('entity_id')).map(q=>q.get('entity_id').slice(3))),new Set(ids));
+ for(const query of queries){assert.equal(query.get('entity_type'),'eq.mice');assert.equal(query.get('colony_id'),'eq.'+cid);assert.equal(query.get('order'),'entity_id.asc');assert(!query.has('offset'));assert(!query.has('and'));assert(!query.has('or'));assert.equal(query.getAll('entity_type').length,1);}
+});
+test('malformed, duplicate or unrelated cloud page records cannot replace a verified cache',async()=>{
+ const cases=[
+  rows=>({...rows[0],colony_id:uid}),rows=>({...rows[0],entity_type:'archive'}),rows=>({...rows[0],entity_type:'unsupported_type'}),rows=>({...rows[0],entity_id:''}),
+  rows=>({...rows[0],version:0}),rows=>({...rows[0],archived:'false'}),rows=>({...rows[0],payload:[]}),
+  rows=>({...rows[0],payload:{...rows[0].payload,mouse_sid:'DIFFERENT'}}),
+ ];
+ for(const change of cases){
+  const before=await connected(),originalFetch=fetch;let attempts=0;
+  globalThis.fetch=async(url,options)=>{const u=new URL(url),reply=await originalFetch(url,options);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.mice'){attempts++;const rows=await reply.json();return response([change(rows)]);}return reply;};
+  await assert.rejects(store.pullFromCloud(),/invalid or unrelated record/);assert.equal(attempts,1);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
+ }
+ const before=await connected(),originalFetch=fetch;
+ globalThis.fetch=async(url,options)=>{const u=new URL(url),reply=await originalFetch(url,options);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.mice'){const rows=await reply.json();return response([rows[0],rows[0]]);}return reply;};
+ await assert.rejects(store.pullFromCloud(),/cursor did not advance/);assert.deepEqual(idbData.get('current'),before);
+});
+test('keyset record streams cover every entity type allowed by the maintained server schema',async()=>{
+ const sql=await readFile(new URL('../supabase/schema.sql',import.meta.url),'utf8'),match=sql.match(/entity_type text not null check \(entity_type in \(([^)]+)\)\)/);
+ assert(match);const serverTypes=[...match[1].matchAll(/'([^']+)'/g)].map(match=>match[1]);
+ assert.deepEqual(serverTypes.sort(),[...Object.keys(ID_FIELDS),'archive'].sort());
+});
+test('a repeated keyset page fails without looping or publishing a partial cache',async()=>{
+ const data=createSyntheticDataset();data.tables.mice=Array.from({length:1001},(_,i)=>({mouse_sid:`CURSOR-${String(i).padStart(4,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
+ const before=await connected(data),originalFetch=fetch;let page,attempts=0;
+ globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.mice'){
+  attempts++;if(page)return response(page);const reply=await originalFetch(url,options);page=await reply.json();return response(page);
+ }return originalFetch(url,options);};
+ await assert.rejects(store.pullFromCloud(),/cursor did not advance/);assert.equal(attempts,2);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
 });
 test('pull progress contains only verified phase/count metadata and cannot interrupt the data read',async()=>{
  const before=await connected(),updates=[];
@@ -343,8 +384,8 @@ test('synthetic scale dataset preserves archive history through bounded uploads 
   const archives=[...server.records.values()].filter(r=>r.entity_type==='archive');
   assert(archives.length>3);assert(archives.every(r=>utf8Size(r.payload)<=MAX_ARCHIVE_PAYLOAD_BYTES));
   const writes=server.calls.filter(c=>c.url.endsWith('/rpc/save_records'));assert(writes.every(c=>Buffer.byteLength(c.options.body)<=MAX_RPC_BYTES));
-  assert(server.calls.some(c=>c.url.includes('offset=6000')));
-  assert(server.calls.some(c=>c.url.includes('entity_type=eq.archive')&&c.url.includes('offset=3')));
+  assert(server.calls.filter(c=>new URL(c.url).searchParams.get('entity_type')==='eq.mice'&&new URL(c.url).searchParams.has('entity_id')).length>=6);
+  assert(server.calls.some(c=>new URL(c.url).searchParams.get('entity_type')==='eq.archive'&&new URL(c.url).searchParams.has('entity_id')));
 });
 test('complete reconstructed dataset plus augmented history round-trips all records through paginated cloud storage',async context=>{
   const d=await privateFixture(context,'dataset.json');if(!d)return;
@@ -358,7 +399,7 @@ test('complete reconstructed dataset plus augmented history round-trips all reco
   assert.deepEqual(loaded,expected);
   const archive=await decodeArchive([...server.records.values()]);assert.deepEqual(archive.tables.historical_observations,d.tables.historical_observations);
   assert.deepEqual(archive.historical_import,d.historical_import);assert.deepEqual(archive.tables.parent_observations,d.tables.parent_observations);
-  assert(server.calls.some(c=>c.url.includes('offset=6000')));
+  assert(server.calls.some(c=>new URL(c.url).searchParams.get('entity_type')==='eq.mice'&&new URL(c.url).searchParams.has('entity_id')));
   const index={sources:d.historical_import.sources,sheets:[{name:'synthetic'}],cells:Array.from({length:1007},(_,i)=>[0,0,`A${i+1}`,String(i).padStart(5,'0')])};
   await store.uploadHistoryIndex(index);assert.deepEqual(await store.downloadHistoryIndex(),index);
 });

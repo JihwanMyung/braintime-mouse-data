@@ -1,5 +1,5 @@
 import { validateLocoboxRecord } from './locobox-model.js?v=24';
-import { validateIacucRecord } from './iacuc-model.js?v=24';
+import { validateIacucRecord } from './iacuc-model.js?v=48';
 import { validateLacFeeRecord } from './lac-fee-model.js?v=33';
 import { validateUserAcronym } from './user-acronyms.js';
 import { validateCageSummaryOptions } from './cage-summary-options.js?v=33';

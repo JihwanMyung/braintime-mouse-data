@@ -23,6 +23,11 @@ export function sourceTimingEvidence(source) {
     if(/co[ -]?culture/i.test(label)&&/decap/i.test(label))kind='Co-culture donor timing';
     else if(/decap/i.test(label))kind=/\bdate\b/i.test(label)?'Date field mentioning decapitation':'Decapitation label';
     else if(phase)kind='Circadian timing label';
+    else if(/\bhour\s*-\s*7\b/i.test(label))kind='Historical derived time label';
+    else if(source?.kind==='csf_sample'&&/^actual time$/i.test(label))kind='CSF actual-time label';
+    else if(source?.kind==='assay_run'&&/^\/?\s*hour$/i.test(label))kind='Assay hour label';
+    else if(source?.kind==='assay_run'&&/^running time\s*\/\s*date$/i.test(label))kind='Assay run date label';
+    else if(/^samplig time$/i.test(label))kind='Sampling timing (source spelling)';
     else if(/\bin[- ]dish\s+explant\s+(?:time|hour|date)\b/i.test(label))kind='In-dish explant timing';
     else if(/sampl(?:ing|e).*\b(?:time|hour|date|duration)\b|RNA sampling time/i.test(label))kind='Sampling timing';
     else if(/post[ -]?hoc sampling/i.test(label))kind='Post-hoc sampling';

@@ -37,3 +37,22 @@ test('in-dish explant time is a separate literal source event, not sampling or i
   assert.equal(result.rows.some(row=>/Circadian timing/.test(row.label)),false);assert.deepEqual(Object.keys(result),['rows','warnings']);assert.deepEqual(source,before);
   const phase=sourceTimingEvidence({raw_values:{'In-dish explant time (ZT)':'4.5'}});assert.match(phase.rows[0].label,/^Circadian timing label/);assert.equal(phase.rows[0].value,'4.5');
 });
+
+
+test('CSF actual time and misspelled sampling labels stay source values without inferred clock events',()=>{
+  const csf={kind:'csf_sample',raw_values:{'Actual time':'13:43:00','Decapitation time':'13:35:00','Actual ZT (CSF ZT)':6.7}},before=structuredClone(csf),result=sourceTimingEvidence(csf);
+  assert.match(result.rows[0].label,/^CSF actual-time label/);assert.equal(result.rows[0].value,'13:43:00');assert.match(result.rows[1].label,/^Decapitation label/);assert.match(result.rows[2].label,/^Circadian timing label/);assert.deepEqual(csf,before);assert.deepEqual(Object.keys(result),['rows','warnings']);
+  const typo=sourceTimingEvidence({kind:'instrument_channel',raw_values:{sample:{'Samplig time':'prep 2/27, record 3/3-'}}});assert.match(typo.rows[0].label,/^Sampling timing \(source spelling\) · sample \/ Samplig time$/);assert.equal(typo.rows[0].value,'prep 2/27, record 3/3-');
+  assert.equal(sourceTimingEvidence({kind:'source_matrix_review',raw_values:{'Actual time':'13:43:00'}}).rows.length,0);
+});
+
+test('assay hours and run dates are distinct from animal decapitation and sampling',()=>{
+  const result=sourceTimingEvidence({kind:'assay_run',raw_values:{'A · Running time / Date':'2019-08-27T00:00:00','B · / Hour':'14:00:00','C · Sampling time':'11:15:00'}});
+  assert.equal(result.rows.length,3);assert.match(result.rows[0].label,/^Assay run date label/);assert.equal(result.rows[0].value,'2019-08-27T00:00:00');assert.match(result.rows[1].label,/^Assay hour label/);assert.equal(result.rows[1].value,'14:00:00');assert.match(result.rows[2].label,/^Sampling timing/);
+  assert.equal(sourceTimingEvidence({kind:'source_matrix_review',raw_values:{'/ Hour':'14:00:00'}}).rows.length,0);
+});
+
+test('Hour-7 decimal values remain historical derived labels and never become validated ZT',()=>{
+  const source={kind:'tissue_sampling',raw_values:{'I · Hour-7 (decimal)':2.066666667,'Brain time DIsk':'Analysis','Circadian Power':31.75412}},before=structuredClone(source),result=sourceTimingEvidence(source);
+  assert.equal(result.rows.length,1);assert.match(result.rows[0].label,/^Historical derived time label/);assert.equal(result.rows[0].value,'2.066666667');assert.doesNotMatch(result.rows[0].label,/Circadian timing label/);assert.ok(result.warnings.some(w=>w.includes('Do not infer ZT/CT basis')));assert.deepEqual(source,before);assert.deepEqual(Object.keys(result),['rows','warnings']);
+});

@@ -1,5 +1,5 @@
-import { summarizeBreeding } from './breeding-summary.js?v=39';
-import { summarizeCages } from './cage-summary.js?v=39';
+import { summarizeBreeding } from './breeding-summary.js?v=48';
+import { summarizeCages } from './cage-summary.js?v=48';
 
 const rows=value=>Array.isArray(value)?value.filter(row=>row&&typeof row==='object'&&!Array.isArray(row)):[];
 const id=value=>typeof value==='string'?value.trim():typeof value==='number'&&Number.isFinite(value)?String(value):'';
