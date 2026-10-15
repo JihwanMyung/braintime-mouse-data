@@ -56,7 +56,7 @@ dataset.tables.matings.push({mating_sid:'OLD-B',state:'Inactive'},{mating_sid:'F
 dataset.tables.litters.push({litter_sid:'OLD-L',state:'Weaned',date_of_birth:'2020-01-01'});
 dataset.tables.cages.push({cage_sid:'OLD-C',state:'Inactive'});
 renderOverview();assert(overviewStatsHTML()===initialOverview,'historical records do not inflate current activity');assert(!$('main').innerHTML.includes('Historical animal only'),'recent births include living animals only');
-showHelp(false,false,false,true);assert($('help-dialog').innerHTML.includes('class="source-disclosure" open><summary>Current Overview counts'));$('help-dialog').close();
+showHelp(false,false,false,true);assert($('help-dialog').innerHTML.includes('class="source-disclosure" open><summary>Current Animal Overview counts'));$('help-dialog').close();
 dataset=overviewDataset;renderOverview();
 route='litters';detail=null;query='';filters={};renderTable();
 const litterHTML=litterSummaryHTML();
