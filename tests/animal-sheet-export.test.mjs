@@ -61,6 +61,18 @@ test('manager resolution uses all current residents even when export selects one
   const uncaged=projectAnimalSheet(fixture(),{capturedAt,mouseIds:['uncaged']});assert.equal(uncaged.rows[0].kind,'unassigned');
 });
 
+test('withdrawn source grids are absent from the current board and export without hiding registered animals',()=>{
+  const d=fixture();for(const position of d.tables.locations)if(['P1','P3','P4'].includes(position.location_id))position.source_current=false;
+  const before=structuredClone(d),p=projectAnimalSheet(d,{capturedAt}),resident=p.rows.find(r=>r.cageId==='001');
+  assert.equal(p.counts.mice,4);assert.equal(p.counts.positions,1);assert.equal(resident.mice.length,2);
+  assert.equal(resident.locationId,'');assert.equal(resident.position,null);assert.equal(resident.row,null);assert.equal(resident.column,null);
+  assert.equal(resident.positionName,'Position needs review');assert.match(resident.warnings.join(' '),/withdrawn position A1/);
+  assert.ok(!p.rows.some(r=>['P1','P3','P4'].includes(r.locationId)));assert.ok(!p.rows.some(r=>r.cageId==='002'));
+  assert.deepEqual(p.sheets.find(s=>s.name==='locations').rows.slice(1).map(row=>row[0]),['P2']);
+  assert.equal(p.rows.find(r=>r.cageId==='001').cage.location_id,'P1','raw assignment remains available for correction');
+  assert.deepEqual(d,before);
+});
+
 test('scope filters intersect exactly and retain leading zeros',()=>{
   const d=fixture();
   assert.equal(projectAnimalSheet(d,{capturedAt,roomId:'R1',rackId:'K1',cageIds:['001']}).counts.mice,2);

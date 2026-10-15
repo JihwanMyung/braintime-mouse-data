@@ -96,6 +96,18 @@ test('link sync rechecks fresh occupancy and keeps the pending draft after a con
  const data=movementSample(),fresh=structuredClone(data);fresh.tables.cages.push({cage_sid:'ARRIVAL',state:'Active',location_id:'P2'});
  const ui=renderHarness(data,{loadFresh:async()=>fresh});ui.input({sheetLink:'P2'},'C1');await ui.sync();assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.innerHTML,/became occupied/);clearCageSheetDrafts();
 });
+
+test('withdrawn current positions have no grid or selectable destination and fresh withdrawals stop sync',async()=>{
+ const data=movementSample();data.tables.locations[1].source_current=false;
+ let ui=renderHarness(data);assert.doesNotMatch(ui.host.innerHTML,/data-sheet-slot="P2"|<option value="P2"/);
+ ui.input({sheetLink:'P2'},'C1');assert.equal(hasCageSheetDrafts(),false);assert.match(ui.host.innerHTML,/withdrawn/);
+ Object.assign(data.tables.cages[0],{location_id:'P2',room_id:'R2',rack_id:'K2'});ui=renderHarness(data);
+ assert.match(ui.host.innerHTML,/Position needs review/);assert.match(ui.host.innerHTML,/<option value="P2" selected disabled>B2 \(withdrawn\)<\/option>/);
+ assert.match(ui.host.innerHTML,/data-sheet-open-mouse="M1"/);assert.doesNotMatch(ui.host.innerHTML,/data-sheet-slot="P2"/);
+ const clean=movementSample(),fresh=structuredClone(clean);fresh.tables.locations[1].source_current=false;
+ ui=renderHarness(clean,{loadFresh:async()=>fresh});ui.input({sheetLink:'P2'},'C1');await ui.sync();
+ assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.innerHTML,/withdrawn/);clearCageSheetDrafts();
+});
 test('historical sheet renders dated evidence with no live navigation or edit actions',()=>{
  const data=movementSample();data.tables.husbandry_events=[{event_id:'MOVE1',event_type:'cage_location_assignment',event_date:'2026-01-01',cage_sid:'C1',cage_tag:'A1',room_id:'R1',rack_id:'K1',location_id:'P1',room_label:'Clean room',rack_label:'Rack A',position_label:'A1'},{event_id:'ASSIGN1',event_type:'cage_assignment',event_date:'2026-01-01',mouse_sid:'M1',cage_sid:'C1',mouse_tag:'P1'}];
  const history=projectCageHistory(data,'2026-01-02',{today:'2026-10-15'});let calls=0;

@@ -50,6 +50,40 @@ test('combined groups are order independent and retain absent versus omitted loc
   assert.equal(data.animals[3].traits.find(row=>row.code==='B').presence,'absent');
 });
 
+test('AD combinations partition living mice once and retain prime and parenthesis distinctions',()=>{
+ const source=dataset([
+  {physical_tag:"ADB′",sex:'Male'},
+  {physical_tag:"B'AD-F001",sex:'Female'},
+  {physical_tag:"ADFB'-M002",sex:'Male'},
+  {physical_tag:"(AD)FB'-F003",sex:'Female'},
+  {physical_tag:"AD(F)B'-M004",sex:'Male'},
+  {physical_tag:"AD(')FB'-F005",sex:'Female'},
+  {physical_tag:'unclassified identifier'},
+  {physical_tag:"ADFB'",state:'Ended'},
+  {physical_tag:"ADFB'",archived:true}
+ ]);
+ source.tables.mice.push({...source.tables.mice[0]});
+ source.tables.locations=[{source_current:true,source_observed_tags:["ADFB'-M9999"]}];
+ const before=structuredClone(source),result=buildFamilyGenotypes(source,{scope:'current'});
+ assert.equal(result.total,7);assert.equal(result.combinations.reduce((sum,row)=>sum+row.count,0),7);
+ assert.equal(new Set(result.combinations.flatMap(row=>row.animalIds)).size,7);
+ assert.equal(result.combinations.length,6);assert.equal(result.unclassified,1);
+ const pair=result.combinations.find(row=>row.count===2);assert.equal(pair.label,'B′ · AD');assert.equal(pair.male,1);assert.equal(pair.female,1);
+ assert.equal(result.animals[2].traits.find(row=>row.code==='B').dosage,'homozygous');
+ assert.equal(result.animals[3].traits.find(row=>row.code==='AD').presence,'uncertain');
+ assert.equal(result.animals[4].traits.find(row=>row.code==='F').presence,'uncertain');
+ assert.equal(result.animals[5].traits.find(row=>row.code==='AD').dosageUncertain,true);
+ assert.equal(result.animals.some(row=>row.traits.some(trait=>trait.code==='A')),false);
+ assert.deepEqual(source,before);
+});
+
+test('Family and Mice use identical compound parsing for identifier wrappers and sex suffixes',()=>{
+ for(const physical_tag of ["(M005) ADFB'-M001","ADFB'-F-002"]){
+  const result=animal({physical_tag});assert.equal(result.shorthand,'B′ · F · AD');assert.equal(result.traits.find(row=>row.code==='B').dosage,'homozygous');
+ }
+ for(const genotype of ['AD x B','AD × B'])assert.equal(animal({genotype}).unclassified,true,'parent crosses are not an animal genotype');
+});
+
 test('source pairs are inferred and raw shorthand calls use the same semantics',()=>{
   const a=animal({genotype:'PER2::LUC(+/-); Bmal1(fl/fl)'}),b=animal({genotype:'P(+/-)+B(fl/fl)'});
   assert.equal(a.shorthand,'P/+ · B′');assert.equal(a.combinationKey,b.combinationKey);
@@ -197,4 +231,14 @@ test('gene-only minus calls do not establish floxed-allele absence',()=>{
     const a=animal({genotype}),t=a.traits.find(row=>row.code===code);
     assert.equal(t.presence,'absent',genotype);assert.equal(a.unresolved,false,genotype);
   }
+});
+
+test('V compound groups partition current mice while preserving pending presence, dosage and Vg identity',()=>{
+ const source=dataset(["VPB'-M1","VPB'-F2","VB'-M3","(V)PB'-F4","VgPB'-M5","V(')PB'-F6"].map(physical_tag=>({physical_tag})));
+ const before=structuredClone(source),result=buildFamilyGenotypes(source);
+ assert.equal(result.total,6);assert.equal(result.combinations.reduce((n,g)=>n+g.count,0),6);assert.equal(result.combinations.length,5);
+ assert.equal(result.combinations.filter(g=>g.count===2).length,1);
+ assert.equal(result.animals[3].traits.find(t=>t.code==='V').presence,'uncertain');
+ assert.equal(result.animals[4].traits.some(t=>t.code==='V'),false);assert.equal(result.animals[4].traits.find(t=>t.code==='Vg').presence,'present');
+ assert.equal(result.animals[5].traits.find(t=>t.code==='V').dosage,'unknown');assert.deepEqual(source,before);
 });

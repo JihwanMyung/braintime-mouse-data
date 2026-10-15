@@ -38,37 +38,45 @@ function groupForName(value) {
   return null;
 }
 
-function compactAlternative(value,isTag=false) {
-  // A terminal M/F belongs to sex, never Foxj1; a leading M12- is a tag ID.
-  let input=value.trim().replace(/[‘’′]/g,"'");
+/** Read one animal's compact notation, never parent-cross prose. Multi-letter
+ * codes are consumed before single letters. Prime dosage and undetermined
+ * presence remain distinct, and source strings are never changed. */
+export function parseCompactStrainNotation(value,{physicalTag=false}={}) {
+  let input=text(value).trim().replace(/[‘’′]/g,"'");
+  if(physicalTag)input=input.replace(/^\(\s*[MF]-?\d+\s*\)\s*/,'').replace(/^[MF]\d+-/,'');
   // A bare numeric physical tag is an identifier, not evidence of Ai32/Ai96.
-  if(/^\d+$/.test(input)&&(isTag||!['32','96'].includes(input)))return null;
-  if(isTag)input=input.replace(/^[MF]\d+-/,'').replace(/(?:-[MF]\d*|[MF]\d+)$/,'');
-  if(!input)return new Map();
-  const result=new Map();let at=0,valid=true;
+  if(!input||/^\d+$/.test(input)&&(physicalTag||!['32','96'].includes(input)))return null;
+  // A terminal sex/number suffix belongs to the identifier, never FoxJ1.
+  if(physicalTag)input=input.replace(/(?:-[MF](?:-?\d+)?|[MF]-?\d+)$/,'');
+  let at=0,valid=true;
   function sequence(inGroup=false) {
     const entries=[];
     while(at<input.length) {
       const ch=input[at];
       if(ch===')'){if(!inGroup){valid=false;return entries;}at++;return entries;}
-      if(/[\s']/.test(ch)){at++;continue;}
-      if(ch==='('){at++;const nested=sequence(true);entries.push(...nested.map(entry=>({...entry,uncertain:true})));continue;}
+      if(/\s/.test(ch)){at++;continue;}
+      if(ch==='('){at++;const nested=sequence(true);entries.push(...nested.map(entry=>({...entry,presence:'uncertain',evidence:'uncertain'})));continue;}
       tokenPattern.lastIndex=at;const match=tokenPattern.exec(input);
       if(!match){valid=false;return entries;}
-      at+=match[0].length;let uncertain=false;
+      at+=match[0].length;let dosage='unknown',dosageUncertain=false,presence='present';
       // P(') records uncertain dosage, but the P line itself is explicit.
-      const dosage=input.slice(at).match(/^\(\s*'+\s*\)/);
-      if(dosage)at+=dosage[0].length;
-      while(input[at]==="'")at++;
-      if(input[at]==='?'){uncertain=true;at++;}
-      entries.push({key:match[0],uncertain});
+      const pending=input.slice(at).match(/^\(\s*'+\s*\)/);
+      if(pending){dosageUncertain=true;at+=pending[0].length;}
+      else if(input[at]==="'"){dosage='homozygous';while(input[at]==="'")at++;}
+      if(input[at]==='?'){presence='uncertain';at++;}
+      entries.push({code:match[0],presence,dosage,dosageUncertain,evidence:presence==='uncertain'||dosageUncertain?'uncertain':'recorded'});
     }
     if(inGroup)valid=false;
     return entries;
   }
   const entries=sequence();
-  if(!valid||at!==input.length)return null;
-  for(const entry of entries)if(target(entry.key))result.set(entry.key,result.get(entry.key)==='uncertain'||entry.uncertain?'uncertain':'present');
+  return valid&&at===input.length?entries:null;
+}
+
+function compactAlternative(value,isTag=false) {
+  const entries=parseCompactStrainNotation(value,{physicalTag:isTag});if(entries===null)return null;
+  const result=new Map();
+  for(const entry of entries)if(target(entry.code))result.set(entry.code,result.get(entry.code)==='uncertain'||entry.presence==='uncertain'?'uncertain':'present');
   return result;
 }
 
@@ -170,7 +178,7 @@ export function mouseLineAssignments(mouse,geneRows=[]) {
 }
 
 export function summarizeMice(dataset) {
-  const summary={alive:0,male:0,female:0,unknownSex:0,lines:zero(),uncertainLines:zero()},genes=new Map();
+  const summary={alive:0,male:0,female:0,unknownSex:0,lines:zero(),uncertainLines:zero(),totalLines:zero()},genes=new Map();
   for(const row of dataset?.tables?.mouse_genes||[]) {
     if(row?.mouse_sid===undefined)continue;const sid=String(row.mouse_sid);
     if(!genes.has(sid))genes.set(sid,[]);genes.get(sid).push(text(row.gene_value));
@@ -186,5 +194,6 @@ export function summarizeMice(dataset) {
       if(status==='present')summary.lines[key]++;else if(status==='uncertain')summary.uncertainLines[key]++;
     }
   }
+  for(const key of keys)summary.totalLines[key]=summary.lines[key]+summary.uncertainLines[key];
   return summary;
 }

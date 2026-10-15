@@ -9,7 +9,7 @@ test('legacy Vgat-CRE names retain dosage uncertainty and saved Cre models canno
   assert.deepEqual(mouseLineAssignments({genotype:'FoxJ-Cre(+/-)'}),{F:'recorded'});
 });
 import assert from 'node:assert/strict';
-import {MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments} from '../web/mouse-summary.js';
+import {MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,parseCompactStrainNotation} from '../web/mouse-summary.js';
 
 const dataset=(mice,genes=[])=>({tables:{mice:mice.map((mouse,index)=>({mouse_sid:`SYN-${index}`,state:'Stock',...mouse})),mouse_genes:genes}});
 const profile=(name,alleles,evidence='confirmed')=>({schema_version:1,loci:[{id:'synthetic-locus',name,kind:'other',alleles:['+','fl',name]}],calls:{'synthetic-locus':{alleles,evidence}}});
@@ -82,7 +82,7 @@ test('contradictory explicit calls remain uncertain and arbitrary historical pro
 test('summaries preserve source records and recalculate after edits',()=>{
   const d=dataset([{physical_tag:'PB-M001'}]),before=structuredClone(d);assert.equal(summarizeMice(d).lines.P,1);assert.deepEqual(d,before);
   d.tables.mice[0].state='Ended';assert.equal(summarizeMice(d).alive,0);assert.equal(summarizeMice(d).lines.P,0);
-  assert.deepEqual(summarizeMice(null),{alive:0,male:0,female:0,unknownSex:0,lines:{P:0,E:0,B:0,F:0,V:0,AD:0},uncertainLines:{P:0,E:0,B:0,F:0,V:0,AD:0}});
+  assert.deepEqual(summarizeMice(null),{alive:0,male:0,female:0,unknownSex:0,lines:{P:0,E:0,B:0,F:0,V:0,AD:0},uncertainLines:{P:0,E:0,B:0,F:0,V:0,AD:0},totalLines:{P:0,E:0,B:0,F:0,V:0,AD:0}});
 });
 
 test('all eleven confirmed strain codes are reusable assignments while summary includes six lines',()=>{
@@ -150,3 +150,68 @@ test('bare named evidence cannot resolve parenthesized additional strain codes',
  const summary=summarizeMice(dataset([{physical_tag:'ADP-M1'},{genotype:'APP/PS1(+/-)'},{physical_tag:'(AD)-F2'},{physical_tag:'AD-M3',genotype:'APP/PS1(-/-)'},{genotype:'AD',state:'Ended'}]));
  assert.equal(summary.lines.AD,2);assert.equal(summary.uncertainLines.AD,1);
  });
+
+test('AD compounds consume the complete AD code before single letters and overlap by strain',()=>{
+ const cases=[
+  ["ADB′",{B:'recorded',AD:'recorded'}],
+  ["ADFB'-F002",{B:'recorded',F:'recorded',AD:'recorded'}],
+  ["ADFPB'-M3249",{P:'recorded',B:'recorded',F:'recorded',AD:'recorded'}],
+  ["(AD)FB'",{B:'recorded',F:'recorded',AD:'uncertain'}],
+  ["AD(F)B'",{B:'recorded',F:'uncertain',AD:'recorded'}],
+  ["(ADFB')",{B:'uncertain',F:'uncertain',AD:'uncertain'}],
+  ["AD(')FB'",{B:'recorded',F:'recorded',AD:'recorded'}]
+ ];
+ for(const [physical_tag,expected] of cases)assert.deepEqual(mouseLineAssignments({physical_tag}),expected,physical_tag);
+ const summary=summarizeMice(dataset(cases.map(([physical_tag])=>({physical_tag}))));
+ assert.equal(summary.alive,7);assert.equal(summary.totalLines.AD,7);assert.equal(summary.totalLines.B,7);assert.equal(summary.totalLines.F,6);
+ assert.equal(summary.lines.AD,5);assert.equal(summary.uncertainLines.AD,2);
+});
+
+test('AD pending totals remain explicit without promoting parentheses or adding source-only animals',()=>{
+ const d=dataset(Array.from({length:19},()=>({physical_tag:"(AD)(F)B'"})));
+ d.tables.locations=[{source_current:true,source_observed_tags:["ADB'-M9999"],source_block_text:"A8: ADB'-M9999"}];
+ d.tables.mice.push({...d.tables.mice[0]},{mouse_sid:'HISTORICAL',state:'Ended',physical_tag:"ADB'"});
+ const before=structuredClone(d),summary=summarizeMice(d);
+ assert.equal(summary.alive,19);assert.equal(summary.lines.AD,0);assert.equal(summary.uncertainLines.AD,19);assert.equal(summary.totalLines.AD,19);
+ assert.equal(summary.lines.B,19);assert.deepEqual(d,before);
+});
+
+test('V compounds count every included strain once and keep Vg and undetermined V distinct',()=>{
+ const cases=[
+  ["VPB'-M1",{P:'recorded',B:'recorded',V:'recorded'}],
+  ["VB'-F2",{B:'recorded',V:'recorded'}],
+  ["(V)PB'-M3",{P:'recorded',B:'recorded',V:'uncertain'}],
+  ["VgPB'-F4",{P:'recorded',B:'recorded',Vg:'recorded'}],
+  ["V(')PB'-F5",{P:'recorded',B:'recorded',V:'recorded'}]
+ ];
+ for(const [physical_tag,expected] of cases)assert.deepEqual(mouseLineAssignments({physical_tag}),expected,physical_tag);
+ const d=dataset(cases.map(([physical_tag])=>({physical_tag}))),summary=summarizeMice(d);
+ assert.equal(summary.alive,5);assert.equal(summary.totalLines.V,4);assert.equal(summary.lines.V,3);assert.equal(summary.uncertainLines.V,1);
+ assert.equal(summary.totalLines.P,4);assert.equal(summary.totalLines.B,5);
+ assert.deepEqual(mouseLineAssignments({physical_tag:"VPB'",genotype:'Vip-Cre(-/-)'}),{P:'recorded',B:'recorded'});
+ assert.deepEqual(mouseLineAssignments({physical_tag:'VIP notes'}),{});
+ const pending=summarizeMice(dataset(Array.from({length:25},()=>({physical_tag:"(V)PB'"}))));
+ assert.equal(pending.totalLines.V,25);assert.equal(pending.lines.V,0);assert.equal(pending.uncertainLines.V,25);
+});
+
+test('physical identifier wrappers and hyphenated sex suffixes do not hide compound strains',()=>{
+ for(const physical_tag of ["(M005) ADB'-M001","ADFB'-F-002","ADFB′M-003"]){
+  const parsed=parseCompactStrainNotation(physical_tag,{physicalTag:true});assert(parsed);assert(parsed.some(trait=>trait.code==='AD'));assert.equal(parsed.find(trait=>trait.code==='B').dosage,'homozygous');
+ }
+ assert.deepEqual(mouseLineAssignments({physical_tag:"(M005) ADB'-M001"}),{B:'recorded',AD:'recorded'});
+ assert.deepEqual(mouseLineAssignments({physical_tag:"ADFB'-F-002"}),{B:'recorded',F:'recorded',AD:'recorded'});
+ assert.equal(parseCompactStrainNotation("(M005) ADB'"),null,'identifier wrappers are only accepted in physical tags');
+ for(const physical_tag of ['32','96','(M005)32'])assert.deepEqual(mouseLineAssignments({physical_tag}),{});
+});
+
+test('shared compact parser keeps homozygosity, pending dosage and pending presence distinct',()=>{
+ const parsed=parseCompactStrainNotation("AD(')(F)B′");
+ assert.deepEqual(parsed.map(({code,presence,dosage,dosageUncertain})=>({code,presence,dosage,dosageUncertain})),[
+  {code:'AD',presence:'present',dosage:'unknown',dosageUncertain:true},
+  {code:'F',presence:'uncertain',dosage:'unknown',dosageUncertain:false},
+  {code:'B',presence:'present',dosage:'homozygous',dosageUncertain:false}
+ ]);
+ for(const value of ['AD x B','AD × B','XAD','ADH','APP/PS10','notes AD','=AD',"'AD",'(AD'])assert.equal(parseCompactStrainNotation(value),null,value);
+ assert.deepEqual(mouseLineAssignments({physical_tag:"ADFB'",genotype:'APP/PS1(-/-)'}),{B:'recorded',F:'recorded'});
+ assert.deepEqual(mouseLineAssignments({genotype:'GAD67-tTA(+/+)'}),{Gt:'recorded'});
+});

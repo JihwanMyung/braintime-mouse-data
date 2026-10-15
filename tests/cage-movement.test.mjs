@@ -30,3 +30,13 @@ test('fresh occupancy validation detects a new third cage, permits a full swap a
  const d=fixture(),move=planCageMove(d,'C1','L3');d.tables.cages.push({cage_sid:'ARRIVED',state:'Active',location_id:'L3'});assert.throws(()=>validateCageMovementOccupancy(d,move.changes),/became occupied/);
  const clean=fixture();assert.equal(validateCageMovementOccupancy(clean,planCageMove(clean,'C1','L2').changes),true);assert.equal(validateCageMovementOccupancy(d,[{type:'cages',id:'C1',field:'comment',base:null,value:'note'}]),true);
 });
+
+test('withdrawn destinations reject new moves and stale drafts while permitting removal or movement out',()=>{
+ const d=fixture(),plan=planCageMove(d,'C1','L3');d.tables.locations[2].source_current=false;
+ assert.throws(()=>planCageMove(d,'C1','L3'),/withdrawn/);assert.throws(()=>validateCageMovementOccupancy(d,plan.changes),/withdrawn/);
+ assert.throws(()=>applyCageSheetDrafts(d,plan.changes,{at}),/withdrawn/);
+ d.tables.locations[0].source_current=false;d.tables.locations[2].source_current=true;
+ assert.equal(planCageRemoval(d,'C1').kind,'remove');
+ const out=planCageMove(d,'C1','L3');assert.equal(out.kind,'move');assert.equal(applyCageSheetDrafts(d,out.changes,{at}).tables.cages[0].location_id,'L3');
+ assert.throws(()=>planCageMove(d,'C1','L2'),/withdrawn/,'swapping must not move the other cage into the withdrawn source');
+});

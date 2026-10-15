@@ -1,6 +1,6 @@
 import {explicitCreName,legacyVgatCreName} from './strain-registry.js?v=36';
 import { getBreedingOptions } from './breeding-options.js?v=24';
-import { mouseLineAssignments } from './mouse-summary.js?v=36';
+import { mouseLineAssignments } from './mouse-summary.js?v=39';
 import { validateGeneticProfile } from './genotype-schema.js';
 
 const text=value=>typeof value==='string'?value:'';
@@ -197,8 +197,8 @@ export function classifyAnimalSheetBreedingBlock(position={}){
  for(const line of text(position.source_block_text).split('\n')){
   const cell=line.match(/^([A-Z]+)(\d+):\s*(.*)$/);if(!cell||cell[1]!==header[1]||Number(cell[2])<=Number(header[2])||Number(cell[2])>Number(header[2])+7)continue;
   const raw=cell[3].trim(),comment=text(position.source_block_text).split('\n').find(x=>x.startsWith(cell[1]+cell[2]+' comment:'))||'',value=raw.replace(/^\([MF]\d+\)\s*/,'').replace(/[‘’′]/g,"'");if(!raw||raw.startsWith('='))continue;if(/\b(?:dead|died|ended|sacrificed|removed|euthanized|transfer(?:red)?)\b/i.test(raw+' '+comment)){unresolved.push({cell:cell[1]+cell[2],raw,reason:'lifecycle_annotation_requires_review'});continue;}
-  const match=value.match(/^(.*?)(?:\s+|-)([MF])\s*(\d+)$/),prefix=match?.[1]?.trim();
-  if(!match||!(compactResults(prefix)||keyFor(prefix)||/^(?:C57BL\/?6J?|WT)$/i.test(prefix||''))){if(/\b[MF]\s*\d+\b/.test(raw))unresolved.push({cell:cell[1]+cell[2],raw,reason:'ambiguous_animal_tag'});continue;}
+  const match=value.match(/^(.*?)(?:\s+|-)([MF])\s*-?\s*(\d+)$/),prefix=match?.[1]?.trim();
+  if(!match||!(compactResults(prefix)||keyFor(prefix)||/^(?:C57BL\/?6J?|WT)$/i.test(prefix||''))){if(/\b[MF]\s*-?\s*\d+\b/.test(raw))unresolved.push({cell:cell[1]+cell[2],raw,reason:'ambiguous_animal_tag'});continue;}
   const canonical=value.replace(/\s+/g,'');if(seen.has(canonical))continue;seen.add(canonical);evidence.push({cell:cell[1]+cell[2],raw,tag:raw,canonical_tag:canonical,source_animal_number:match[3],sex:match[2]==='M'?'Male':'Female',identity_confirmed:false});
  }
  const male=evidence.filter(x=>x.sex==='Male').length,female=evidence.filter(x=>x.sex==='Female').length;

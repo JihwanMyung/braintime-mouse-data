@@ -212,6 +212,16 @@ test('ended, conflicting, archived, future-born and unassigned animals cannot es
 test('Animal Sheet parser uses explicit animal-column sex suffixes, not Cre genotype F or unrelated comments',()=>{
  const good=classifyAnimalSheetBreedingBlock(sourcePosition());assert.equal(good.male,1);assert.equal(good.female,1);assert.equal(good.mixed,true);assert.ok(good.evidence.every(e=>!e.identity_confirmed));const bad=sourcePosition('L1',{source_block_text:"T7: B1\nT8: F\nT9: P\nU8: P M101\nU9: P F102\nT10: P F\nT11: sample from F3"});assert.equal(classifyAnimalSheetBreedingBlock(bad).mixed,false);const ended=sourcePosition();ended.source_block_text+='\nT8 comment: died';assert.equal(classifyAnimalSheetBreedingBlock(ended).male,0);
 });
+
+test('Animal Sheet animal suffixes accept the sex-number hyphen used in CAR-A1',()=>{
+ const position={source_cell:'AW7',source_block_text:"AW7: CAR-A1\nAW8: B′ M-3107\nAW9: FPB′ M-3108\nAW10: B′ M-3109\nAX8: P F-9999\nAW11 comment: P F-9998"};
+ const before=structuredClone(position),result=classifyAnimalSheetBreedingBlock(position);
+ assert.equal(result.male,3);assert.equal(result.female,0);assert.equal(result.mixed,false);
+ assert.deepEqual(result.evidence.map(row=>row.source_animal_number),['3107','3108','3109']);
+ assert.ok(result.evidence.every(row=>row.identity_confirmed===false));assert.deepEqual(position,before);
+ const pair=classifyAnimalSheetBreedingBlock({...position,source_block_text:"AW7: CAR-A1\nAW8: ADB′-M-1001\nAW9: ADFB′ F-1002\nAW10: sample F-1003"});
+ assert.equal(pair.male,1);assert.equal(pair.female,1);assert.equal(pair.mixed,true);assert.equal(pair.unresolved.length,1);
+});
 test('current source-only positions count separately, historical or future maps do not count as current',()=>{
  const data=dataset([],{locations:[sourcePosition(),sourcePosition('OLD',{source_current:false}),sourcePosition('ARCHIVE',{record_origin:'source_layout'}),sourcePosition('FUTURE',{source_snapshot_date:'2026-10-15'})]});const out=estimateBreedingGroups(data,{asOf});assert.equal(out.totalGroups,1);assert.equal(out.currentCageCount,0);assert.equal(out.sourceEstimatedCount,1);assert.equal(out.activeMouseSids.length,0);assert.equal(out.sourceGroups[0].source_snapshot_date,asOf);
 });

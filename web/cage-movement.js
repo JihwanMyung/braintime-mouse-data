@@ -9,8 +9,9 @@ function context(dataset){
  const current=c=>active(c)&&(!/^(Ended|Inactive)$/i.test(c.state||'')||currentResidents.has(String(c.cage_sid)));
  const occupants=id=>[...cages.values()].filter(c=>current(c)&&String(c.location_id||'')===id);
  function cage(id){const value=cages.get(id);if(!value||!active(value)||value._derived)throw new Error(`Cage ${id} is missing, archived or not registered.`);if(/^(Ended|Inactive)$/i.test(value.state||''))throw new Error(`Cage ${id} is ${value.state.toLowerCase()}; review its current status before moving it.`);return value;}
- function location(id){
+ function location(id,{destination=false}={}){
   const value=locations.get(id);if(!active(value))throw new Error(`Position ${id} is missing or archived.`);
+  if(destination&&value.source_current===false)throw new Error(`Position ${value.label||id} has been withdrawn. Choose a current position.`);
   const room=rooms.get(String(value.room_id||'')),rack=racks.get(String(value.rack_id||''));
   if(!active(room)||!active(rack)||String(rack.room_id||'')!==String(room.room_id))throw new Error(`Position ${id} needs an active room and a rack in that room.`);
   if(typeof value.label!=='string'||!value.label.trim())throw new Error(`Position ${id} needs a label before it can name a cage.`);
@@ -31,7 +32,7 @@ const movement=(cage,position)=>[cell(cage,'location_id',position?.location_id??
 /** Plans explicit slot changes; applyCageSheetDrafts supplies fresh-data conflict and permission checks. */
 export function planCageMove(dataset,cageSid,destinationLocationId,options={}){
  const ctx=context(dataset),id=textId(cageSid,'cage SID'),cage=ctx.cage(id),source=ctx.oldPosition(cage);
- const destination=destinationLocationId===null||destinationLocationId===undefined||destinationLocationId===''?null:ctx.location(textId(destinationLocationId,'destination position'));
+ const destination=destinationLocationId===null||destinationLocationId===undefined||destinationLocationId===''?null:ctx.location(textId(destinationLocationId,'destination position'),{destination:true});
  const common={cage_sid:id,source_location_id:source?.location_id??null,destination_location_id:destination?.location_id??null,other_cage_sid:null,warnings:[]};
  if((source?.location_id??null)===(destination?.location_id??null))return {...common,kind:'noop',changes:[],summary:destination?`Cage ${id} is already at ${destination.label}.`:`Cage ${id} is already off the rack.`};
  if(!destination)return {...common,kind:'remove',changes:movement(cage,null),summary:`Remove cage ${id} from ${source.label}. Keep its tag and all animal records.`};
@@ -39,6 +40,7 @@ export function planCageMove(dataset,cageSid,destinationLocationId,options={}){
  if(occupied.length>1)throw new Error(`Position ${destination.label} has multiple current cage assignments. Resolve them before moving cages.`);
  if(!occupied.length)return {...common,kind:'move',changes:movement(cage,destination),summary:`Move cage ${id} from ${source?.label||'off rack'} to ${destination.label}. Its tag becomes ${destination.label}.`};
  if(!source)throw new Error(`Position ${destination.label} is occupied. Choose an empty position for a cage that is off the rack.`);
+ ctx.location(String(source.location_id),{destination:true});
  const other=ctx.cage(String(occupied[0].cage_sid));ctx.oldPosition(other);
  return {...common,kind:'swap',other_cage_sid:String(other.cage_sid),changes:[...movement(cage,destination),...movement(other,source)],summary:`Swap cage ${id} (${source.label}) with cage ${other.cage_sid} (${destination.label}). Cage SIDs and animal identities stay the same.`};
 }
@@ -49,7 +51,7 @@ export function validateCageMovementOccupancy(dataset,changes){
  const selected=Array.from(changes||[]).filter(c=>c.type==='cages'&&c.field==='location_id'&&(c.value??null)!==(dataset?.tables?.cages||[]).find(r=>String(r.cage_sid)===String(c.id))?.location_id);
  if(!selected.length)return true;
  const ctx=context(dataset),destinations=new Set(),updates=new Map();
- for(const change of selected){const cage=ctx.cage(String(change.id));ctx.oldPosition(cage);if(present(change.value)){const position=ctx.location(textId(change.value,'destination position'));destinations.add(String(position.location_id));}updates.set(String(cage.cage_sid),change.value??null);}
+ for(const change of selected){const cage=ctx.cage(String(change.id));ctx.oldPosition(cage);if(present(change.value)){const position=ctx.location(textId(change.value,'destination position'),{destination:true});destinations.add(String(position.location_id));}updates.set(String(cage.cage_sid),change.value??null);}
  const next={...dataset,tables:{...dataset.tables,cages:dataset.tables.cages.map(c=>updates.has(String(c.cage_sid))?{...c,location_id:updates.get(String(c.cage_sid))}:c)}},final=context(next);
  for(const id of destinations)if(final.occupants(id).length>1)throw new Error(`Position ${ctx.location(id).label} became occupied or has multiple current cages. Reload and review the move before syncing.`);
  return true;

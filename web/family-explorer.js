@@ -1,4 +1,4 @@
-import { buildFamilyGenotypes, filterFamilyAnimals } from './family-genotypes.js?v=36';
+import { buildFamilyGenotypes, filterFamilyAnimals } from './family-genotypes.js?v=39';
 import { familyTargetDraft, createFamilyTargetResolver } from './family-targets.js?v=36';
 
 const mounts=new WeakMap();

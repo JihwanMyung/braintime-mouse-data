@@ -8,6 +8,7 @@ const present=v=>v!==null&&v!==undefined&&v!=='';
 const id=v=>present(v)?String(v):'';
 const text=v=>v==null?'':Array.isArray(v)?v.join(', '):typeof v==='object'?JSON.stringify(v):String(v);
 const alive=r=>!r.app_archived_at&&r.archived!==true;
+const currentPosition=r=>alive(r)&&r.source_current!==false;
 const list=v=>Array.isArray(v)?v:[];
 const dateOnly=v=>typeof v==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(v)&&!Number.isNaN(Date.parse(v))&&new Date(v+'T00:00:00Z').toISOString().slice(0,10)===v;
 const coordinate=v=>typeof v==='number'&&Number.isInteger(v)&&v>=0;
@@ -51,9 +52,10 @@ export function projectAnimalSheet(dataset,options={}) {
   for(const [sid,mice] of residents)if(sid&&!allCages.has(sid))allCages.set(sid,{cage_sid:sid,cage_tag:[...new Set(mice.map(m=>m.cage_tag).filter(Boolean))].join(' / '),_derived:true});
   const lights=get('light_events').filter(alive),rows=[],groupMap=new Map();
   function references(cage={},positionOverride=null) {
-    const position=positionOverride||positions.get(id(cage.location_id)),rid=id(cage.rack_id||position?.rack_id),rack=racks.get(rid),rmid=id(cage.room_id||position?.room_id||rack?.room_id),room=rooms.get(rmid);
+    const recordedPosition=positionOverride||positions.get(id(cage.location_id)),withdrawnPosition=recordedPosition?.source_current===false?recordedPosition:null,position=withdrawnPosition?null:recordedPosition;
+    const rid=id(cage.rack_id||recordedPosition?.rack_id),rack=racks.get(rid),rmid=id(cage.room_id||recordedPosition?.room_id||rack?.room_id),room=rooms.get(rmid);
     const roomName=name(room,rmid||cage.room||'Room unassigned'),rackName=name(rack,rid||cage.rack||'Rack unassigned');
-    return {position,room,rack,roomId:rmid,rackId:rid,locationId:id(cage.location_id||position?.location_id),roomName,rackName,positionName:name(position,cage.location_id||cage.location||'Position unassigned')};
+    return {position,withdrawnPosition,room,rack,roomId:rmid,rackId:rid,locationId:withdrawnPosition?'':id(cage.location_id||position?.location_id),roomName,rackName,positionName:withdrawnPosition?'Position needs review':name(position,cage.location_id||cage.location||'Position unassigned')};
   }
   const inScope=ref=>(!roomId||ref.roomId===roomId)&&(!rackId||ref.rackId===rackId);
   function groupFor(ref) {
@@ -69,6 +71,7 @@ export function projectAnimalSheet(dataset,options={}) {
   function add(cage,position,kind='cage',mice=[]) {
     const ref=references(cage||{},position),warnings=[];
     if(!inScope(ref))return;
+    if(ref.withdrawnPosition)warnings.push(`Cage references withdrawn position ${ref.withdrawnPosition.label||ref.withdrawnPosition.location_id}; review its current position.`);
     for(const [field,record,label] of [['roomId',ref.room,'room'],['rackId',ref.rack,'rack'],['locationId',ref.position,'position']]){
       if(ref[field]&&!record)warnings.push(`Unknown ${label} reference: ${ref[field]}`);
       else if(record&&!alive(record))warnings.push(`Referenced ${label} is archived`);
@@ -98,10 +101,10 @@ export function projectAnimalSheet(dataset,options={}) {
     if(mouseIds.size&&!mice.length)continue;
     const hasCurrent=(residents.get(sid)||[]).length>0;
     const historicalAssignment=dataset.history_projection?.read_only===true&&cage.history_read_only===true&&cage.history_evidence_kind==='last_recorded_assignment';
-    if(!hasCurrent&&(!alive(cage)||(!historicalAssignment&&!/^(Active|Occupied)$/i.test(cage.state||'')&&!(position&&alive(position)))))continue;
+    if(!hasCurrent&&(!alive(cage)||(!historicalAssignment&&!/^(Active|Occupied)$/i.test(cage.state||'')&&!(position&&currentPosition(position)))))continue;
     add(cage,null,'cage',mice);
   }
-  if(!cageIds.size&&!mouseIds.size)for(const position of get('locations').filter(alive))if(!usedPositions.has(id(position.location_id)))add(null,position,'position');
+  if(!cageIds.size&&!mouseIds.size)for(const position of get('locations').filter(currentPosition))if(!usedPositions.has(id(position.location_id)))add(null,position,'position');
   if(!roomId&&!rackId&&!cageIds.size&&(selectedResidents.get('')||[]).length)add(null,null,'unassigned',selectedResidents.get(''));
   for(const positionId of usedPositions){const linked=rows.filter(r=>r.locationId===positionId&&r.cage);if(linked.length>1)for(const row of linked)row.warnings.push('Multiple cages share this position; occupancy requires review');}
   const groups=[...groupMap.values()].sort((a,b)=>compareRooms(a,b)||compare(a.rackName,b.rackName));

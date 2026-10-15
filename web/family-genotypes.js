@@ -2,7 +2,7 @@
  * confirmed; source notation and tag primes never establish assay verification.
  * Omitted loci are unrecorded, never wild type. No archive prose is attributed
  * to a mouse. Ai32/Ai96 retain their shared Rosa26 locus. */
-import {mouseLineAssignments} from './mouse-summary.js?v=36';
+import {mouseLineAssignments,parseCompactStrainNotation} from './mouse-summary.js?v=39';
 import {getStrainRegistry,canonicalLocusName,canonicalStrainName,explicitCreName,strainNameAliases,strainNamingWarning,legacyVgatCreName} from './strain-registry.js?v=36';
 import {discoverGenotypes,sourceProfile} from './genotype-catalog.js?v=36';
 import {validateGeneticProfile} from './genotype-schema.js?v=24';
@@ -21,20 +21,10 @@ const codeFor=value=>codes.includes(str(value).trim())?str(value).trim():byName.
 const rosa=locus=>['rosa26','gtrosa26sor'].includes(normalize(locus?.name))||normalize(locus?.id)==='rosa26';
 const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
 const sexOf=mouse=>/^(?:male|m)$/i.test(str(mouse.sex).trim())?'male':/^(?:female|f)$/i.test(str(mouse.sex).trim())?'female':'';
-const token=/AD|Vg|Gt|WT|32|96|[PEBFVA]/y;
-
-function compact(value,isTag=false) {
-  let input=str(value).trim().replace(/[‘’′]/g,"'");
-  if(!input||/^\d+$/.test(input)&&(isTag||!['32','96'].includes(input)))return null;
-  if(isTag)input=input.replace(/^[MF]\d+-/,'').replace(/(?:-[MF]\d*|[MF]\d+)$/,'');
-  let at=0,valid=true;
-  const sequence=(group=false)=>{const entries=[];while(at<input.length){const ch=input[at];if(ch===')'){if(!group){valid=false;return entries;}at++;return entries;}if(/\s/.test(ch)){at++;continue;}if(ch==='('){at++;entries.push(...sequence(true).map(entry=>({...entry,presence:'uncertain',evidence:'uncertain'})));continue;}token.lastIndex=at;const match=token.exec(input);if(!match){valid=false;return entries;}at+=match[0].length;let dosage='unknown',dosageUncertain=false;const pending=input.slice(at).match(/^\(\s*'+\s*\)/);if(pending){dosageUncertain=true;at+=pending[0].length;}else if(input[at]==="'"){dosage='homozygous';while(input[at]==="'")at++;}let presence='present';if(input[at]==='?'){presence='uncertain';at++;}entries.push({code:match[0],presence,dosage,dosageUncertain,evidence:presence==='uncertain'||dosageUncertain?'uncertain':'recorded'});}if(group)valid=false;return entries;};
-  const entries=sequence();return valid&&at===input.length?entries:null;
-}
 function compactEvidence(mouse,values) {
   const result=new Map();
   for(const [value,isTag] of [[mouse.physical_tag,true],...values.map(value=>[value,false])]) {
-    const alternatives=str(value).split(/\s+or\s+/i).map(part=>compact(part,isTag));
+    const alternatives=str(value).split(/\s+or\s+/i).map(part=>parseCompactStrainNotation(part,{physicalTag:isTag}));
     if(alternatives.some(value=>value===null))continue;
     for(const code of unique(alternatives.flat().map(item=>item.code))) {
       const found=alternatives.flat().filter(item=>item.code===code),allPresent=alternatives.every(items=>items.some(item=>item.code===code&&item.presence==='present'));

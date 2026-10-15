@@ -101,6 +101,17 @@ test('withdrawals keep their last actual before snapshot and do not invent an em
  const d=data(),before=sourcePosition('2023-01-01','P-M1');d.tables.husbandry_events=[sourceChange('WITHDRAW',before,null,{action:'withdrawn'})];const h=projectCageHistory(d,'2023-03-01',options);assert.equal(h.snapshotDate,'2023-01-01');assert.equal(h.dataset.tables.locations.length,1);assert.match(h.warnings.join(' '),/Changes between/);assert.deepEqual(getCageHistoryDates(d),['2023-01-01']);
  d.tables.husbandry_events.push(sourceChange('WITHDRAW-CONFLICT',before,{...before,source_current:false},{action:'conflict',conflict_reason:'large_layout_loss_requires_review'}));assert.deepEqual(getCageHistoryDates(d),['2023-01-01']);
 });
+
+test('a withdrawn source grid is excluded now but its captured layout remains in the dated board and export',()=>{
+ const d=data(),before=sourcePosition('2023-01-01','P-M1',{source_current:true,row:4,column:1,label:'A1'});
+ d.tables.locations=[{...before,source_current:false}];d.tables.cages=[];d.tables.mice=[];
+ d.tables.husbandry_events=[sourceChange('WITHDRAW',before,{...before,source_current:false},{action:'withdrawn'})];
+ const original=structuredClone(d),current=projectAnimalSheet(projectCageHistory(d,'current',options).dataset,{entityTypes:['locations']});
+ assert.equal(current.counts.positions,0);assert.equal(current.rows.length,0);assert.equal(current.sheets.find(s=>s.name==='locations').rows.length,1);
+ const history=projectCageHistory(d,'2023-01-01',options),dated=projectAnimalSheet(history.dataset,{capturedAt:'2023-01-01T12:00:00+08:00',entityTypes:['locations']});
+ assert.equal(history.readOnly,true);assert.equal(history.dataset.tables.locations[0].source_current,true);assert.equal(dated.counts.positions,1);
+ assert.match(dated.rows[0].position.source_block_text,/P-M1/);assert.equal(dated.sheets.find(s=>s.name==='locations').rows.length,2);assert.deepEqual(d,original);
+});
 test('conflicting incoming observations are labeled unverified without assigning source mouse/cage references',()=>{
  const d=data(),after=sourcePosition('2023-02-01','P-M1',{source_observed_mouse_sids:['M1'],source_observed_cage_sids:['NOW']});d.tables.husbandry_events=[sourceChange('CONFLICT',sourcePosition('2023-01-01','OLD-F2'),after,{action:'conflict',conflict_reason:'app_edited_source_fields'})];const h=projectCageHistory(d,'2023-02-01',options);assert.equal(h.dataset.tables.mice.length,0);assert.equal(h.dataset.tables.cages.length,0);assert.equal(h.dataset.tables.locations[0].source_import_conflict,'app_edited_source_fields');assert.match(h.dataset.tables.locations[0].source_block_text,/Unverified incoming source observation/);assert.match(h.warnings.join(' '),/not applied/);
 });
