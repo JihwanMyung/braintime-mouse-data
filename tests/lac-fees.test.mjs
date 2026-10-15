@@ -183,6 +183,14 @@ test('difference and error compare only the previous usage month while the first
  assert.match(h.container.innerHTML,/Difference · Aug 2026<\/span><strong>–<\/strong>/);
 });
 
+test('monthly error rounds 42.63 percent to a whole percent without rounding the monetary difference',()=>{
+ const data=configured();data.tables.husbandry_events[0].lac_fee_options.groups[0].rate=14.263;
+ const h=harness(buildLacFeeMonth(withDatedQuantities('2026-09',10,100),data).dataset);
+ assert.match(h.container.innerHTML,/Error · Sep 2026<\/span><strong>43%<\/strong>/);
+ assert.doesNotMatch(h.container.innerHTML,/<strong>\d+\.\d+%<\/strong>/);
+ assert.match(h.container.innerHTML,/Difference · Sep 2026<\/span><strong>\+42\.63<\/strong>/);
+});
+
 test('record invoice defaults to December for a selected January and quantity editing stays in January',()=>{
  const h=harness(configured(),{nowDate:()=> '2027-01-08'});h.click('edit-invoice');
  assert.match(h.container.innerHTML,/name="month"[^>]*value="2026-12"/);
