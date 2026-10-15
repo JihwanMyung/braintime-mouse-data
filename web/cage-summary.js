@@ -1,4 +1,4 @@
-import { getCageSummaryOptions, getCageSummaryOptionsStatus } from './cage-summary-options.js?v=33';
+import { getCageSummaryOptions, getCageSummaryOptionsStatus } from './cage-summary-options.js?v=38';
 import { classifyAnimalSheetBreedingBlock } from './breeding-summary.js?v=36';
 
 const list=value=>Array.isArray(value)?value.filter(record=>record&&typeof record==='object'&&!Array.isArray(record)):[];
@@ -7,12 +7,21 @@ const archived=record=>Boolean(record?.app_archived_at)||record?.archived===true
 const state=record=>typeof record?.state==='string'?record.state.trim().toLowerCase():'';
 const currentCage=record=>!archived(record)&&['active','occupied'].includes(state(record));
 const keys={cages:'cage_sid',locations:'location_id',racks:'rack_id',rooms:'room_id'};
-const topologyFields={cages:['room_id','rack_id','location_id','cage_type'],locations:['room_id','rack_id','locobox_id','record_origin','source_current','source_snapshot_date','source_last_seen_at','source_file_id','source_historical','history_read_only','source_label_conflict','source_import_conflict','source_cell','source_block_text','source_observed_tags'],racks:['room_id'],rooms:[]};
+const topologyFields={cages:['room_id','rack_id','location_id','cage_type'],locations:['room_id','rack_id','row','column','locobox_id','record_origin','source_current','source_snapshot_date','source_last_seen_at','source_file_id','source_historical','history_read_only','source_label_conflict','source_import_conflict','source_cell','source_block_text','source_observed_tags'],racks:['room_id'],rooms:[]};
 const sourcePosition=record=>record.evidence_status==='source_position_unlinked'||record.record_origin==='source_layout'||['source_block_text','source_title','source_cell'].some(key=>id(record[key]))||Object.keys(record).some(key=>key.startsWith('source_observed_')||key.startsWith('source_candidate_'));
 const temporary=record=>/^temporary[ _-]+storage$/i.test(id(record?.cage_type));
 const validDate=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(value)&&Number.isFinite(Date.parse(value))&&new Date(value+'T00:00:00Z').toISOString().slice(0,10)===value;
 const localDate=()=>new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const canonicalTag=value=>id(value).replace(/[‘’′]/g,"'").replace(/\s+/g,'');
+const gridGroup=name=>name==='clean'||name==='spf';
+const currentGrid=position=>position&&!archived(position)&&!position.source_historical&&!position.history_read_only&&position.source_current!==false;
+function gridUnit(assignment) {
+  if(!assignment?.locationId||!currentGrid(assignment.location))return null;
+  const {row,column}=assignment.location;
+  return assignment.rackId&&Number.isInteger(row)&&row>=0&&Number.isInteger(column)&&column>=0
+    ?JSON.stringify([assignment.roomId,assignment.rackId,'grid',row,column])
+    :JSON.stringify([assignment.roomId,'position',assignment.locationId]);
+}
 function sourceUnit(group,assignment,cageId=null) {
   const mode=group?._mode,boxId=mode==='box_id'?id(assignment.location?.locobox_id):'';
   if(mode==='box_id')return boxId?JSON.stringify([assignment.roomId,'box',boxId]):null;
@@ -36,8 +45,8 @@ function sourceChangeBlocks(position,events,asOf) {
   changes.sort((a,b)=>b.date.localeCompare(a.date)||b.capture-a.capture||Number(b.blocked)-Number(a.blocked));
   return changes[0]?.blocked===true;
 }
-function sourceAnimals(position,asOf) {
-  if(position.record_origin!=='current_google_sheet_map'||position.source_current!==true||position.source_historical||position.history_read_only||position.source_label_conflict||position.source_import_conflict||!validDate(position.source_snapshot_date)||position.source_snapshot_date>asOf)return [];
+function sourceAnimals(position,asOf,{allowLabelConflict=false}={}) {
+  if(position.record_origin!=='current_google_sheet_map'||position.source_current!==true||position.source_historical||position.history_read_only||position.source_label_conflict&&!allowLabelConflict||position.source_import_conflict||!validDate(position.source_snapshot_date)||position.source_snapshot_date>asOf)return [];
   if(typeof position.source_block_text==='string'&&position.source_cell)return classifyAnimalSheetBreedingBlock(position).evidence;
   // Restricted views retain sanitized labels but omit the raw source block.
   // A genotype or arbitrary note alone never establishes an occupied position.
@@ -81,7 +90,7 @@ export function summarizeCages(dataset,{asOf=localDate()}={}) {
     if(roomIds.length>1){note(`${owner}: room references disagree.`);return null;}
     if(!roomIds.length){note(`${owner}: no current room is assigned.`);return null;}
     const room=lookup('rooms',roomIds[0],owner);if(!room)return null;
-    return {roomId:roomIds[0],locationId,location};
+    return {roomId:roomIds[0],rackId:rackIds[0]||'',locationId,location};
   }
 
   const livingById=new Map();let anonymous=0;
@@ -109,12 +118,12 @@ export function summarizeCages(dataset,{asOf=localDate()}={}) {
     // Inferred defaults are suggestions, not a replacement for an invalid saved mapping.
     if(!invalidOptions)for(const roomId of roomIds)if(lookup('rooms',roomId,`${name} options`))validRooms.add(roomId);
     groups[name]={
-      used:0,capacity:setting.capacity,mappedPositions:0,unlocatedCages:0,unlinkedPositions:0,estimatedUsed:0,sourceDates:[],temporaryStorageExcluded:0,
+      used:0,capacity:gridGroup(name)?null:setting.capacity,mappedPositions:0,unlocatedCages:0,unlinkedPositions:0,estimatedUsed:0,sourceDates:[],temporaryStorageExcluded:0,
       unitUnknown:['beh','rat'].includes(name)&&!['cage','position','box_id'].includes(setting.locobox_mode),
       configured:!invalidOptions&&roomIds.length>0&&validRooms.size===roomIds.length,
       roomMappingUnknown:invalidOptions||roomIds.length===0||validRooms.size!==roomIds.length,
       overCapacity:false,
-      _rooms:validRooms,_used:new Set(),_estimated:new Set(),_dates:new Set(),_excluded:new Set(),_blockedSourceUnits:new Set(),_mode:setting.locobox_mode,
+      _rooms:validRooms,_used:new Set(),_grids:new Set(),_estimated:new Set(),_dates:new Set(),_excluded:new Set(),_blockedSourceUnits:new Set(),_mode:setting.locobox_mode,
     };
   }
 
@@ -126,15 +135,15 @@ export function summarizeCages(dataset,{asOf=localDate()}={}) {
   for(const cageId of current) {
     const cage=lookup('cages',cageId,'Cage assignment'),assignment=cage?resolve(cage,'Cage assignment'):null;
     if(assignment?.locationId)linkedPositions.add(assignment.locationId);
-    if(assignment)for(const group of Object.values(groups))if(group._rooms.has(assignment.roomId)){
-      const key=sourceUnit(group,assignment);if(key)group._blockedSourceUnits.add(key);
+    if(assignment)for(const [name,group] of Object.entries(groups))if(group._rooms.has(assignment.roomId)){
+      const key=gridGroup(name)?gridUnit(assignment):sourceUnit(group,assignment);if(key)group._blockedSourceUnits.add(key);
     }
     if(!occupied.has(cageId))continue;
     if(!assignment){unassignedCages++;continue;}
     registeredAssignments.set(cageId,assignment);
     for(const [name,group]of Object.entries(groups)) {
       if(!group._rooms.has(assignment.roomId))continue;
-      if(name==='clean'||name==='spf'){group._used.add(cageId);continue;}
+      if(gridGroup(name)){const key=gridUnit(assignment);if(key)group._used.add(key);else group.unlocatedCages++;continue;}
       if(name==='beh'&&(temporary(cage)||excludedPositions.has(assignment.locationId))){group._excluded.add(assignment.locationId||'cage:'+cageId);continue;}
       const key=sourceUnit(group,assignment,cageId);
       if(!key) {
@@ -160,9 +169,12 @@ export function summarizeCages(dataset,{asOf=localDate()}={}) {
   for(const [positionId,entry]of indexes.locations){
     if(entry.ambiguous||archived(entry.record))continue;
     if(sourceChangeBlocks(entry.record,sourceChanges.get(positionId)||[],asOf)){historyBlocked.add(positionId);continue;}
-    const animals=sourceAnimals(entry.record,asOf);sourceEvidence.set(positionId,animals);
-    if(!animals.length)continue;
     const assignment=resolve(entry.record,'Source position',{position:true});if(!assignment)continue;
+    // A repeated cage label does not merge physically distinct SHLAC grids.
+    // Locobox identity rules remain strict because their mapping may use labels.
+    const allowLabelConflict=Object.entries(groups).some(([name,group])=>gridGroup(name)&&group._rooms.has(assignment.roomId)&&gridUnit(assignment));
+    const animals=sourceAnimals(entry.record,asOf,{allowLabelConflict});sourceEvidence.set(positionId,animals);
+    if(!animals.length)continue;
     const group=Object.values(groups).find(g=>g._rooms.has(assignment.roomId)),key=sourceUnit(group,assignment)||JSON.stringify([assignment.roomId,'position',positionId]);
     for(const animal of animals){const units=tagUnits.get(animal.canonical_tag)||new Set();units.add(key);tagUnits.set(animal.canonical_tag,units);}
   }
@@ -172,6 +184,16 @@ export function summarizeCages(dataset,{asOf=localDate()}={}) {
     if(!position)continue;
     const assignment=resolve(position,'Position',{position:true});if(!assignment)continue;
     for(const [name,group]of Object.entries(groups))if(group._rooms.has(assignment.roomId)) {
+      if(gridGroup(name)){
+        const key=gridUnit(assignment);if(!key)continue;
+        group._grids.add(key);
+        const animals=sourceEvidence.get(positionId)||[];
+        if(animals.length&&!linkedPositions.has(positionId)&&!blockedSourcePositions.has(positionId)&&!group._blockedSourceUnits.has(key)&&!historyBlocked.has(positionId)){
+          group._estimated.add(key);group._dates.add(position.source_snapshot_date);
+        }
+        if(historyBlocked.has(positionId))note('A newer Animal Sheet conflict or withdrawal prevents a current source estimate.');
+        continue;
+      }
       group.mappedPositions++;
       if(name==='beh'&&excludedPositions.has(positionId)){if(sourceEvidence.get(positionId)?.length)group._excluded.add(positionId);continue;}
       if(sourcePosition(position)&&!linkedPositions.has(positionId)){
@@ -187,12 +209,17 @@ export function summarizeCages(dataset,{asOf=localDate()}={}) {
       }
     }
   }
-  for(const group of Object.values(groups)) {
+  for(const [name,group] of Object.entries(groups)) {
+    if(gridGroup(name)){
+      group.mappedPositions=group._grids.size;
+      group.capacity=group.configured?group.mappedPositions:null;
+      if(group.unlocatedCages)note('An occupied SHLAC cage has no current physical grid position; assign it in Housing.');
+    }
     group.estimatedUsed=[...group._estimated].filter(key=>!group._used.has(key)).length;
     group.used=group._used.size+group.estimatedUsed;
     group.sourceDates=[...group._dates].sort();group.temporaryStorageExcluded=group._excluded.size;
     group.overCapacity=group.capacity!==null&&group.used>group.capacity;
-    for(const key of ['_rooms','_used','_mode','_estimated','_dates','_excluded','_blockedSourceUnits'])delete group[key];
+    for(const key of ['_rooms','_used','_grids','_mode','_estimated','_dates','_excluded','_blockedSourceUnits'])delete group[key];
   }
   return {cages:{used:occupied.size,total:current.size},groups,unassignedMice,unassignedCages,issues:[...issues]};
 }

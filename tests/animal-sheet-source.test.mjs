@@ -28,3 +28,51 @@ test('source is explicitly configured, matches the fetched workbook and remains 
  assert.notEqual(a.entity_id,b.entity_id);assert.equal(b.entity_id,'loc_'+(await sourceHash(`${alternative}|${b.payload.source_sheet_id}|${b.payload.source_cell}`)).slice(0,20));
  assert(other.records.every(r=>r.payload.source_file_id===alternative));
 });
+
+function borderedGrid(sheet,row,col,bodyRows=5){
+ sheet.merges.push({sheetId:sheet.properties.sheetId,startRowIndex:row-1,endRowIndex:row,startColumnIndex:col-1,endColumnIndex:col+5});
+ const border=(r,c,side)=>{const rows=sheet.data[0].rowData;while(rows.length<r)rows.push({values:[]});const cells=rows[r-1].values;while(cells.length<c)cells.push({});const cell=cells[c-1];cell.effectiveFormat??={};cell.effectiveFormat.borders??={};cell.effectiveFormat.borders[side]={style:'SOLID_THICK'};};
+ const end=row+bodyRows+1;
+ for(let c=col;c<col+6;c++){border(row,c,'top');border(row,c,'bottom');border(end,c,'bottom');}
+ for(let r=row;r<=end;r++){border(r,col,'left');border(r,col+5,'right');}
+ return end;
+}
+const locations=result=>result.records.filter(r=>r.entity_type==='locations').map(r=>r.payload);
+
+test('complete blank SPF cage grids retain physical coordinates, empty body and explicit border provenance',async()=>{
+ const w=fixture(),s=w.sheets[2];borderedGrid(s,7,14);slot(s,26,2,'SPF-F1');borderedGrid(s,26,20,6);
+ const before=structuredClone(w),result=await parseAnimalSheetWorkbook(w,{capturedAt}),blank=locations(result).filter(p=>p.source_grid_basis);
+ assert.equal(result.parser_version,2);assert.equal(blank.length,2);assert.deepEqual(w,before);
+ for(const p of blank){assert.equal(p.source_grid_basis,'border_verified_cage_grid');assert.equal(p.source_grid_label_status,'unlabelled');assert.equal(p.source_label,'');assert.equal(p.label,'Unlabelled grid '+p.source_cell);assert.equal(p.room_id,'room_sheet_spf');assert.equal(p.source_current,true);assert.deepEqual(p.source_observed_tags,[]);assert.equal(p.location_id,'loc_'+(await sourceHash(`${ANIMAL_SOURCE_ID}|1250760483|${p.source_cell}`)).slice(0,20));assert.equal(p.rack_id,locations(result).find(x=>x.source_sheet_id===1250760483&&!x.source_grid_basis).rack_id);}
+ assert.deepEqual(blank.map(p=>p.source_grid_boundary_range),['N7:S13','T26:Y33']);
+ // Later labelled source uses the same coordinate-derived ID, never a new grid.
+ put(s,7,14,'SPF-E2',{effectiveFormat:s.data[0].rowData[6].values[13].effectiveFormat});
+ const labelled=locations(await parseAnimalSheetWorkbook(w,{capturedAt})).find(p=>p.source_cell==='N7'&&p.source_sheet_id===1250760483);
+ assert.equal(labelled.location_id,blank[0].location_id);assert.equal(labelled.label,'SPF-E2');
+});
+
+test('blank merges, notes, formulas, partial borders and non-SPF grids cannot create phantom capacity',async()=>{
+ const mutations=[
+  (w,s)=>{delete s.data[0].rowData[6].values[13].effectiveFormat.borders.top;},
+  (w,s)=>{s.data[0].rowData[12].values[16].effectiveFormat.borders.bottom.style='DOTTED';},
+  (w,s)=>{delete s.data[0].rowData[9].values[18].effectiveFormat.borders.right;},
+  (w,s)=>{s.data[0].rowData[6].values[13].note='Storage notes';},
+  (w,s)=>{s.data[0].rowData[6].values[13].userEnteredValue={formulaValue:'=""'};},
+  (w,s)=>{s.data[0].rowData[6].values[13].effectiveValue={stringValue:'Notes'};},
+  (w,s)=>{s.data[0].rowData[6].values[1].effectiveValue={stringValue:'Unrecognised peer'};slot(s,40,2,'SPF-E9');},
+  (w,s)=>{s.merges.at(-1).endRowIndex++;},
+  (w,s)=>{for(const row of s.data[0].rowData)for(const cell of row.values??[])if(cell.effectiveFormat)delete cell.effectiveFormat.borders;},
+ ];
+ for(const mutate of mutations){const w=fixture(),s=w.sheets[2];borderedGrid(s,7,14);mutate(w,s);assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,0);}
+ for(const index of [0,1]){const w=fixture();borderedGrid(w.sheets[index],7,14);assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,0);}
+ const w=fixture();borderedGrid(w.sheets[2],15,14);assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,0);
+});
+
+test('new blank grid discoveries use ordinary additive merge and preserve existing observations and history',async()=>{
+ const {planAnimalSheetMerge}=await import('../supabase/functions/import-animal-sheet/merge.mjs');
+ const w=fixture(),before=await parseAnimalSheetWorkbook(w,{capturedAt}),current=before.records.map(r=>({...structuredClone(r),version:1,archived:false}));
+ const baseline={schema_version:1,source_id:ANIMAL_SOURCE_ID,entries:before.records.map(r=>({...structuredClone(r),source_present:true}))};
+ borderedGrid(w.sheets[2],7,14);const after=await parseAnimalSheetWorkbook(w,{capturedAt}),plan=await planAnimalSheetMerge(after,current,baseline);
+ assert.equal(plan.changes.length,1);assert.equal(plan.changes[0].entity_type,'locations');assert.equal(plan.changes[0].expected_version,0);assert.equal(plan.conflicts.length,0);assert.equal(plan.summary.updated,0);assert.equal(plan.summary.withdrawn,0);assert.equal(plan.historyRecords.length,1);assert.equal(plan.historyRecords[0].payload.animal_sheet_change.action,'added');
+ assert.deepEqual(current,before.records.map(r=>({...r,version:1,archived:false})));
+});

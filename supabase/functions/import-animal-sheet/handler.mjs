@@ -43,7 +43,7 @@ export function createHandler({env,fetchImpl=fetch,parse=parseAnimalSheetWorkboo
    const access=await tokenProvider(env.get('GOOGLE_SERVICE_ACCOUNT_JSON'),fetchImpl,now());
    // Only GET the original source. The existing outbound function owns its
    // separate output workbook and is never invoked or modified here.
-   const fields='spreadsheetId,properties(title,locale,timeZone),sheets(properties(sheetId,title,gridProperties),merges,data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue,formattedValue,note,effectiveFormat(numberFormat),userEnteredFormat(numberFormat)))))';
+   const fields='spreadsheetId,properties(title,locale,timeZone),sheets(properties(sheetId,title,gridProperties),merges,data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue,formattedValue,note,effectiveFormat(numberFormat,borders),userEnteredFormat(numberFormat)))))';
    const url='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(sourceId)+'?includeGridData=true&fields='+encodeURIComponent(fields);
    const response=await fetchImpl(url,{method:'GET',cache:'no-store',redirect:'error',headers:{Authorization:'Bearer '+access},signal:AbortSignal.timeout(60000)});
    if(response.status===403||response.status===404)fail('source_access_denied');if(!response.ok)fail('source_read_failed');

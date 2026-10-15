@@ -21,7 +21,7 @@ test('defaults infer explicit room names, keep capacities unknown, and count one
   const dataset=empty(),before=structuredClone(dataset),value=getCageSummaryOptions(dataset);
   assert.deepEqual(value,{schema_version:1,groups:{beh:{room_ids:['BEH'],capacity:null,locobox_mode:'cage',temporary_storage_location_ids:[]},rat:{room_ids:['RAT-1','RAT-2'],capacity:null,locobox_mode:'cage'},clean:{room_ids:['CLEAN'],capacity:null},spf:{room_ids:['SPF'],capacity:null}}});
   assert.deepEqual(dataset,before);assert.equal(getCageSummaryOptionsStatus(dataset),'default');assert.equal(getCageSummaryOptionsStatus(null),'default');
-  assert.deepEqual(CAGE_SUMMARY_GROUPS.map(group=>group.unit),['locoboxes','locoboxes','cages','cages']);
+  assert.deepEqual(CAGE_SUMMARY_GROUPS.map(group=>group.unit),['locoboxes','locoboxes','cage grids','cage grids']);
   assert.deepEqual(CAGE_SUMMARY_GROUPS.map(group=>group.label),['Animal Beh locobox','SHLAC Rat room','SHLAC Conventional','SHLAC SPF']);
   value.groups.beh.room_ids.push('OTHER');value.groups.spf.capacity=100;
   assert.deepEqual(getCageSummaryOptions(dataset).groups.beh.room_ids,['BEH']);assert.equal(getCageSummaryOptions(dataset).groups.spf.capacity,null);
@@ -189,14 +189,24 @@ test('form saves rooms, zero capacity, unknown capacity and locobox mode to the 
   const value=getCageSummaryOptions(h.dataset);assert.equal(value.groups.beh.capacity,0);assert.equal(value.groups.beh.locobox_mode,'position');assert.equal(value.groups.rat.capacity,null);assert.deepEqual(value.groups.clean.room_ids,['CLEAN','OTHER']);
   assert.match(h.container.innerHTML,/Cage capacity options saved/);
   const reopened={innerHTML:''};renderCageSummaryOptions(reopened,structuredClone(h.dataset),h.hooks);
-  assert.match(reopened.innerHTML,/name="spf_capacity"[^>]*value="120"/);assert.match(reopened.innerHTML,/option value="position" selected/);
-  assert.match(reopened.innerHTML,/physical locoboxes/);assert.match(reopened.innerHTML,/capacity means cage slots, not mice per cage/);
+  assert.doesNotMatch(reopened.innerHTML,/name="(?:spf|clean)_capacity"/);assert.match(reopened.innerHTML,/Automatic from registered cage grids/);assert.equal(value.groups.spf.capacity,null);assert.match(reopened.innerHTML,/option value="position" selected/);
+  assert.match(reopened.innerHTML,/physical locoboxes/);assert.match(reopened.innerHTML,/total capacity is the number of current registered cage grids/);
 });
 
 test('unchecking rooms and repeated checkbox events keep room assignments unique',async()=>{
   const h=harness();h.room('rat','RAT-2',false);h.room('rat','RAT-1',true);h.room('rat','RAT-1',true);await h.save();
   assert.deepEqual(getCageSummaryOptions(h.dataset).groups.rat.room_ids,['RAT-1']);
   h.room('rat','BEH',true);await h.save();assert.equal(h.saves.length,1);assert.match(h.container.innerHTML,/assigned only once/);
+});
+
+test('automatic grid capacities retain earlier saved totals and custom metadata during unrelated option saves',async()=>{
+ const built=make({clean:{capacity:42},spf:{capacity:19}});
+ built.record.cage_summary_options.groups.clean.notes='Retain the former inventory';
+ const h=harness({},built.dataset);h.field('rat','capacity','24');h.field('clean','capacity','999');h.field('spf','capacity','999');await h.save();
+ const value=h.dataset.tables.husbandry_events.find(row=>row.event_id==='CAGE-SUMMARY-OPTIONS').cage_summary_options;
+ assert.equal(value.groups.rat.capacity,24);assert.equal(value.groups.clean.capacity,42);assert.equal(value.groups.spf.capacity,19);
+ assert.equal(value.groups.clean.notes,'Retain the former inventory');
+ assert.doesNotMatch(h.container.innerHTML,/name="(?:clean|spf)_capacity"/);
 });
 
 test('invalid saved settings visibly warn editors and viewers without inventing capacities',()=>{
@@ -216,29 +226,29 @@ test('read-only and revoked permissions prevent edits and forged submissions',as
 });
 
 test('stale options are rejected and preserve drafts, while unrelated data survives a refresh',async()=>{
-  const h=harness();h.field('spf','capacity','120');h.hooks.reloadDataset=async()=>make({spf:{capacity:100}}).dataset;
-  await h.save();assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/changed while you were editing/);assert.match(h.container.innerHTML,/name="spf_capacity"[^>]*value="120"/);
-  const safe=harness();safe.field('spf','capacity','120');const latest=empty();latest.tables.mice.push({mouse_sid:'SYNTHETIC-2'});safe.hooks.reloadDataset=async()=>latest;
+  const h=harness();h.field('rat','capacity','120');h.hooks.reloadDataset=async()=>make({rat:{capacity:100}}).dataset;
+  await h.save();assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/changed while you were editing/);assert.match(h.container.innerHTML,/name="rat_capacity"[^>]*value="120"/);
+  const safe=harness();safe.field('rat','capacity','120');const latest=empty();latest.tables.mice.push({mouse_sid:'SYNTHETIC-2'});safe.hooks.reloadDataset=async()=>latest;
   await safe.save();assert.equal(safe.saves.length,1);assert.equal(safe.saves[0].tables.mice.length,2);
 });
 
 test('rooms archived during editing are revalidated after refresh and cannot save',async()=>{
-  const h=harness();h.field('spf','capacity','120');h.hooks.reloadDataset=async()=>{const latest=empty();latest.tables.rooms.find(room=>room.room_id==='SPF').archived=true;return latest};
-  await h.save();assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/existing, unarchived room/);assert.match(h.container.innerHTML,/name="spf_capacity"[^>]*value="120"/);
+  const h=harness();h.field('rat','capacity','120');h.hooks.reloadDataset=async()=>{const latest=empty();latest.tables.rooms.find(room=>room.room_id==='SPF').archived=true;return latest};
+  await h.save();assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/existing, unarchived room/);assert.match(h.container.innerHTML,/name="rat_capacity"[^>]*value="120"/);
 });
 
 test('invalid capacity and network errors preserve drafts and escape unsafe content',async()=>{
   let reloads=0;const h=harness({reloadDataset:async()=>{reloads++;return empty()}});
-  h.field('spf','capacity','1.5');await h.save();assert.equal(h.saves.length,0);assert.equal(reloads,0);assert.match(h.container.innerHTML,/whole number/);
-  h.field('spf','capacity','120');h.hooks.saveDataset=async()=>{throw new Error('<script>Network failed</script>')};await h.save();
-  assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/name="spf_capacity"[^>]*value="120"/);assert.match(h.container.innerHTML,/&lt;script&gt;Network failed&lt;\/script&gt;/);assert.doesNotMatch(h.container.innerHTML,/<script>|aria-busy="true"/);
+  h.field('rat','capacity','1.5');await h.save();assert.equal(h.saves.length,0);assert.equal(reloads,0);assert.match(h.container.innerHTML,/whole number/);
+  h.field('rat','capacity','120');h.hooks.saveDataset=async()=>{throw new Error('<script>Network failed</script>')};await h.save();
+  assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/name="rat_capacity"[^>]*value="120"/);assert.match(h.container.innerHTML,/&lt;script&gt;Network failed&lt;\/script&gt;/);assert.doesNotMatch(h.container.innerHTML,/<script>|aria-busy="true"/);
 });
 
 test('pending saves disable controls and ignore duplicate submits and edits',async()=>{
   let finish;const pending=new Promise(resolve=>{finish=resolve});let saves=0;
-  const h=harness({saveDataset:async()=>{saves++;await pending}});h.field('spf','capacity','120');const saving=h.save();
-  await new Promise(resolve=>setImmediate(resolve));assert.match(h.container.innerHTML,/aria-busy="true"/);await h.save();h.field('spf','capacity','150');h.room('clean','OTHER',true);
-  finish();await saving;assert.equal(saves,1);assert.match(h.container.innerHTML,/name="spf_capacity"[^>]*value="120"/);assert.doesNotMatch(h.container.innerHTML,/aria-busy="true"/);
+  const h=harness({saveDataset:async()=>{saves++;await pending}});h.field('rat','capacity','120');const saving=h.save();
+  await new Promise(resolve=>setImmediate(resolve));assert.match(h.container.innerHTML,/aria-busy="true"/);await h.save();h.field('rat','capacity','150');h.room('clean','OTHER',true);
+  finish();await saving;assert.equal(saves,1);assert.match(h.container.innerHTML,/name="rat_capacity"[^>]*value="120"/);assert.doesNotMatch(h.container.innerHTML,/aria-busy="true"/);
 });
 
 

@@ -17,11 +17,11 @@ function occupy(data,cage,mouse={}) {
 }
 
 test('SHLAC room renaming preserves saved IDs, capacities and occupancy while new names also classify by default',()=>{
- const data=fixture();for(const room_id of ['RAT','CLEAN','SPF'])occupy(data,{cage_sid:'C-'+room_id,room_id});
+ const data=fixture();for(const room_id of ['RAT','CLEAN','SPF']){data.tables.locations.push({location_id:'P-'+room_id,room_id});occupy(data,{cage_sid:'C-'+room_id,room_id,location_id:'P-'+room_id});}
  const saved=configured(data,{rat:{locobox_mode:'cage'}}),before=summarizeCages(saved);
  for(const current of [data,saved])for(const room of current.tables.rooms)room.name=({RAT:'SHLAC Rat room',CLEAN:'SHLAC Conventional',SPF:'SHLAC SPF'})[room.room_id]||room.name;
  assert.deepEqual(summarizeCages(saved),before);
- const defaults=summarizeCages(data);for(const key of ['rat','clean','spf']){assert.equal(defaults.groups[key].used,1);assert.equal(defaults.groups[key].capacity,null);assert.equal(defaults.groups[key].configured,true);}
+ const defaults=summarizeCages(data);for(const key of ['rat','clean','spf']){assert.equal(defaults.groups[key].used,1);assert.equal(defaults.groups[key].capacity,key==='rat'?null:1);assert.equal(defaults.groups[key].configured,true);}
 });
 
 test('current cage total is active or occupied IDs, never the historical cage archive',()=>{
@@ -33,14 +33,14 @@ test('current cage total is active or occupied IDs, never the historical cage ar
   data.tables.cages.push({cage_sid:'EMPTY',state:'Occupied',room_id:'CLEAN'},{cage_sid:'OLD',state:'Inactive'},{cage_sid:'ARCHIVED',state:'Active',app_archived_at:'2026-01-01'},{cage_sid:'UNKNOWN'});
   const result=summarizeCages(configured(data));
   assert.deepEqual(result.cages,{used:4,total:5});
-  assert.equal(result.groups.clean.used,2);
+  assert.equal(result.groups.clean.used,0);assert.equal(result.groups.clean.unlocatedCages,2);
   assert.equal(result.unassignedCages,2);
   assert.ok(result.issues.some(value=>value.includes('archived')));
   assert.ok(result.issues.some(value=>value.includes('missing')));
 });
 
 test('occupied cage IDs deduplicate mice and cage rows and ignore ended or archived mice',()=>{
-  const data=fixture();occupy(data,{cage_sid:'A',room_id:'SPF'});
+  const data=fixture();data.tables.locations.push({location_id:'P',room_id:'SPF'});occupy(data,{cage_sid:'A',room_id:'SPF',location_id:'P'});
   data.tables.mice.push({...data.tables.mice[0]},{mouse_sid:'M2',cage_sid:'A',state:'Stock'},{mouse_sid:'M3',cage_sid:'Z',state:'Ended'},{mouse_sid:'M4',cage_sid:'Y',state:'Stock',archived:true},{mouse_sid:'M5',cage_sid:'X',state:'Stock',app_archived_at:'2026-01-01'});
   data.tables.cages.push({...data.tables.cages[0]});
   const result=summarizeCages(configured(data));
@@ -60,7 +60,7 @@ test('room assignments follow explicit cage, position and rack references consis
   data.tables.locations.push({location_id:'P1',rack_id:'RK'},{location_id:'P2',room_id:'CLEAN'},{location_id:'P3',room_id:'CLEAN',rack_id:'RK'});
   occupy(data,{cage_sid:'A',location_id:'P1'});occupy(data,{cage_sid:'B',location_id:'P2'});occupy(data,{cage_sid:'C',rack_id:'RK'});occupy(data,{cage_sid:'D',room_id:'CLEAN',rack_id:'RK',location_id:'P3'});
   const result=summarizeCages(configured(data));
-  assert.equal(result.groups.clean.used,4);assert.equal(result.groups.clean.mappedPositions,3);assert.equal(result.unassignedCages,0);
+  assert.equal(result.groups.clean.used,3);assert.equal(result.groups.clean.unlocatedCages,1);assert.equal(result.groups.clean.capacity,3);assert.equal(result.groups.clean.mappedPositions,3);assert.equal(result.unassignedCages,0);
 });
 
 test('disagreeing room or rack paths and missing referenced parents never silently select a room',()=>{
@@ -165,7 +165,7 @@ test('source tags repeated within one explicit box count once, but repeated acro
 test('a registered occupied cage prevents duplicate source use by physical position, box and animal tag',()=>{
   const data=fixture();data.tables.locations=[source('SRC1',{locobox_id:'BOX-A'}),source('SRC2',{locobox_id:'BOX-A'})];occupy(data,{cage_sid:'LIVE',location_id:'SRC1'},{physical_tag:"PB′-M101"});
   const d=configured(data,{beh:{locobox_mode:'box_id'}}),r=summarize(d);assert.equal(r.groups.beh.used,1);assert.equal(r.groups.beh.estimatedUsed,0);assert.equal(r.groups.beh.unlinkedPositions,0);
-  const elsewhere=fixture();elsewhere.tables.locations=[source()];occupy(elsewhere,{cage_sid:'LIVE',room_id:'CLEAN'},{physical_tag:"PB′-M101"});
+  const elsewhere=fixture();elsewhere.tables.locations=[source(),{location_id:'P-CLEAN',room_id:'CLEAN'}];occupy(elsewhere,{cage_sid:'LIVE',room_id:'CLEAN',location_id:'P-CLEAN'},{physical_tag:"PB′-M101"});
   const e=summarize(elsewhere);assert.equal(e.groups.clean.used,1);assert.equal(e.groups.beh.estimatedUsed,0);assert.equal(e.groups.beh.unlinkedPositions,1);assert(e.issues.some(x=>/overlaps a registered/.test(x)));
   elsewhere.tables.mice[0].state='Ended';assert.equal(summarize(elsewhere).groups.beh.estimatedUsed,1,'an ended mouse does not establish current registered occupancy');
 });
@@ -188,10 +188,10 @@ test('newer unresolved source changes block stale estimates while older, future 
   }
 });
 
-test('configured zero and over-capacity usage are retained without truncation',()=>{
-  const data=fixture();occupy(data,{cage_sid:'A',room_id:'SPF'});occupy(data,{cage_sid:'B',room_id:'SPF'});
-  const result=summarizeCages(configured(data,{spf:{capacity:0},clean:{capacity:null}}));
-  assert.equal(result.groups.spf.capacity,0);assert.equal(result.groups.spf.used,2);assert.equal(result.groups.spf.overCapacity,true);assert.equal(result.groups.clean.capacity,null);
+test('manual locobox zero and over-capacity usage are retained without truncation',()=>{
+  const data=fixture();occupy(data,{cage_sid:'A',room_id:'RAT'});occupy(data,{cage_sid:'B',room_id:'RAT'});
+  const result=summarizeCages(configured(data,{rat:{capacity:0,locobox_mode:'cage'},clean:{capacity:null}}));
+  assert.equal(result.groups.rat.capacity,0);assert.equal(result.groups.rat.used,2);assert.equal(result.groups.rat.overCapacity,true);assert.equal(result.groups.clean.capacity,0);
 });
 
 test('historical observations and history events never establish current cage or room assignments',()=>{
@@ -240,6 +240,80 @@ test('invalid saved options never reassign a summary to a different inferred roo
 
 test('empty data is safe; counts neither mutate records nor create source assignments',()=>{
   const empty=summarizeCages(null);assert.deepEqual(empty.cages,{used:0,total:0});assert.equal(empty.unassignedCages,0);assert.equal(empty.unassignedMice,0);
-  const data=fixture();occupy(data,{cage_sid:' 42 ',room_id:'SPF'});data.tables.mice.push({mouse_sid:'M2',state:' Stock ',cage_sid:42});
+  const data=fixture();data.tables.locations.push({location_id:'P',room_id:'SPF'});occupy(data,{cage_sid:' 42 ',room_id:'SPF',location_id:'P'});data.tables.mice.push({mouse_sid:'M2',state:' Stock ',cage_sid:42});
   const before=structuredClone(data),result=summarizeCages(data);assert.deepEqual(data,before);assert.deepEqual(result.cages,{used:1,total:1});assert.equal(result.groups.spf.used,1);
+});
+
+test('SHLAC capacity includes empty grids and occupied grids count once across animals and duplicate positions',()=>{
+ const data=fixture();data.tables.racks=[{rack_id:'C',room_id:'CLEAN'},{rack_id:'S',room_id:'SPF'}];
+ data.tables.locations=[
+  {location_id:'C1',rack_id:'C',row:1,column:1},{location_id:'C1-ALIAS',rack_id:'C',row:1,column:1},
+  {location_id:'C2',rack_id:'C',row:1,column:2,notes:'Ready for cleaning'},
+  {location_id:'C3',rack_id:'C',row:2,column:1},
+  {location_id:'S1',rack_id:'S',row:1,column:1},{location_id:'S2',rack_id:'S',row:1,column:2}
+ ];
+ occupy(data,{cage_sid:'A',location_id:'C1'});occupy(data,{cage_sid:'B',location_id:'C1-ALIAS'});
+ data.tables.mice.push({mouse_sid:'EXTRA',cage_sid:'A',state:'Stock'});
+ occupy(data,{cage_sid:'S',location_id:'S1'});
+ const saved=configured(data,{beh:{capacity:36},rat:{capacity:24},clean:{capacity:99},spf:{capacity:0}}),before=structuredClone(saved),r=summarize(saved);
+ assert.deepEqual([r.groups.clean.used,r.groups.clean.capacity,r.groups.clean.mappedPositions],[1,3,3]);
+ assert.deepEqual([r.groups.spf.used,r.groups.spf.capacity],[1,2]);
+ assert.equal(r.groups.beh.capacity,36);assert.equal(r.groups.rat.capacity,24);assert.equal(r.groups.spf.overCapacity,false);
+ assert.deepEqual(saved,before);assert.equal(saved.tables.husbandry_events[0].cage_summary_options.groups.clean.capacity,99);
+});
+
+test('current SHLAC source animal entries fill grids; empty, genotype, lighting and notes-only grids do not',()=>{
+ const data=fixture();data.tables.racks=[{rack_id:'C',room_id:'CLEAN'}];
+ const pos=(name,row,body,extra={})=>source(name,{room_id:'CLEAN',rack_id:'C',row,column:1,source_block_text:'A7: '+name+'\n'+body,...extra});
+ data.tables.locations=[
+  pos('C1',1,"A8: PB'-M101\nA9: P-F102"),pos('C1-ALIAS',1,"A8: PB'-M101"),
+  pos('C2',2,'A8: P\nA9: LD\nB8: P-M204\nA10 comment: P-M999 moved'),pos('C3',3,''),
+  pos('C4',4,'A8: WT-F104'),pos('OLD',5,'A8: P-M105',{source_current:false}),pos('ARCHIVED',6,'A8: P-F106',{archived:true})
+ ];
+ const before=structuredClone(data),r=summarize(data);
+ assert.deepEqual([r.groups.clean.used,r.groups.clean.capacity,r.groups.clean.estimatedUsed],[2,4,2]);
+ assert.deepEqual(r.groups.clean.sourceDates,[asOf]);assert.deepEqual(r.cages,{used:0,total:0});assert.deepEqual(data,before);
+});
+
+test('SHLAC grids with conflicting coordinate or parent records cannot be double-counted',()=>{
+ const data=fixture();data.tables.racks=[{rack_id:'C',room_id:'CLEAN'},{rack_id:'BAD',room_id:'SPF',archived:true}];
+ data.tables.locations=[{location_id:'P',rack_id:'C',row:1,column:1},{location_id:'P',rack_id:'C',row:2,column:1},{location_id:'Q',room_id:'CLEAN',rack_id:'BAD',row:1,column:1}];
+ occupy(data,{cage_sid:'C',location_id:'P'});
+ const r=summarize(data);assert.equal(r.groups.clean.capacity,0);assert.equal(r.groups.clean.used,0);assert(r.issues.some(x=>/conflicting records/.test(x)));
+});
+
+test('same cage label on distinct SHLAC grids preserves physical capacity and animal entries',()=>{
+ const data=fixture();data.tables.racks=[{rack_id:'C',room_id:'CLEAN'},{rack_id:'S',room_id:'SPF'}];
+ data.tables.locations=[
+  source('C1',{room_id:'CLEAN',rack_id:'C',row:1,column:1,label:'E6',source_label_conflict:true}),
+  source('C2',{room_id:'CLEAN',rack_id:'C',row:2,column:1,label:'E6',source_label_conflict:true}),
+  source('S1',{room_id:'SPF',rack_id:'S',row:1,column:1,label:'E1',source_label_conflict:true}),
+  source('S2',{room_id:'SPF',rack_id:'S',row:2,column:1,label:'E1',source_label_conflict:true,source_block_text:'A7: E1\nA8: LD'}),
+  source('BEH',{source_label_conflict:true})
+ ];
+ const before=structuredClone(data),r=summarize(data);
+ assert.deepEqual([r.groups.clean.used,r.groups.clean.capacity],[2,2]);
+ assert.deepEqual([r.groups.spf.used,r.groups.spf.capacity],[1,2]);
+ assert.equal(r.groups.beh.estimatedUsed,0,'Locobox identity conflicts still require review');
+ assert.deepEqual(data,before,'labels and source evidence remain unchanged');
+});
+
+test('a newly registered unlabelled SPF grid increases capacity without inventing animal occupancy',()=>{
+ const data=fixture();data.tables.racks=[{rack_id:'S',room_id:'SPF'}];
+ data.tables.locations=[source('S1',{room_id:'SPF',rack_id:'S',row:7,column:20})];
+ assert.deepEqual([summarize(data).groups.spf.used,summarize(data).groups.spf.capacity],[1,1]);
+ data.tables.locations.push(source('BLANK',{room_id:'SPF',rack_id:'S',row:15,column:46,label:'Unlabelled grid AT15',source_label:'',source_grid_basis:'border_verified_cage_grid',source_cell:'AT15',source_block_text:'',source_observed_tags:[]}));
+ const r=summarize(data);assert.deepEqual([r.groups.spf.used,r.groups.spf.capacity],[1,2]);
+});
+
+test('an empty registered cage blocks stale animal tags on aliases of its physical grid',()=>{
+ const data=fixture();data.tables.racks=[{rack_id:'S',room_id:'SPF'}];
+ data.tables.locations=[{location_id:'LIVE',room_id:'SPF',rack_id:'S',row:1,column:1},source('ALIAS',{room_id:'SPF',rack_id:'S',row:1,column:1})];
+ data.tables.cages=[{cage_sid:'EMPTY',state:'Active',location_id:'LIVE'}];
+ const r=summarize(data);assert.deepEqual([r.groups.spf.used,r.groups.spf.capacity],[0,1]);
+});
+
+test('coordinates without a known rack do not merge distinct registered position IDs',()=>{
+ const data=fixture();data.tables.locations=[{location_id:'A',room_id:'CLEAN',row:1,column:1},{location_id:'B',room_id:'CLEAN',row:1,column:1}];
+ assert.equal(summarize(data).groups.clean.capacity,2);
 });
