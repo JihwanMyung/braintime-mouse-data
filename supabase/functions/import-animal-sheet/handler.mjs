@@ -5,6 +5,44 @@ const b64=bytes=>btoa(String.fromCharCode(...bytes)).replace(/=/g,'').replace(/\
 const enc=value=>b64(new TextEncoder().encode(JSON.stringify(value)));
 class ImportFailure extends Error{constructor(code){super(code);this.code=code}}
 const fail=code=>{throw new ImportFailure(code)};
+const BORDER_BOX=Object.freeze({sheetId:1250760483,startRow:14,endRow:22,startColumn:45,endColumn:51,range:'AT15:AY22'});
+const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+// A separate, small formatting read must never replace the cells containing
+// animal tags, dates, notes or formulas from the main current-map capture.
+export function mergeSPFBorderSupplement(workbook,supplement){
+ if(supplement?.spreadsheetId!==workbook?.spreadsheetId||!Array.isArray(supplement?.sheets)||supplement.sheets.length!==1)fail('source_schema_changed');
+ const part=supplement.sheets[0],sheet=workbook.sheets?.find(s=>s.properties?.sheetId===BORDER_BOX.sheetId);
+ if(!sheet||part.properties?.sheetId!==BORDER_BOX.sheetId||part.properties.title!==sheet.properties.title||!Array.isArray(part.data)||part.data.length>48)fail('source_schema_changed');
+ const original=new Map(),overlay=new Map(),validOffset=n=>Number.isInteger(n)&&n>=0;
+ for(const data of sheet.data??[]){
+  const sr=data.startRow??0,sc=data.startColumn??0;if(!validOffset(sr)||!validOffset(sc)||!Array.isArray(data.rowData??[]))fail('source_schema_changed');
+  for(let r=Math.max(BORDER_BOX.startRow,sr);r<Math.min(BORDER_BOX.endRow,sr+(data.rowData??[]).length);r++){
+   const row=data.rowData[r-sr],values=row?.values??[];if(!Array.isArray(values))fail('source_schema_changed');
+   for(let c=Math.max(BORDER_BOX.startColumn,sc);c<Math.min(BORDER_BOX.endColumn,sc+values.length);c++){
+    const cell=values[c-sc],key=r+','+c;if(!object(cell)||original.has(key))fail('source_schema_changed');original.set(key,cell);
+   }
+  }
+ }
+ for(const data of part.data){
+  const sr=data.startRow??0,sc=data.startColumn??0,rows=data.rowData??[];
+  if(!validOffset(sr)||!validOffset(sc)||sr<BORDER_BOX.startRow||sr>=BORDER_BOX.endRow||sc<BORDER_BOX.startColumn||sc>=BORDER_BOX.endColumn||!Array.isArray(rows)||sr+rows.length>BORDER_BOX.endRow)fail('source_schema_changed');
+  for(let ri=0;ri<rows.length;ri++){const cells=rows[ri]?.values??[];if(!Array.isArray(cells)||sc+cells.length>BORDER_BOX.endColumn)fail('source_schema_changed');
+   for(let ci=0;ci<cells.length;ci++){
+    const cell=cells[ci],key=(sr+ri)+','+(sc+ci);if(!object(cell)||Object.keys(cell).some(k=>k!=='effectiveFormat')||cell.effectiveFormat!==undefined&&(!object(cell.effectiveFormat)||Object.keys(cell.effectiveFormat).some(k=>k!=='borders'))||overlay.has(key))fail('source_schema_changed');
+    overlay.set(key,cell.effectiveFormat?.borders??null);
+   }
+  }
+ }
+ sheet.data??=[];
+ for(const [key,borders]of overlay){
+  if(borders===null)continue;if(!object(borders)||Object.keys(borders).some(k=>!['top','bottom','left','right'].includes(k)))fail('source_schema_changed');
+  let cell=original.get(key);
+  if(!cell){const [startRow,startColumn]=key.split(',').map(Number);cell={};sheet.data.push({startRow,startColumn,rowData:[{values:[cell]}]});original.set(key,cell);}
+  if(cell.effectiveFormat?.borders!==undefined)fail('source_schema_changed');
+  cell.effectiveFormat={...(cell.effectiveFormat??{}),borders};
+ }
+ return workbook;
+}
 export async function googleReadToken(accountJSON,fetchImpl=fetch,now=new Date()){
  let account;try{account=JSON.parse(accountJSON);if(!account.client_email||!account.private_key)throw Error()}catch{fail('google_auth_failed')}
  try{
@@ -56,19 +94,28 @@ export function createHandler({env,fetchImpl=fetch,parse=parseAnimalSheetWorkboo
     if(matches.length!==1||typeof matches[0].properties.title!=='string'||!matches[0].properties.title)fail('source_schema_changed');
     return matches[0].properties.title;
    });
-   const fields='spreadsheetId,properties(title,locale,timeZone),sheets(properties(sheetId,title,gridProperties),merges,data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue,formattedValue,note,effectiveFormat(numberFormat,borders),userEnteredFormat(numberFormat)))))';
+   const fields='spreadsheetId,properties(title,locale,timeZone),sheets(properties(sheetId,title,gridProperties),merges,data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue,formattedValue,note,effectiveFormat(numberFormat),userEnteredFormat(numberFormat)))))';
    const query=new URLSearchParams({includeGridData:'true',fields});
    for(const title of titles)query.append('ranges',"'"+title.replaceAll("'","''")+"'");
    // A daily import needs only current maps, never every historical worksheet.
    // Bound the current response before parsing and avoid a second deep copy.
-   const rawWorkbook=await readGoogle(endpoint+'?'+query,8000000),captured=now().toISOString();
+   const rawWorkbook=await readGoogle(endpoint+'?'+query,8000000),valuesCaptured=now().toISOString();
    if(rawWorkbook.spreadsheetId!==sourceId||rawWorkbook.sheets?.length!==SOURCE_SHEETS.length||SOURCE_SHEETS.some(def=>rawWorkbook.sheets.filter(sheet=>sheet.properties?.sheetId===def.sheetId).length!==1))fail('source_schema_changed');
+   const spfTitle=titles[SOURCE_SHEETS.findIndex(def=>def.sheetId===BORDER_BOX.sheetId)];
+   const borderFields='spreadsheetId,sheets(properties(sheetId,title),data(startRow,startColumn,rowData(values(effectiveFormat(borders)))))';
+   const borderRange="'"+spfTitle.replaceAll("'","''")+"'!"+BORDER_BOX.range;
+   const borderQuery=new URLSearchParams({includeGridData:'true',fields:borderFields,ranges:borderRange});
+   const borderSupplement=await readGoogle(endpoint+'?'+borderQuery,100000),captured=now().toISOString();
+   mergeSPFBorderSupplement(rawWorkbook,borderSupplement);
+   // Preserve the separately captured border response and both request scopes.
+   // These are source observations, not an atomic Google revision guarantee.
+   rawWorkbook.source_capture={schema_version:1,mode:'current_values_and_targeted_borders',values:{fields,ranges:query.getAll('ranges')},borders:{fields:borderFields,range:borderRange,response:borderSupplement}};
    const workbook={...rawWorkbook,sheets:rawWorkbook.sheets.map(sheet=>({...sheet,merges:sheet.merges||[]}))};
    const dataset={tables:{}};for(const row of context.records)(dataset.tables[row.entity_type]??=[]).push(row.payload);
    let parsed,plan;try{parsed=await parse(workbook,{capturedAt:captured,expectedSourceId:sourceId,dataset,managerDirectory:context.manager_directory||[]})}catch{fail('source_schema_changed')}
    try{plan=await merge(parsed,context.records,context.previous_baseline||{})}catch{fail('source_merge_failed')}
    if(!plan||!Array.isArray(plan.changes)||!Array.isArray(plan.historyRecords)||!Array.isArray(plan.conflicts)||!plan.nextBaseline)fail('source_merge_failed');
-   plan.summary={...plan.summary,source_coverage:parsed.coverage,source_issue_count:parsed.issues?.length||0};
+   plan.summary={...plan.summary,source_coverage:parsed.coverage,source_issue_count:parsed.issues?.length||0,source_capture:{values_captured_at:valuesCaptured,borders_captured_at:captured,atomic_revision:false}};
    return reply(await rpc('commit_animal_sheet_import',{p_colony_id:colony,p_job_id:jobId,p_token:token,p_baseline_revision:context.baseline_revision,p_captured_at:captured,p_content_hash:parsed.content_hash,p_raw_workbook:rawWorkbook,p_plan:plan}));
   }catch(error){
    const code=error instanceof ImportFailure?error.code:'import_failed';
