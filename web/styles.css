@@ -222,3 +222,5 @@
 /* Short label only in the compact icon navigation. */
 .nav-label-compact{display:none}
 @media(max-width:620px){.nav-label-full{display:none}.nav-label-compact{display:inline}}
+
+.lac-fees .fee-unavailable{display:block;font-size:12px;line-height:1.25;font-weight:400;color:var(--muted,#61656b)}
