@@ -262,6 +262,30 @@ vm.runInContext(`
 }
 `,context);
 
+// The Cages shortcut reuses import controls without starting work on open.
+await vm.runInContext(`(async()=>{
+ const previous={dataset,route,detail,cloud,cageDate,cageView,cloudReady,renderAnimalSheetImport,hasCageSheetDrafts,pull:store.pullFromCloud,status:store.getCloudStatus};
+ let mounted=null,starts=0,pulls=0,disposed=0;
+ renderAnimalSheetImport=async(container,hooks)=>{mounted=hooks;return ()=>disposed++;};
+ store.startAnimalSheetImport=async()=>{starts++;return {job_id:'synthetic-job'};};
+ dataset=model.createSyntheticDataset();route='cages';detail=null;cageDate='';cloudReady=true;
+ cloud={mode:'cloud',signedIn:true,role:'owner',colonyId:'synthetic-colony',email:'owner@example.test'};
+ store.getCloudStatus=async()=>({...cloud});
+ for(const view of ['rack','sheet','table']){cageView=view;render();assert($('main').innerHTML.includes('data-action="cage-import"'),'shortcut in '+view);}
+ await action('cage-import');assert(mounted&&$('cage-import-dialog').open);assert(starts===0,'opening does not start an import');assert(mounted.canImport());
+ hasCageSheetDrafts=()=>true;assert(!mounted.canImport());await assert.rejects(mounted.start(),/Sync or discard/);hasCageSheetDrafts=previous.hasCageSheetDrafts;
+ await mounted.start();assert(starts===1);
+ store.pullFromCloud=async()=>{pulls++;const fresh=model.createSyntheticDataset();fresh.tables.cages[0].cage_tag='IMPORTED-CAGE';return fresh;};
+ await mounted.onComplete();assert(pulls===1&&route==='cages'&&!cageDate);assert(dataset.tables.cages[0].cage_tag==='IMPORTED-CAGE');assert($('main').innerHTML.includes('IMPORTED-CAGE'));
+ const old=mounted;cloud={...cloud,colonyId:'another-colony'};assert(!old.canImport());await assert.rejects(old.start(),/Reopen/);await assert.rejects(old.onComplete(),/Reopen/);assert(pulls===1);
+ $('cage-import-close').onclick();assert(disposed===1&&!$('cage-import-dialog').open);
+ mounted=null;hasCageSheetDrafts=()=>true;await openCageSheetImport();assert(!mounted&&$('toast').textContent.includes('Sync or discard'));hasCageSheetDrafts=previous.hasCageSheetDrafts;
+ cageDate='2020-01-02';assert(cageViewMenuHTML().includes('disabled title="Select Current to import"'));await openCageSheetImport();assert(!mounted);cageDate='';
+ for(const denied of [{mode:'local',signedIn:true,role:'owner'},{mode:'cloud',signedIn:false,role:'owner'},...['viewer','pending'].map(role=>({mode:'cloud',signedIn:true,role})),{mode:'cloud',signedIn:true,role:'manager',permissions:{housing:true,imports:false}},{mode:'cloud',signedIn:true,role:'manager',permissions:{housing:false,imports:true}}]){cloud=denied;assert(!cageViewMenuHTML().includes('data-action="cage-import"'));await openCageSheetImport();assert(!mounted);}
+ cloud={mode:'cloud',signedIn:true,role:'manager',permissions:{housing:true,imports:true}};assert(canImportAnimalsSheet());
+ dataset=previous.dataset;route=previous.route;detail=previous.detail;cloud=previous.cloud;cageDate=previous.cageDate;cageView=previous.cageView;cloudReady=previous.cloudReady;renderAnimalSheetImport=previous.renderAnimalSheetImport;hasCageSheetDrafts=previous.hasCageSheetDrafts;store.pullFromCloud=previous.pull;store.getCloudStatus=previous.status;
+})()`,context);
+
 // Recovery takes precedence over every route, including a direct settings refresh.
 await vm.runInContext(`(async()=>{
  const previous={cloud,route,dataset,cloudReady};

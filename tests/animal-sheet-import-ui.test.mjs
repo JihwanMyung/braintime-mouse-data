@@ -27,3 +27,26 @@ test('fresh starts, future or missing timestamps stay blocked; expired jobs stil
   const h=await harness({configured:true,enabled:true,job:{status:'running',queued_at:'2026-10-15T03:00:00Z'}},false);await h.click('start');assert.equal(h.started,0);h.cleanup();
  }finally{Date.now=realNow;}
 });
+
+test('reopening a running job resumes watching and retries a failed data reload without another import',async()=>{
+ let job={job_id:'existing',status:'running',started_at:new Date().toISOString()},loads=0;
+ const h=await harness(null,true,{getStatus:async()=>({configured:true,enabled:true,job}),onComplete:async()=>{loads++;if(loads===1)throw new Error('Connection interrupted');}});
+ try{assert.match(h.container.innerHTML,/Update in progress/);assert.equal(h.started,0);
+  job={...job,status:'completed'};await h.click('refresh');assert.match(h.container.innerHTML,/Connection interrupted/);assert.equal(loads,1);
+  await h.click('refresh');assert.equal(loads,2);assert.doesNotMatch(h.container.innerHTML,/Connection interrupted/);
+  await h.click('refresh');assert.equal(loads,2);assert.equal(h.started,0);
+ }finally{h.cleanup();}
+});
+
+ test('concurrent refreshes share one completion reload',async()=>{
+  let job={job_id:'one-job',status:'running',started_at:new Date().toISOString()},release,loads=0;
+  const h=await harness(null,true,{getStatus:async()=>({configured:true,enabled:true,job}),onComplete:async()=>{loads++;await new Promise(resolve=>release=resolve);}});
+  try{job={...job,status:'completed'};const first=h.click('refresh'),second=h.click('refresh');await new Promise(resolve=>setImmediate(resolve));assert.equal(loads,1);release();await Promise.all([first,second]);await h.click('refresh');assert.equal(loads,1);}finally{h.cleanup();}
+ });
+
+test('a status refresh blocks an overlapping new import request',async()=>{
+ let release,hold=false;
+ const ready={configured:true,enabled:true,job:null};
+ const h=await harness(ready,true,{getStatus:async()=>hold?new Promise(resolve=>release=resolve):ready});
+ try{hold=true;const refreshing=h.click('refresh');await h.click('start');assert.equal(h.started,0);release(ready);await refreshing;hold=false;await h.click('start');assert.equal(h.started,1);}finally{h.cleanup();}
+});
