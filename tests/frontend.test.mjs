@@ -377,6 +377,18 @@ const callbackContext={...context,store:callbackStore,PUBLIC_CONFIG:publicExampl
 vm.createContext(callbackContext);vm.runInContext(source,callbackContext);await new Promise(resolve=>setTimeout(resolve,10));
 assert.deepEqual(callbackCalls,['callback','load','pull'],'Auth callback precedes local loading and empty device opens shared colony');
 assert(element('main').innerHTML.includes('Recently born'));
+// Local mode reports editable for genuine local work. It does not establish
+// that a newly signed-in browser already has a shared snapshot.
+for(const hasCallback of [false,true]){
+ let imported=false,pulls=0;
+ const freshSignedInStore={getCloudStatus:()=>({mode:imported?'cloud':'local',configured:true,signedIn:true,readyForEdits:true,role:'owner',email:'owner@example.test',url:'https://example.supabase.co',colonyId:publicExample.colonyId}),consumeAuthCallback:async()=>hasCallback?{signedIn:true}:null,loadDataset:async()=>null,pullFromCloud:async()=>{pulls++;imported=true;return model.createSyntheticDataset();},getLacFeeVisibility:async()=>({}),getLabUserDirectory:async()=>({users:[]})};
+ const freshSignedInContext={...context,store:freshSignedInStore,PUBLIC_CONFIG:publicExample,location:new URL('https://braintimelab.github.io/mouse-data/#overview')};
+ vm.createContext(freshSignedInContext);vm.runInContext(source,freshSignedInContext);await new Promise(resolve=>setTimeout(resolve,10));
+ assert.equal(pulls,1,'fresh signed-in local mode must pull its first cloud snapshot');
+ assert.equal(vm.runInContext('cloudReady',freshSignedInContext),true);
+ assert.equal(vm.runInContext('route',freshSignedInContext),'overview');
+ assert(element('main').innerHTML.includes('Recently born'));assert(!element('toast').textContent.includes('Access changed during reconnect'));
+}
 let localPulls=0;
 const retainedStore={...callbackStore,getCloudStatus:()=>({mode:'local',configured:true,signedIn:true}),loadDataset:async()=>model.createSyntheticDataset(),pullFromCloud:async()=>{localPulls++;return model.createSyntheticDataset()}};
 const retainedContext={...context,store:retainedStore,PUBLIC_CONFIG:publicExample,location:{hash:'',protocol:'https:',href:'https://example.test/app/'}};
