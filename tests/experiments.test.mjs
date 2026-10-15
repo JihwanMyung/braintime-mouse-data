@@ -397,3 +397,30 @@ test('import warnings remain historical after explicit status review and ordinar
  assert.match(h.container.innerHTML,/<summary>Warnings recorded at import<\/summary>/);assert.doesNotMatch(h.container.innerHTML,/<h3>Review needed<\/h3>/);assert.match(h.container.innerHTML,/class="badge blue">completed/);assert.deepEqual(h.dataset,before);
  const ordinary=buildExperiment({title:'Manual planned experiment',assays:['qPCR'],event_date:'2026-10-14'},base()),other=await harness(t,ordinary.dataset);await other.click('open',ordinary.record.event_id);assert.doesNotMatch(other.container.innerHTML,/Review needed|Warnings recorded at import/);
 });
+
+test('unreviewed source draft rows show recorded identifiers and unique possible matches instead of zero-use counts',async t=>{
+ const built=compactSourceDraft();built.record.source_observation.raw_identifiers=['P1','P1','<animal tag>','Other','Fourth'];built.record.experiment.participants.push({mouse_sid:null,raw_identifier:'Other',link_status:'unresolved',candidate_sids:['M1','M2','M2','MISSING'],role:null,notes:null});
+ const before=clone(built.dataset),h=await harness(t,built.dataset),html=h.container.innerHTML;
+ assert.match(html,/Recorded animal identifiers/);assert.match(html,/<span title="P1">P1<\/span>/);assert.match(html,/&lt;animal tag&gt;/);assert.match(html,/<summary>1 more<\/summary>/);assert.match(html,/Fourth/);
+ assert.match(html,/<span class="badge amber">Unconfirmed<\/span>/);assert.match(html,/2 possible animal matches/);assert.doesNotMatch(html,/0 animals · 0 samples|<animal tag>/);
+ assert.match(html,/<span>Confirmed animals<\/span><strong>0<\/strong>/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
+});
+
+test('source draft sample labels remain specimen evidence and never imply candidate animal use',async t=>{
+ const built=compactSourceDraft();built.record.source_observation.identifier_kind='sample_label';built.record.source_observation.raw_identifiers=['WB-SCN-01','P1'];
+ const before=clone(built.dataset),h=await harness(t,built.dataset);assert.match(h.container.innerHTML,/Recorded sample labels/);assert.match(h.container.innerHTML,/WB-SCN-01/);assert.match(h.container.innerHTML,/<span class="badge amber">Unconfirmed<\/span>/);
+ assert.doesNotMatch(h.container.innerHTML,/possible animal match|Recorded animal identifiers|0 animals · 0 samples/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
+});
+
+test('draft rows fall back to participant identifiers and show honest missing identifiers without hydrating source archive',async t=>{
+ const built=compactSourceDraft();delete built.record.source_observation.raw_identifiers;built.dataset.tables.experiment_sources=[];
+ const h=await harness(t,built.dataset);assert.match(h.container.innerHTML,/<span title="P1">P1<\/span>/);assert.match(h.container.innerHTML,/1 possible animal match/);assert.doesNotMatch(h.container.innerHTML,/0 animals · 0 samples/);
+ const next=clone(h.dataset);next.tables.husbandry_events[0].experiment.participants=[];h.render(next);assert.match(h.container.innerHTML,/Identifiers not recorded/);assert.match(h.container.innerHTML,/<span class="badge amber">Unconfirmed<\/span>/);assert.doesNotMatch(h.container.innerHTML,/possible animal match|0 animals · 0 samples/);
+});
+
+test('reviewed records retain confirmed counts and partially linked drafts show explicit confirmed associations',async t=>{
+ const built=compactSourceDraft();built.record.experiment.participants=[confirmed('M1')];const h=await harness(t,built.dataset);
+ assert.match(h.container.innerHTML,/Recorded animal identifiers/);assert.match(h.container.innerHTML,/1 confirmed animal/);assert.doesNotMatch(h.container.innerHTML,/possible animal match/);
+ const next=clone(h.dataset);next.tables.husbandry_events[0].experiment.status='completed';h.render(next);assert.match(h.container.innerHTML,/1 animals · 0 samples/);assert.doesNotMatch(h.container.innerHTML,/Recorded animal identifiers|<span class="badge amber">Unconfirmed<\/span>/);
+ const ordinary=buildExperiment({title:'Manual unreviewed record',status:'unreviewed',assays:['qPCR'],participants:[confirmed('M1')],event_date:'2026-10-14'},base()),other=await harness(t,ordinary.dataset);assert.match(other.container.innerHTML,/1 animals · 0 samples/);assert.doesNotMatch(other.container.innerHTML,/Recorded animal identifiers/);
+});
