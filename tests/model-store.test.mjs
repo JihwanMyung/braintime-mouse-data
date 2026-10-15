@@ -248,18 +248,18 @@ test('cloud pull shrinks only timed-out read pages, keeps offsets and preserves 
  }return originalFetch(url,options);};
  const result=await store.pullFromCloud();
  assert.deepEqual(result.tables.mice.map(r=>r.mouse_sid),data.tables.mice.map(r=>r.mouse_sid));assert.deepEqual(result.tables.source_history,data.tables.source_history);
- assert.deepEqual(attempts.slice(0,6),[{offset:0,limit:250},{offset:0,limit:125},{offset:0,limit:62},{offset:62,limit:62},{offset:62,limit:31},{offset:62,limit:15}]);
- assert(attempts.slice(6).every(row=>row.limit===15));assert(archiveSizes.length>3);assert(archiveSizes.every(size=>size===1));assert.equal(server.batches,batches);assert.equal(store.getCloudStatus().readyForEdits,true);
+ assert.deepEqual(attempts.slice(0,8),[{offset:0,limit:1000},{offset:0,limit:500},{offset:0,limit:250},{offset:0,limit:125},{offset:0,limit:62},{offset:62,limit:62},{offset:62,limit:31},{offset:62,limit:15}]);
+ assert(attempts.slice(8).every(row=>row.limit===15));assert(archiveSizes.length>1);assert(archiveSizes.every(size=>size===3));assert.equal(server.batches,batches);assert.equal(store.getCloudStatus().readyForEdits,true);
 });
 test('exhausted statement-timeout retries stop at one row and preserve the previous cache after partial progress',async()=>{
- const data=createSyntheticDataset();data.tables.mice=Array.from({length:305},(_,i)=>({mouse_sid:`KEEP-${String(i).padStart(4,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
+ const data=createSyntheticDataset();data.tables.mice=Array.from({length:1005},(_,i)=>({mouse_sid:`KEEP-${String(i).padStart(4,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
  const before=await connected(data),mark=localStorage.getItem('mouse-colony.cloud-cache-context.v1'),originalFetch=fetch,attempts=[];
  globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='neq.archive'){
   const offset=Number(u.searchParams.get('offset')),limit=Number(u.searchParams.get('limit'));attempts.push({offset,limit});
-  if(offset>=250)return response({code:'57014',message:'canceling statement due to statement timeout'},500);
+  if(offset>=1000)return response({code:'57014',message:'canceling statement due to statement timeout'},500);
  }return originalFetch(url,options);};
  await assert.rejects(store.pullFromCloud(),/statement timeout/);
- assert.deepEqual(attempts,[{offset:0,limit:250},...[250,125,62,31,15,7,3,1].map(limit=>({offset:250,limit}))]);
+ assert.deepEqual(attempts,[{offset:0,limit:1000},...[1000,500,250,125,62,31,15,7,3,1].map(limit=>({offset:1000,limit}))]);
  assert.deepEqual(idbData.get('current'),before);assert.equal(localStorage.getItem('mouse-colony.cloud-cache-context.v1'),mark);assert.equal(store.getCloudStatus().readyForEdits,false);
 });
 test('permission, network and other query cancellation failures are never retried',async()=>{
@@ -270,14 +270,21 @@ test('permission, network and other query cancellation failures are never retrie
  }
 });
 test('one archive chunk timing out stops the pull without truncating the snapshot',async()=>{
- const before=await connected(),originalFetch=fetch;let attempts=0;
- globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.archive'){attempts++;assert.equal(u.searchParams.get('limit'),'1');return response({code:'57014',message:'canceling statement due to statement timeout'},500);}return originalFetch(url,options);};
- await assert.rejects(store.pullFromCloud(),/statement timeout/);assert.equal(attempts,1);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
+ const before=await connected(),originalFetch=fetch;const attempts=[];
+ globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.archive'){attempts.push(Number(u.searchParams.get('limit')));return response({code:'57014',message:'canceling statement due to statement timeout'},500);}return originalFetch(url,options);};
+ await assert.rejects(store.pullFromCloud(),/statement timeout/);assert.deepEqual(attempts,[3,1]);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
 });
 test('account changes during a timed-out read prevent any retry with the changed session',async()=>{
  await connected();const originalFetch=fetch;let attempts=0;
  globalThis.fetch=async(url,options)=>{if(new URL(url).pathname.endsWith('/entity_records')){attempts++;await store.signOut();return response({code:'57014',message:'canceling statement due to statement timeout'},500);}return originalFetch(url,options);};
  await assert.rejects(store.pullFromCloud(),/account or colony changed/);assert.equal(attempts,1);assert.equal(store.getCloudStatus().signedIn,false);assert.equal(idbData.get('current'),undefined);
+});
+test('pull progress contains only verified phase/count metadata and cannot interrupt the data read',async()=>{
+ const before=await connected(),updates=[];
+ const result=await store.pullFromCloud({onProgress:update=>{updates.push(update);assert(Object.isFrozen(update));assert.deepEqual(Object.keys(update).sort(),['archiveBlocksLoaded','phase','recordsLoaded']);throw Error('Detached progress view');}});
+ assert.deepEqual(result,before);assert.equal(updates[0].phase,'access');assert.equal(updates.at(-1).phase,'saving');assert(updates.some(update=>update.phase==='verifying'));
+ for(let i=1;i<updates.length;i++){assert(updates[i].recordsLoaded>=updates[i-1].recordsLoaded);assert(updates[i].archiveBlocksLoaded>=updates[i-1].archiveBlocksLoaded);}
+ assert.equal(updates.at(-1).recordsLoaded,[...server.records.values()].filter(row=>row.entity_type!=='archive').length);assert.equal(updates.at(-1).archiveBlocksLoaded,[...server.records.values()].filter(row=>row.entity_type==='archive').length);
 });
 test('different existing cloud payload blocks initial upload before any overwrite',async()=>{
   const d=await connected(),count=server.batches;d.tables.mice[0].comment='different import';
@@ -390,7 +397,7 @@ test('real augmented dataset round-trips with bounded archive payloads, RPCs and
   assert.equal(hash(loaded),hash(expected));
   const archives=[...server.records.values()].filter(r=>r.entity_type==='archive');assert(archives.length>1);assert(archives.every(r=>utf8Size(r.payload)<=MAX_ARCHIVE_PAYLOAD_BYTES));
   const writes=server.calls.filter(c=>c.url.endsWith('/rpc/save_records'));assert(writes.every(c=>Buffer.byteLength(c.options.body)<=MAX_RPC_BYTES));
-  assert(server.calls.filter(c=>c.url.includes('entity_type=eq.archive')).every(c=>new URL(c.url).searchParams.get('limit')==='1'));
+  assert(server.calls.filter(c=>c.url.includes('entity_type=eq.archive')).every(c=>new URL(c.url).searchParams.get('limit')==='3'));
   assert.equal(loaded.tables.historical_observations.length,d.tables.historical_observations.length);
 });
 

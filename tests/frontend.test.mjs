@@ -363,4 +363,32 @@ const recoveryContext={...context,store:recoveryStore,PUBLIC_CONFIG:publicExampl
 vm.createContext(recoveryContext);vm.runInContext(source,recoveryContext);await new Promise(resolve=>setTimeout(resolve,10));
 assert.equal(recoveryPulls,0);assert(element('main').innerHTML.includes('id="password-recovery"'));
 
+// A slow initial reconnect must paint immediately without exposing the cached
+// snapshot, enabling edits, or allowing another UI request to start a pull.
+const startupCache=model.createSyntheticDataset();startupCache.tables.mice[0].physical_tag='CACHED-PRIVATE-MARKER';
+let finishStartup,failStartup,startupPulled=0,startupVerified=false,startupProgressHook;
+const startupEvents=new Map(),startupStatus={mode:'cloud',configured:true,signedIn:true,role:'owner',email:'owner@example.test',url:'https://test.supabase.co',colonyId:'synthetic-colony'};
+const startupStore={getCloudStatus:()=>({...startupStatus,readyForEdits:startupVerified}),getLacFeeVisibility:async()=>({}),consumeAuthCallback:async()=>null,loadDataset:async()=>structuredClone(startupCache),getLabUserDirectory:async()=>({users:[]}),pullFromCloud:({onProgress}={})=>{startupPulled++;startupProgressHook=onProgress;return new Promise((resolve,reject)=>{finishStartup=value=>{startupVerified=true;resolve(value)};failStartup=reject;});}};
+const bootContext=()=>({...context,store:startupStore,PUBLIC_CONFIG:publicExample,location:new URL('https://braintimelab.github.io/mouse-data/#overview'),window:{addEventListener:(name,handler)=>startupEvents.set(name,handler)}});
+const slowContext=bootContext();vm.createContext(slowContext);vm.runInContext(source,slowContext);
+assert(element('main').innerHTML.includes('Loading Braintime Mouse Data'));
+await new Promise(resolve=>setTimeout(resolve,0));assert.equal(startupPulled,1);assert.equal(element('navigation').innerHTML,'');assert(!element('main').innerHTML.includes('CACHED-PRIVATE-MARKER'));assert.equal(element('export-button').disabled,true);
+assert.equal(vm.runInContext('canEditRecords()',slowContext),false);assert.equal(vm.runInContext('canWriteCloud()',slowContext),false);
+await vm.runInContext("action('cloud-pull');action('help');action('import');navigate('mice');",slowContext);
+assert.equal(startupPulled,1);assert.equal(slowContext.location.hash,'#mice');assert(element('main').innerHTML.includes('Loading Braintime Mouse Data'));
+startupProgressHook({phase:'archive',recordsLoaded:1000,archiveBlocksLoaded:3});assert(element('main').innerHTML.includes('Loading archived history'));assert(element('main').innerHTML.includes('1,000 records · 3 archive blocks'));
+await startupEvents.get('lac-fee-visibility-changed')();assert.equal(startupPulled,1,'startup owns permission-triggered reload');
+const freshStartup=model.createSyntheticDataset();freshStartup.tables.mice[0].physical_tag='FRESH-VERIFIED-MARKER';finishStartup(freshStartup);await new Promise(resolve=>setTimeout(resolve,10));
+assert.equal(vm.runInContext('startupLoading',slowContext),false);assert.equal(vm.runInContext('route',slowContext),'mice');assert.equal(vm.runInContext('canEditRecords()',slowContext),true);assert(element('main').innerHTML.includes('FRESH-VERIFIED-MARKER'));assert(!element('main').innerHTML.includes('CACHED-PRIVATE-MARKER'));
+
+startupVerified=false;const failedContext=bootContext();vm.createContext(failedContext);vm.runInContext(source,failedContext);await new Promise(resolve=>setTimeout(resolve,0));failStartup(Error('canceling statement due to statement timeout'));await new Promise(resolve=>setTimeout(resolve,10));
+assert.equal(vm.runInContext('dataset',failedContext),null);assert.equal(vm.runInContext('route',failedContext),'settings');assert.equal(vm.runInContext('canEditRecords()',failedContext),false);assert(!element('main').innerHTML.includes('CACHED-PRIVATE-MARKER'));assert.equal(startupCache.tables.mice[0].physical_tag,'CACHED-PRIVATE-MARKER');
+
+startupVerified=false;const switchedContext=bootContext();vm.createContext(switchedContext);vm.runInContext(source,switchedContext);await new Promise(resolve=>setTimeout(resolve,0));startupStatus.email='other@example.test';finishStartup(freshStartup);await new Promise(resolve=>setTimeout(resolve,10));
+assert.equal(vm.runInContext('dataset',switchedContext),null);assert(!element('main').innerHTML.includes('FRESH-VERIFIED-MARKER'));assert(element('main').innerHTML.includes('Connection settings'));assert.equal(vm.runInContext('canEditRecords()',switchedContext),false);
+
+startupStatus.email='owner@example.test';startupVerified=true;const pullsBeforeVerifiedCache=startupPulled,alreadyVerified=bootContext();vm.createContext(alreadyVerified);vm.runInContext(source,alreadyVerified);await new Promise(resolve=>setTimeout(resolve,10));assert.equal(startupPulled,pullsBeforeVerifiedCache,'a permission-checked load that already completed the pull is not pulled a second time');
+
+const deniedBoot=bootContext();deniedBoot.store={...startupStore,getLacFeeVisibility:async()=>{throw Error('Permission could not be verified')}};vm.createContext(deniedBoot);vm.runInContext(source,deniedBoot);await new Promise(resolve=>setTimeout(resolve,10));assert(element('main').innerHTML.includes('Connection settings'));assert.equal(vm.runInContext('dataset',deniedBoot),null);assert.equal(vm.runInContext('startupLoading',deniedBoot),false);
+
 console.log('PASS: frontend synthetic rendering, current candidate pedigree, editor, table filters, print card, housing, manifest assets and shell-only cache checks. Browser inspection remains separate.');

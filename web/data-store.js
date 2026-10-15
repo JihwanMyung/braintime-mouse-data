@@ -403,18 +403,23 @@ async function readCloudPage(read,limit,check){
     }
   }
 }
-async function allRecords(){
+async function allRecords(onProgress=null){
   const generation=authGeneration,context=exportContext(),c=configuration(),policy=await refreshFeeVisibility({notify:false});const result=[];
   const check=()=>{if(generation!==authGeneration)throw new Error('The account or colony changed during loading. Open the shared colony again.');checkExportContext(context);};
+  let recordsLoaded=0,archiveBlocksLoaded=0;
+  const progress=phase=>{check();onProgress?.({phase,recordsLoaded,archiveBlocksLoaded});};
   try{
-  // Archive chunks have much larger payloads than individual mice. Keep those
-  // responses to one chunk; ordinary rows adapt downward if the server times out.
-  for(const [filter,initialLimit] of (policy.source_archive_allowed?[['neq.archive',250],['eq.archive',1]]:[['neq.archive',250]])){
+  // Keep healthy reads efficient; only a confirmed timeout reduces a page.
+  // Archive chunks are larger, so their initial page remains much smaller.
+  for(const [filter,initialLimit] of (policy.source_archive_allowed?[['neq.archive',1000],['eq.archive',3]]:[['neq.archive',1000]])){
     let offset=0,limit=initialLimit;
+    progress(filter==='eq.archive'?'archive':'records');
     while(true){
       const loaded=await readCloudPage(size=>request(`entity_records?select=colony_id,entity_type,entity_id,payload,version,archived&colony_id=eq.${encodeURIComponent(c.colonyId)}&entity_type=${filter}&order=entity_type.asc,entity_id.asc&limit=${size}&offset=${offset}`),limit,check);
       const page=loaded.page;limit=loaded.limit;
       if(!Array.isArray(page))throw new Error('Cloud records were not returned as a list.');
+      if(filter==='eq.archive')archiveBlocksLoaded+=page.length;else recordsLoaded+=page.length;
+      progress(filter==='eq.archive'?'archive':'records');
       result.push(...(policy.source_archive_allowed?page:page.filter(r=>r.entity_type!=='locations'&&!feeRecord(r))));if(page.length<limit)break;offset+=page.length;
     }
   }
@@ -430,6 +435,7 @@ async function allRecords(){
     if(page.next_offset===null)break;if(!Number.isInteger(page.next_offset)||page.next_offset<=offset)throw new Error('Invalid location page cursor.');offset=page.next_offset;
    }
   }
+  progress('verifying');
   checkExportContext(context);const finalPolicy=await refreshFeeVisibility({notify:false});if(!sameFeeVisibility(finalPolicy,policy))throw new Error('Fee visibility changed while loading. Pull again.');
   result.fee_visibility=policy;return result;
   }catch(error){
@@ -469,14 +475,17 @@ async function assemble(rows){
 }
 function rememberCloudCache(writeId){const c=configuration();setStorage('localStorage',CLOUD_CACHE_KEY,JSON.stringify({url:c.url,colony:c.colonyId,user:session()?.user?.id,estimate:feeVisibility?.estimate,actual:feeVisibility?.actual,source_projection_version:SOURCE_PROJECTION_VERSION,...(writeId?{write_id:writeId}:{})}));}
 function remember(rows){versions=new Map(rows.map(r=>[recordKey(r),r.version]));baseline=new Map(rows.map(r=>[recordKey(r),r]));synced=true;}
-export async function pullFromCloud(){
+export async function pullFromCloud({onProgress}={}){
   const generation=authGeneration,context=exportContext(),config=stable(configuration());
   const check=()=>{if(generation!==authGeneration||config!==stable(configuration())||context!==exportContext())throw new Error('The account or colony changed during loading. Open the shared colony again.');};
+  const progress=value=>{check();if(typeof onProgress==='function'){try{onProgress(Object.freeze({...value}));}catch{/* Presentation cannot interrupt a verified read. */}}};
+  progress({phase:'access',recordsLoaded:0,archiveBlocksLoaded:0});
   await membership({check});check();
-  const rows=await allRecords();check();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
+  const rows=await allRecords(progress);check();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
   const data=await assemble(rows);check();
   const c=configuration(),cacheWrite={id:crypto.randomUUID(),url:c.url,colony:c.colonyId,user:session().user.id};
   try{
+    progress({phase:'saving',recordsLoaded:rows.filter(row=>row.entity_type!=='archive').length,archiveBlocksLoaded:rows.filter(row=>row.entity_type==='archive').length});
     await local('put',data,{check,cacheWrite});check();
     rememberCloudCache(cacheWrite.id);remember(rows);setStorage('localStorage',DEMO_KEY,null);setMode('cloud');statusMessage='Cloud data pulled and saved on this device.';return clone(data);
   }catch(error){await discardCloudWrite(cacheWrite.id).catch(()=>{});throw error;}
