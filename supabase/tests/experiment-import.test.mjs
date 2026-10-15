@@ -99,3 +99,21 @@ await test('CLI output is private, refuses overwrite and never writes generated 
   const publicArgs=[...args.slice(0,-1),new URL('../../web/forbidden-private-output',import.meta.url).pathname];const blocked=spawnSync(process.execPath,publicArgs,{encoding:'utf8'});assert.notEqual(blocked.status,0);assert.match(blocked.stderr,/outside the public repository/);
  }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+await test('verified append preserves every historical prefix and refuses mutated baseline or replaced rows',async()=>{
+ const db=await database();for(const file of plan.files)await db.exec(file.sql);
+ const before=await head(db),next={...sources,observations:[...sources.observations,{source_id:'source-2',raw_values:{time:'10:45'}}],contexts:[...sources.contexts,{context_id:'ctx2',values:{tail:'Original omitted time'}}],coverage:{workbooks:1,observations:2},coverage_history:[sources.coverage,{workbooks:1,observations:2}]};
+ const appended=await prepareExperimentImport({...options,manifest:{colony_id:colony,...before},baselineSources:sources,sources:next});
+ assert.equal(appended.expectedVersion,3);
+ for(const table of ['experiment_sources','experiment_source_contexts','experiment_source_coverage']){
+  const bad=structuredClone(next),key={experiment_sources:'observations',experiment_source_contexts:'contexts',experiment_source_coverage:'coverage_history'}[table];bad[key][0]={changed:true,source_id:'changed'};
+  await assert.rejects(prepareExperimentImport({...options,manifest:{colony_id:colony,...before},baselineSources:sources,sources:bad}),/unchanged.*prefix/);
+ }
+ const forged=structuredClone(sources);forged.observations[0].raw_identifier='FORGED';
+ await assert.rejects(prepareExperimentImport({...options,manifest:{colony_id:colony,...before},baselineSources:forged,sources:{...next,observations:[...forged.observations,...next.observations.slice(1)]}}),/does not match the verified baseline/);
+ for(const file of appended.files)await db.exec(file.sql);
+ const decoded=await decodeArchive((await db.query("select * from public.entity_records where entity_type='archive'")).rows);
+ assert.deepEqual(decoded.tables.experiment_sources,next.observations);assert.deepEqual(decoded.tables.experiment_source_coverage,next.coverage_history);assert.deepEqual(decoded.tables.historical_observations,original.tables.historical_observations);
+ for(const file of appended.files)await db.exec(file.sql);assert.equal((await head(db)).version,4);
+ await db.close();
+});

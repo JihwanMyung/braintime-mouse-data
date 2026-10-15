@@ -214,3 +214,14 @@ test('legacy procedure fields remain optional and timing changes keep before and
   assert.throws(()=>experiment(fixture(),{entrainment:{scheme:'LP1',duration_days:-1}}),/nonnegative/);
   assert.throws(()=>sample(fixture(),{decapitation_circadian_time_source:'inferred'}),/recorded or calculated/);
 });
+
+test('snapshot index handles large imported histories, replacement and appended specimen links',()=>{
+ const dataset=fixture();let reads=0;
+ const events=Array.from({length:15000},(_,i)=>({event_id:'E'+i,get event_type(){reads++;return 'experiment'},event_date:'2025-01-01',experiment:{...blankExperiment(),title:'Imported source',assays:['qPCR'],participants:[]}}));dataset.tables.husbandry_events=events;
+ const summary=summarizeExperiments(dataset);assert.equal(summary.experiments,15000);assert.equal(summary.mice,0);assert(reads<50000,'Index avoids one full history scan per experiment');
+ events.push({event_id:'S1',event_type:'experiment_sample',experiment_sample:{...blankExperimentSample(),experiment_id:'E0',donors:[confirmed('M1')]}});
+ assert.deepEqual(experimentMouseSids(events[0],dataset),['M1']);
+ dataset.tables.husbandry_events=[{...events[0],experiment:{...events[0].experiment,participants:[confirmed('M2')]} }];
+ assert.deepEqual(experimentMouseSids(dataset.tables.husbandry_events[0],dataset),['M2']);
+ const output=listExperiments(dataset);output.pop();assert.equal(listExperiments(dataset).length,1);
+});

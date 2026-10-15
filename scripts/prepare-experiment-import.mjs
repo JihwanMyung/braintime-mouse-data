@@ -54,7 +54,8 @@ function observationTables(source){
   const tables={experiment_sources:source.observations};
   if(source.sources!==undefined){if(!Array.isArray(source.sources))throw new Error('Source catalog must be an array.');tables.experiment_source_catalog=source.sources;}
   if(source.contexts!==undefined){if(!Array.isArray(source.contexts))throw new Error('Source contexts must be an array.');tables.experiment_source_contexts=source.contexts;}
-  if(source.coverage!==undefined){if(!object(source.coverage))throw new Error('Source coverage must be an object.');tables.experiment_source_coverage=[source.coverage];}
+  if(source.coverage_history!==undefined){if(!Array.isArray(source.coverage_history)||!source.coverage_history.every(object))throw new Error('Source coverage history must be an array of objects.');tables.experiment_source_coverage=source.coverage_history;}
+  else if(source.coverage!==undefined){if(!object(source.coverage))throw new Error('Source coverage must be an object.');tables.experiment_source_coverage=[source.coverage];}
   return tables;
 }
 function checkedManifest(input,version,colony){
@@ -70,7 +71,7 @@ function checkedManifest(input,version,colony){
   return {payload:structuredClone(payload),version:expected};
 }
 
-export async function prepareExperimentImport({manifest,version,sources,colonyId,ownerUserId=null,maxSqlBytes=800000,chunkCsv=false,existingChunkIds=[]}){
+export async function prepareExperimentImport({manifest,version,sources,colonyId,ownerUserId=null,maxSqlBytes=800000,chunkCsv=false,existingChunkIds=[],baselineSources=null}){
   const colony=checkedUuid(colonyId,'--colony-id'),owner=ownerUserId===null?null:checkedUuid(ownerUserId,'--owner-user-id');
   if(!Number.isInteger(maxSqlBytes)||maxSqlBytes<10000||maxSqlBytes>1000000)throw new Error('SQL file limit must be from 10,000 to 1,000,000 bytes.');
   if(!Array.isArray(existingChunkIds)||existingChunkIds.some(id=>typeof id!=='string'||!/^chunk:[a-f0-9]{64}$/.test(id)))throw new Error('Existing chunk IDs must be a captured array of content-addressed archive IDs.');
@@ -80,10 +81,21 @@ export async function prepareExperimentImport({manifest,version,sources,colonyId
   if(!tables.experiment_sources.length)throw new Error('At least one source observation is required.');
   for(const row of tables.experiment_sources){if(!object(row)||typeof row.source_id!=='string'||!row.source_id.trim()||row.source_id.length>200)throw new Error('Every observation needs a nonempty source_id of at most 200 characters.');if(seen.has(row.source_id))throw new Error('Duplicate source_id; resolve source observations before preparing the import.');seen.add(row.source_id);}
   const encoded=await encodeArchive({tables}),chunks=encoded.filter(row=>row.entity_id!=='reconstruction'),descriptors=encoded.at(-1).payload.archive_tables;
+  let baselineDescriptors=null;
+  if(baselineSources!==null){
+    validateJson(baselineSources);const baselineTables=observationTables(baselineSources);
+    for(const [table,prior]of Object.entries(baselineTables)){
+      const incoming=tables[table];
+      if(!Array.isArray(incoming)||incoming.length<prior.length||prior.some((row,index)=>!same(row,incoming[index])))throw new Error('Append requires the exact unchanged '+table+' prefix.');
+    }
+    baselineDescriptors=(await encodeArchive({tables:baselineTables})).at(-1).payload.archive_tables;
+    for(const [table,descriptor]of Object.entries(baselineDescriptors))if(!same(old.payload.archive_tables[table],descriptor)&&!same(old.payload.archive_tables[table],descriptors[table]))throw new Error('Captured manifest does not match the verified baseline for '+table+'.');
+    for(const table of Object.keys(tables))if(Object.hasOwn(old.payload.archive_tables,table)&&!Object.hasOwn(baselineDescriptors,table))throw new Error('Baseline must include every existing source table being appended.');
+  }
   const next=structuredClone(old.payload);
   for(const table of Object.keys(tables)){
     if(Object.hasOwn(next.tables,table))throw new Error('Legacy manifest tables already contains '+table+'; reconcile it before adding a chunked source table.');
-    if(Object.hasOwn(next.archive_tables,table)&&!same(next.archive_tables[table],descriptors[table]))throw new Error('Existing '+table+' descriptor differs. This insert-only generator will not replace source history.');
+    if(Object.hasOwn(next.archive_tables,table)&&!same(next.archive_tables[table],descriptors[table])&&!same(next.archive_tables[table],baselineDescriptors?.[table]))throw new Error('Existing '+table+' descriptor differs. This insert-only generator will not replace source history.');
     next.archive_tables[table]=descriptors[table];
   }
   if(utf8Size(next)>MAX_ARCHIVE_PAYLOAD_BYTES)throw new Error('Merged reconstruction metadata exceeds the app manifest limit.');
@@ -123,7 +135,7 @@ end $stage_experiments$;\ncommit;\n`;
  if current_manifest.payload=merged_manifest then raise notice 'Source descriptors already present; no manifest write';return;end if;
  new_payload:=current_manifest.payload;
  for table_name,descriptor in select key,value from jsonb_each(${sqlJson(descriptors)}) loop
-   if new_payload->'archive_tables' ? table_name and new_payload#>array['archive_tables',table_name] is distinct from descriptor then raise exception 'Existing source descriptor differs: %',table_name;end if;
+   if new_payload->'archive_tables' ? table_name and new_payload#>array['archive_tables',table_name] is distinct from descriptor and new_payload#>array['archive_tables',table_name] is distinct from expected_manifest#>array['archive_tables',table_name] then raise exception 'Existing source descriptor differs: %',table_name;end if;
    new_payload:=jsonb_set(new_payload,array['archive_tables',table_name],descriptor,true);
  end loop;
  if new_payload is distinct from merged_manifest or new_payload-'archive_tables' is distinct from current_manifest.payload-'archive_tables' or (new_payload->'archive_tables')-array(select jsonb_array_elements_text(${sqlJson(Object.keys(descriptors))})) is distinct from (current_manifest.payload->'archive_tables')-array(select jsonb_array_elements_text(${sqlJson(Object.keys(descriptors))})) then raise exception 'Additive manifest preservation check failed';end if;
@@ -157,8 +169,8 @@ from matches;
 
 async function main(){
   const args=process.argv.slice(2),options=new Map();
-  if(args.includes('--help')){console.log('node scripts/prepare-experiment-import.mjs --manifest /private/current-manifest.json --version N --sources /private/experiment_sources.json --colony-id UUID [--owner-user-id UUID] --output-dir /private/new-directory [--max-sql-bytes 800000] [--chunk-csv chunks.csv] [--existing-chunk-ids /private/captured-ids.json]\nOffline only. The captured manifest must be current; generated private SQL stages immutable chunks, then compares and swaps only the new experiment archive descriptors.');return;}
-  const allowed=new Set(['--manifest','--version','--sources','--colony-id','--owner-user-id','--output-dir','--max-sql-bytes','--chunk-csv','--existing-chunk-ids']);
+  if(args.includes('--help')){console.log('node scripts/prepare-experiment-import.mjs --manifest /private/current-manifest.json --version N --sources /private/experiment_sources.json --colony-id UUID [--owner-user-id UUID] --output-dir /private/new-directory [--max-sql-bytes 800000] [--chunk-csv chunks.csv] [--existing-chunk-ids /private/captured-ids.json] [--baseline-sources /private/verified-prior-sources.json]\nOffline only. The captured manifest must be current; generated private SQL stages immutable chunks, then compares and swaps only the new experiment archive descriptors.');return;}
+  const allowed=new Set(['--manifest','--version','--sources','--colony-id','--owner-user-id','--output-dir','--max-sql-bytes','--chunk-csv','--existing-chunk-ids','--baseline-sources']);
   for(let i=0;i<args.length;i+=2){if(!allowed.has(args[i])||options.has(args[i])||!args[i+1]||args[i+1].startsWith('--'))throw new Error('Unexpected, duplicate or incomplete CLI option. Use --help.');options.set(args[i],args[i+1]);}
   for(const name of ['--manifest','--sources','--colony-id','--output-dir'])if(!options.has(name))throw new Error('Missing '+name+'.');
   const output=resolve(options.get('--output-dir')),root=resolve(dirname(fileURLToPath(import.meta.url)),'..'),path=relative(root,output);
@@ -166,12 +178,13 @@ async function main(){
   const manifest=JSON.parse(await readFile(resolve(options.get('--manifest')),'utf8')),sources=JSON.parse(await readFile(resolve(options.get('--sources')),'utf8'));
   const csvName=options.get('--chunk-csv');if(csvName&&!/^[A-Za-z0-9][A-Za-z0-9._-]*\.csv$/.test(csvName))throw new Error('--chunk-csv must be a simple filename ending in .csv, inside the private output directory.');
   const existingChunkIds=options.has('--existing-chunk-ids')?JSON.parse(await readFile(resolve(options.get('--existing-chunk-ids')),'utf8')):[];
-  const plan=await prepareExperimentImport({chunkCsv:Boolean(csvName),existingChunkIds,manifest,version:options.has('--version')?Number(options.get('--version')):undefined,sources,colonyId:options.get('--colony-id'),ownerUserId:options.get('--owner-user-id')||null,maxSqlBytes:options.has('--max-sql-bytes')?Number(options.get('--max-sql-bytes')):800000});
+  const baselineSources=options.has('--baseline-sources')?JSON.parse(await readFile(resolve(options.get('--baseline-sources')),'utf8')):null;
+  const plan=await prepareExperimentImport({baselineSources,chunkCsv:Boolean(csvName),existingChunkIds,manifest,version:options.has('--version')?Number(options.get('--version')):undefined,sources,colonyId:options.get('--colony-id'),ownerUserId:options.get('--owner-user-id')||null,maxSqlBytes:options.has('--max-sql-bytes')?Number(options.get('--max-sql-bytes')):800000});
   await mkdir(output,{mode:0o700});
   await writeFile(resolve(output,'000-PREFLIGHT.sql'),plan.preflightSql,{encoding:'utf8',mode:0o600,flag:'wx'});
   for(const file of plan.files)await writeFile(resolve(output,file.name),file.sql,{encoding:'utf8',mode:0o600,flag:'wx'});
   for(const [i,file]of plan.csvFiles.entries()){file.name=plan.csvFiles.length===1?csvName:csvName.replace(/\.csv$/,`-${String(i+1).padStart(3,'0')}.csv`);await writeFile(resolve(output,file.name),file.csv,{encoding:'utf8',mode:0o600,flag:'wx'});}
-  const receipt={preflight:{file:'000-PREFLIGHT.sql',sha256:sha(plan.preflightSql),bytes:Buffer.byteLength(plan.preflightSql)},csv_files:plan.csvFiles.map(({csv,...file})=>file),csv_existing_ids_omitted:plan.csvOmittedExisting,csv_instruction:'INSERT only, never upsert. Import chunk CSV(s) instead of staging SQL, then run MANIFEST-LAST. If CSV upload is interrupted or duplicates are reported, use staging SQL to reconcile without overwrites.',colony_id:plan.colonyId,responsible_owner_user_id:plan.ownerUserId,expected_manifest_version:plan.expectedVersion,already_present:plan.alreadyPresent,source_file_sha256:sha(await readFile(resolve(options.get('--sources')))),tables:plan.tables,chunk_count:plan.chunks.length,all_archive_chunk_sha256_verified:true,files:plan.files.map(({sql,...file})=>file),audit_actor:'Actual administrator auth.uid(); this bundle requires null and never sets claims.',execution:'Apply numbered staging files, then MANIFEST-LAST. No live changes made by preparation.'};
+  const receipt={preflight:{file:'000-PREFLIGHT.sql',sha256:sha(plan.preflightSql),bytes:Buffer.byteLength(plan.preflightSql)},csv_files:plan.csvFiles.map(({csv,...file})=>file),csv_existing_ids_omitted:plan.csvOmittedExisting,csv_instruction:'INSERT only, never upsert. Import chunk CSV(s) instead of staging SQL, then run MANIFEST-LAST. If CSV upload is interrupted or duplicates are reported, use staging SQL to reconcile without overwrites.',colony_id:plan.colonyId,responsible_owner_user_id:plan.ownerUserId,expected_manifest_version:plan.expectedVersion,already_present:plan.alreadyPresent,source_file_sha256:sha(await readFile(resolve(options.get('--sources')))),baseline_source_sha256:baselineSources?sha(await readFile(resolve(options.get('--baseline-sources')))):null,tables:plan.tables,chunk_count:plan.chunks.length,all_archive_chunk_sha256_verified:true,files:plan.files.map(({sql,...file})=>file),audit_actor:'Actual administrator auth.uid(); this bundle requires null and never sets claims.',execution:'Apply numbered staging files, then MANIFEST-LAST. No live changes made by preparation.'};
   await writeFile(resolve(output,'import-plan.json'),JSON.stringify(receipt,null,2),{mode:0o600,flag:'wx'});
   console.log(JSON.stringify({output_directory:output,expected_manifest_version:plan.expectedVersion,tables:Object.fromEntries(Object.entries(plan.tables).map(([key,value])=>[key,value.row_count])),chunk_count:plan.chunks.length,csv_files:plan.csvFiles.length,csv_bytes:plan.csvFiles.reduce((n,file)=>n+file.bytes,0),sql_files:plan.files.length,maximum_sql_bytes:Math.max(...plan.files.map(x=>x.bytes)),already_present:plan.alreadyPresent,executed:false},null,2));
 }

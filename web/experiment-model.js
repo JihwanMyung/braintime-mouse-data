@@ -24,15 +24,33 @@ const mouseIndex=d=>new Map((d?.tables?.mice??[]).map(m=>[m.mouse_sid,m]));
 const nullable=x=>blank(x)?null:x;
 const list=x=>Array.isArray(x)?x:[];
 
+// App saves replace snapshots. Reuse their index so large source imports do not
+// scan all husbandry records once per experiment. Array replacement/append also
+// invalidates the index during incremental loading.
+const snapshotIndexes=new WeakMap(),emptyEvents=Object.freeze([]);
+function experimentIndex(dataset){
+  const events=Array.isArray(dataset?.tables?.husbandry_events)?dataset.tables.husbandry_events:emptyEvents;
+  let cache=dataset&&typeof dataset==='object'?snapshotIndexes.get(dataset):null;
+  if(cache&&cache.events===events&&cache.length===events.length)return cache;
+  cache={events,length:events.length,experiments:[],samples:[],sampleById:new Map(),samplesByExperiment:new Map(),revisions:new Map(),sampleLinks:new WeakMap(),experimentLinks:new WeakMap()};
+  for(const r of events){
+    if(r.event_type===EXPERIMENT)cache.experiments.push(r);
+    else if(r.event_type===SAMPLE){cache.samples.push(r);cache.sampleById.set(r.event_id,r);const id=r.experiment_sample?.experiment_id;if(id){const group=cache.samplesByExperiment.get(id)??[];group.push(r);cache.samplesByExperiment.set(id,group)}}
+    else if(r.event_type===REVISION){const id=r.experiment_revision?.entity_id,group=cache.revisions.get(id)??[];group.push(r);cache.revisions.set(id,group)}
+  }
+  cache.experiments.sort(orderRecords);cache.samples.sort(orderRecords);
+  for(const group of cache.revisions.values())group.sort((a,b)=>(b.experiment_revision.revision_after??0)-(a.experiment_revision.revision_after??0)||orderRecords(a,b));
+  if(dataset&&typeof dataset==='object')snapshotIndexes.set(dataset,cache);
+  return cache;
+}
 export function listExperiments(dataset,{includeArchived=false}={}) {
-  return rows(dataset).filter(r=>r.event_type===EXPERIMENT&&(includeArchived||!archived(r))).sort(orderRecords);
+  const index=experimentIndex(dataset);return index.experiments.filter(r=>includeArchived||!archived(r));
 }
 export function listExperimentSamples(dataset,{includeArchived=false}={}) {
-  return rows(dataset).filter(r=>r.event_type===SAMPLE&&(includeArchived||!archived(r))).sort(orderRecords);
+  const index=experimentIndex(dataset);return index.samples.filter(r=>includeArchived||!archived(r));
 }
 export function listExperimentRevisions(dataset,entityId) {
-  return rows(dataset).filter(r=>r.event_type===REVISION&&r.experiment_revision?.entity_id===entityId)
-    .sort((a,b)=>(b.experiment_revision.revision_after??0)-(a.experiment_revision.revision_after??0)||orderRecords(a,b));
+  return [...(experimentIndex(dataset).revisions.get(entityId)??[])];
 }
 function orderRecords(a,b){return String(b.event_date??'').localeCompare(String(a.event_date??''))||String(a.event_id).localeCompare(String(b.event_id));}
 
@@ -41,16 +59,21 @@ function orderRecords(a,b){return String(b.event_date??'').localeCompare(String(
  * bounded; validation rejects new cycles before saving. */
 export function sampleMouseSids(sample,dataset,visited=new Set()) {
   if(!sample||visited.has(sample.event_id))return [];
-  const seen=new Set(visited);seen.add(sample.event_id);
-  const payload=sample.experiment_sample??{},index=new Map(listExperimentSamples(dataset,{includeArchived:true}).map(r=>[r.event_id,r]));
-  const own=(Array.isArray(payload.donors)?payload.donors:[]).filter(p=>p?.link_status==='confirmed'&&text(p.mouse_sid)).map(p=>p.mouse_sid);
-  return unique([...own,...(Array.isArray(payload.parent_sample_ids)?payload.parent_sample_ids:[]).flatMap(id=>sampleMouseSids(index.get(id),dataset,seen))]);
+  const index=experimentIndex(dataset),cached=!visited.size&&index.sampleLinks.get(sample);if(cached)return [...cached];
+  const seen=new Set(visited),found=new Set(),stack=[sample];
+  while(stack.length){const row=stack.pop();if(!row||seen.has(row.event_id))continue;seen.add(row.event_id);const p=row.experiment_sample??{};
+    for(const ref of list(p.donors))if(ref?.link_status==='confirmed'&&text(ref.mouse_sid))found.add(ref.mouse_sid);
+    for(const id of [...list(p.parent_sample_ids)].reverse())stack.push(index.sampleById.get(id));
+  }
+  const result=[...found];if(!visited.size)index.sampleLinks.set(sample,result);return [...result];
 }
 export function experimentMouseSids(experiment,dataset) {
-  const p=experiment?.experiment??{},samples=new Map(listExperimentSamples(dataset,{includeArchived:true}).map(r=>[r.event_id,r]));
-  return unique([...(Array.isArray(p.participants)?p.participants:[]).filter(r=>r?.link_status==='confirmed'&&text(r.mouse_sid)).map(r=>r.mouse_sid),
-    ...(Array.isArray(p.sample_usages)?p.sample_usages:[]).flatMap(r=>sampleMouseSids(samples.get(r?.sample_id),dataset)),
-    ...[...samples.values()].filter(r=>r.experiment_sample?.experiment_id===experiment?.event_id).flatMap(r=>sampleMouseSids(r,dataset))]);
+  if(!experiment)return [];
+  const index=experimentIndex(dataset),cached=index.experimentLinks.get(experiment);if(cached)return [...cached];
+  const p=experiment.experiment??{},result=unique([...list(p.participants).filter(r=>r?.link_status==='confirmed'&&text(r.mouse_sid)).map(r=>r.mouse_sid),
+    ...list(p.sample_usages).flatMap(r=>sampleMouseSids(index.sampleById.get(r?.sample_id),dataset)),
+    ...(index.samplesByExperiment.get(experiment.event_id)??[]).flatMap(r=>sampleMouseSids(r,dataset))]);
+  index.experimentLinks.set(experiment,result);return [...result];
 }
 export function experimentsForMouse(dataset,mouseSid,{includeArchived=false}={}) {
   return listExperiments(dataset,{includeArchived}).filter(r=>experimentMouseSids(r,dataset).includes(mouseSid));

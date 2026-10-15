@@ -46,7 +46,7 @@ test('source review retains original values and candidate identities until expli
   assert.match(h.container.innerHTML,/Possible matches, verify before confirming/);h.input('[data-resolve="0"]','M1');await h.click('resolve','0');await h.save();
   assert.equal(h.saves.length,1);const record=h.dataset.tables.husbandry_events[0];assert.equal(record.event_date,'2024-01-10');assert.equal(record.source_id,'SOURCE-1');assert.deepEqual(record.source_raw_values,h.dataset.tables.experiment_sources[0].raw_values);
   assert.equal(record.experiment.participants[0].link_status,'confirmed');assert.equal(record.experiment.participants[1].link_status,'unresolved');assert.match(record.experiment.notes,/-80/);assert.equal(record.experiment.status,'unreviewed');
-  await h.click('review','SOURCE-1');assert.match(h.container.innerHTML,/already has a reviewed experiment/);assert.equal(h.saves.length,1);
+  await h.click('review','SOURCE-1');assert.match(h.container.innerHTML,/already has an experiment record/);assert.equal(h.saves.length,1);
 });
 
 test('editing retains source provenance and appends dated before and after revisions',async t=>{
@@ -83,7 +83,7 @@ test('collecting from a historical reviewed experiment retains its date and leav
 });
 
 test('source history labels observations and displays recovered coverage without counting them as experiments',async t=>{
-  const d=base();d.tables.experiment_sources[0].kind='instrument_channel';d.tables.experiment_source_coverage=[{total_source_workbooks:52,sheets:698,preparation_contexts:821}];const h=await harness(t,d);await h.click('tab','sources');assert.match(h.container.innerHTML,/52 source workbooks/);assert.match(h.container.innerHTML,/698 Experiment Sheet tabs/);assert.match(h.container.innerHTML,/Instrument channel/);assert.match(h.container.innerHTML,/Observations require review/);assert.match(h.container.innerHTML,/<span>Experiments<\/span><strong>0<\/strong>/);
+  const d=base();d.tables.experiment_sources[0].kind='instrument_channel';d.tables.experiment_source_coverage=[{total_source_workbooks:52,sheets:698,preparation_contexts:821}];const h=await harness(t,d);await h.click('tab','sources');assert.match(h.container.innerHTML,/52 source workbooks/);assert.match(h.container.innerHTML,/698 Experiment Sheet tabs/);assert.match(h.container.innerHTML,/Instrument channel/);assert.match(h.container.innerHTML,/Observations require review/);assert.match(h.container.innerHTML,/<span>Managed experiments<\/span><strong>0<\/strong>/);
 });
 
 test('source history starts with newest valid event dates, leaves unknown dates last, and preserves stable ties and source order',async t=>{
@@ -141,7 +141,7 @@ test('storage edits preserve an auditable previous freezer and inventory stays u
 
 test('source review cannot duplicate an archived managed experiment',async t=>{
   const parent=buildExperiment({title:'Previously reviewed',assays:['LumiCycle'],event_date:null},base(),null,{sourceRecord:{source_id:'SOURCE-1'}});parent.record.archived=true;
-  const h=await harness(t,parent.dataset);await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/Open reviewed experiment/);await h.click('open',parent.record.event_id);assert.match(h.container.innerHTML,/Archived record/);await h.click('review','SOURCE-1');assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/already has a reviewed experiment/);
+  const h=await harness(t,parent.dataset);await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/Open reviewed experiment/);await h.click('open',parent.record.event_id);assert.match(h.container.innerHTML,/Archived record/);await h.click('review','SOURCE-1');assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/already has an experiment record/);
 });
 
 test('filters compare confirmed mouse associations and source matches stay labelled as candidates',async t=>{
@@ -206,4 +206,153 @@ test('current directory changes invalidate source full-name search without chang
  const version=getLabUserDirectoryVersion();setLabUserDirectory([{code:'ZZ',name:'Changed Directory Name'}]);assert(getLabUserDirectoryVersion()>version);h.render();assert.match(h.container.innerHTML,/No matching source observations/);search=h.container.querySelector('[name="search"]');search.value='Changed Directory Name';h.container.oninput({target:search});assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);
  setLabUserDirectory([{code:'NEW',name:'Changed Directory Name'}]);h.render();assert.match(h.container.innerHTML,/No matching source observations/);assert.deepEqual(h.dataset,original);assert.equal(h.dataset.tables.experiment_sources[0].operator,'ZZ');assert.equal(h.saves.length,0);
  setLabUserDirectory([{code:'ZZ',name:'Changed Directory Name'}]);h.render();assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);setLabUserDirectory([]);h.render();assert.match(h.container.innerHTML,/No matching source observations/);
+});
+
+
+test('imported evidence is the initial list when no managed experiments exist and remains unconfirmed',async t=>{
+  const d=base(),before=clone(d),h=await harness(t,d);
+  assert.match(h.container.innerHTML,/data-id="sources" aria-pressed="true"/);
+  assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);
+  assert.match(h.container.innerHTML,/<span>Managed experiments<\/span><strong>0<\/strong>/);
+  assert.match(h.container.innerHTML,/<span>Imported records<\/span><strong>1<\/strong>/);
+  assert.match(h.container.innerHTML,/<span>Possible source matches<\/span><strong>1<\/strong>/);
+  assert.match(h.container.innerHTML,/<span>Confirmed animals<\/span><strong>0<\/strong>/);
+  assert.match(h.container.innerHTML,/Possible exact-identifier match/);
+  await h.click('mouse','M1');assert.deepEqual(h.messages,[{mouse:'M1'}]);
+  assert.equal(h.saves.length,0);assert.deepEqual(h.dataset,before);
+});
+
+test('empty managed lists link to source history and reset unrelated filters while preserving the animal',async t=>{
+  const h=await harness(t);await h.click('tab','experiments');h.filter('mouse','M1');h.filter('from','2026-01-01');h.filter('assay','WB');
+  assert.match(h.container.innerHTML,/No matching records/);assert.match(h.container.innerHTML,/View Source history/);
+  await h.click('browse-sources');assert.match(h.container.innerHTML,/data-id="sources" aria-pressed="true"/);assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);
+  assert.equal(h.container.querySelector('[name="mouse"]').value,'M1');assert.equal(h.container.querySelector('[name="from"]').value,'');assert.equal(h.container.querySelector('[name="assay"]').value,'');
+});
+
+test('mouse entry without confirmed use opens only its possible source matches',async t=>{
+  const d=buildExperiment({title:'Other animal experiment',assays:['IMG'],participants:[confirmed('M2')],event_date:'2026-10-14'},base()).dataset;
+  d.tables.experiment_sources.push({...clone(d.tables.experiment_sources[0]),source_id:'OTHER-SOURCE',raw_identifiers:['B1']});
+  const h=await harness(t,d,{initialMouseId:'M1'});
+  assert.match(h.container.innerHTML,/data-id="sources" aria-pressed="true"/);assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);assert.doesNotMatch(h.container.innerHTML,/data-id="OTHER-SOURCE"/);
+  assert.match(h.container.innerHTML,/Possible source matches, not confirmed participation/);
+  assert.match(h.container.innerHTML,/<span>Possible source matches<\/span><strong>1<\/strong>/);
+  assert.equal(h.saves.length,0);
+});
+
+test('mouse entry retains confirmed experiment or specimen history before possible sources',async t=>{
+  const d=buildExperiment({title:'Confirmed procedure',assays:['IMG'],participants:[confirmed('M1')],event_date:'2026-10-14'},base()).dataset;
+  const h=await harness(t,d,{initialMouseId:'M1'});assert.match(h.container.innerHTML,/data-id="experiments" aria-pressed="true"/);assert.match(h.container.innerHTML,/Confirmed procedure/);assert.match(h.container.innerHTML,/Possible source matches \(1\)/);
+  const sampled=buildExperimentSample({label:'Confirmed donor specimen',donors:[confirmed('M1')],event_date:'2026-10-14'},base()).dataset;
+  const h2=await harness(t,sampled,{initialMouseId:'M1'});assert.match(h2.container.innerHTML,/data-id="samples" aria-pressed="true"/);assert.match(h2.container.innerHTML,/Confirmed donor specimen/);
+});
+
+test('reused identifiers show ambiguous candidates and each observation counts once',async t=>{
+  const d=base();d.tables.mice.push({mouse_sid:'M3',physical_tag:'P1',state:'Ended'});d.tables.experiment_sources[0].raw_identifiers=['P1','M1','<script>untrusted</script>'];const before=clone(d);
+  const h=await harness(t,d,{canEdit:()=>false});assert.match(h.container.innerHTML,/Possible exact-identifier matches \(ambiguous\)/);assert.match(h.container.innerHTML,/data-exp-action="mouse" data-id="M1"/);assert.match(h.container.innerHTML,/data-exp-action="mouse" data-id="M3"/);
+  assert.match(h.container.innerHTML,/<span>Possible source matches<\/span><strong>1<\/strong>/);assert.match(h.container.innerHTML,/&lt;script&gt;untrusted&lt;\/script&gt;/);assert.doesNotMatch(h.container.innerHTML,/<script>untrusted/);
+  await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/Exact identifier matches only; participation requires confirmation/);assert.doesNotMatch(h.container.innerHTML,/data-exp-action="review"/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
+});
+
+test('specimen labels never show mouse candidates or count as possible animal matches',async t=>{
+  const d=base();d.tables.experiment_sources[0].identifier_kind='sample_label';const h=await harness(t,d);
+  assert.match(h.container.innerHTML,/Sample label/);assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse"/);assert.match(h.container.innerHTML,/<span>Possible source matches<\/span><strong>0<\/strong>/);
+  await h.click('source','SOURCE-1');assert.doesNotMatch(h.container.innerHTML,/Possible animal matches/);
+});
+
+test('restricted source archives hide cached evidence and report Restricted instead of zero',async t=>{
+  const d=base(),h=await harness(t,d);assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);await h.click('source','SOURCE-1');
+  d.source_archive_restricted=true;h.render(d);
+  assert.match(h.container.innerHTML,/Source archive restricted for this account/);assert.match(h.container.innerHTML,/<span>Imported records<\/span><strong>Restricted<\/strong>/);assert.match(h.container.innerHTML,/<span>Possible source matches<\/span><strong>Restricted<\/strong>/);
+  assert.doesNotMatch(h.container.innerHTML,/Experiment Sheet 2024|data-id="SOURCE-1"|P1 · M1|0 records/);
+  await h.click('source','SOURCE-1');await h.click('review','SOURCE-1');assert.doesNotMatch(h.container.innerHTML,/id="experiment-form"/);assert.equal(h.saves.length,0);
+  await h.click('tab','experiments');assert.match(h.container.innerHTML,/Managed experiments and samples remain available/);assert.doesNotMatch(h.container.innerHTML,/View Source history/);
+});
+
+test('a loaded empty archive is distinct from restricted access',async t=>{
+  const d=base();d.tables.experiment_sources=[];const h=await harness(t,d);
+  assert.match(h.container.innerHTML,/No imported source observations are available in this dataset/);assert.match(h.container.innerHTML,/<span>Imported records<\/span><strong>0<\/strong>/);assert.doesNotMatch(h.container.innerHTML,/Source archive restricted/);
+});
+
+test('source match totals refresh when the mouse index is replaced',async t=>{
+  const d=base(),h=await harness(t,d);assert.match(h.container.innerHTML,/<span>Possible source matches<\/span><strong>1<\/strong>/);
+  d.tables.mice=[{mouse_sid:'M9',physical_tag:'Other',state:'Stock'}];h.render(d);assert.match(h.container.innerHTML,/<span>Possible source matches<\/span><strong>0<\/strong>/);assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="M1"/);
+});
+
+
+test('a source-review draft closes when archive access becomes restricted',async t=>{
+  const d=base(),h=await harness(t,d);await h.click('review','SOURCE-1');assert.match(h.container.innerHTML,/id="experiment-form"/);
+  d.source_archive_restricted=true;h.render(d);assert.doesNotMatch(h.container.innerHTML,/id="experiment-form"|Experiment Sheet 2024/);assert.match(h.container.innerHTML,/Source archive restricted/);
+  await h.save();assert.equal(h.saves.length,0);
+});
+
+
+const contextSupplement=(extra={})=>({source_id:'SUPPLEMENT-1',kind:'source_matrix_review',evidence_kind:'instrument_block_recovery',evidence_title:'LumiCycle preparation and channel context',contextual_correction_for_source_ids:['SOURCE-1'],requires_manual_block_review:true,date:'2024-01-10',assays:['LumiCycle'],raw_identifiers:['P1'],animal_link_status:'unresolved',review_status:'unreviewed',raw_values:{'Evidence title':'LumiCycle preparation and channel context','Review warning':'Unreviewed context; verify animal identity and distinct decapitation, sampling and preparation times.','Block boundary reason':'Original preparation and channels require separate review.'},...extra});
+
+test('context supplements have meaningful titles and reciprocal links without replacing original evidence',async t=>{
+  const d=base();d.tables.experiment_sources.push(contextSupplement());const before=clone(d),h=await harness(t,d);
+  assert.match(h.container.innerHTML,/LumiCycle preparation and channel context/);assert.match(h.container.innerHTML,/Instrument block context/);assert.match(h.container.innerHTML,/Context supplement/);
+  await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/Context &amp; timing supplements/);assert.match(h.container.innerHTML,/do not replace or invalidate the whole original observation/);assert.match(h.container.innerHTML,/data-exp-action="source" data-id="SUPPLEMENT-1"/);assert.match(h.container.innerHTML,/&lt;script&gt;raw source/);
+  await h.click('source','SUPPLEMENT-1');assert.match(h.container.innerHTML,/<h2>LumiCycle preparation and channel context<\/h2>/);assert.match(h.container.innerHTML,/Related original observations/);assert.match(h.container.innerHTML,/data-exp-action="source" data-id="SOURCE-1"/);assert.match(h.container.innerHTML,/Unreviewed context; verify animal identity/);
+  assert.equal(h.saves.length,0);assert.deepEqual(h.dataset,before);
+});
+
+test('specimen context stays a specimen label during inspection and review',async t=>{
+  const d=base();d.tables.experiment_sources=[contextSupplement({evidence_kind:'sample_processing_context',evidence_title:'Nanodrop specimen processing',identifier_kind:'sample_label',contextual_correction_for_source_ids:[],assays:['qPCR']})];const h=await harness(t,d);
+  assert.match(h.container.innerHTML,/Sample processing context/);assert.match(h.container.innerHTML,/Sample label/);assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse"/);assert.match(h.container.innerHTML,/<span>Possible source matches<\/span><strong>0<\/strong>/);
+  await h.click('source','SUPPLEMENT-1');assert.doesNotMatch(h.container.innerHTML,/Possible animal matches/);await h.click('review','SUPPLEMENT-1');assert.match(h.container.innerHTML,/value="Nanodrop specimen processing"/);await h.save();
+  const record=h.dataset.tables.husbandry_events.find(r=>r.event_type==='experiment');assert.deepEqual(record.experiment.participants,[]);assert.equal(record.experiment.status,'unreviewed');assert.equal(record.experiment.sampling_at,null);assert.equal(record.source_observation.identifier_kind,'sample_label');
+});
+
+test('supplement references escape titles, deduplicate originals and do not invent missing source links',async t=>{
+  const d=base();d.tables.experiment_sources.push(contextSupplement({evidence_title:'<img src=x onerror=unsafe>',contextual_correction_for_source_ids:['SOURCE-1','SOURCE-1','MISSING','SUPPLEMENT-1',null]}));const h=await harness(t,d);
+  await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/&lt;img src=x onerror=unsafe&gt;/);assert.doesNotMatch(h.container.innerHTML,/<img src=x/);
+  await h.click('source','SUPPLEMENT-1');assert.equal((h.container.innerHTML.match(/data-exp-action="source" data-id="SOURCE-1"/g)||[]).length,1);assert.match(h.container.innerHTML,/MISSING · Original observation unavailable/);assert.doesNotMatch(h.container.innerHTML,/data-exp-action="source" data-id="MISSING"|data-exp-action="source" data-id="SUPPLEMENT-1"/);
+});
+
+test('a previously reviewed experiment surfaces new source supplements without rewriting its record',async t=>{
+  const d=base(),source=clone(d.tables.experiment_sources[0]);const built=buildExperiment({title:'Existing reviewed record',assays:['LumiCycle'],event_date:'2024-01-10'},d,null,{sourceRecord:{source_id:source.source_id,source_observation:source,source_raw_values:source.raw_values}});
+  built.dataset.tables.experiment_sources.push(contextSupplement());const before=clone(built.dataset),h=await harness(t,built.dataset);await h.click('open',built.record.event_id);
+  assert.match(h.container.innerHTML,/Preserved source/);assert.match(h.container.innerHTML,/data-exp-action="source" data-id="SUPPLEMENT-1"/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
+  h.dataset.source_archive_restricted=true;h.render();assert.doesNotMatch(h.container.innerHTML,/data-id="SUPPLEMENT-1"/);
+});
+
+
+function compactSourceDraft(dataset=base()){
+ const source=dataset.tables.experiment_sources[0];return buildExperiment({title:'Imported channel observation',status:'unreviewed',assays:['LumiCycle'],event_date:'2024-01-10',participants:[{mouse_sid:null,raw_identifier:'P1',link_status:'unresolved',candidate_sids:['M1'],role:null,notes:null}]},dataset,null,{eventId:'DRAFT-1',sourceRecord:{record_origin:'imported_experiment_sheet_draft',source_id:source.source_id,source_ref:{schema_version:1,table:'experiment_sources',source_id:source.source_id,source_fingerprint:'synthetic-fingerprint',storage:'immutable_source_archive'},source_observation:{source_id:source.source_id,kind:'instrument_channel',date:source.date,raw_identifiers:clone(source.raw_identifiers)},source_draft:{generator:'experiment-source-drafts-v2-compact',review_status:'unreviewed'}}});
+}
+
+test('generated drafts remain in Needs source review and open their existing record instead of duplicating it',async t=>{
+ const built=compactSourceDraft(),h=await harness(t,built.dataset);assert.match(h.container.innerHTML,/Source draft/);assert.match(h.container.innerHTML,/<span>Needs source review<\/span><strong>1<\/strong>/);
+ await h.click('tab','sources');h.filter('filter-status','reviewed');assert.match(h.container.innerHTML,/No matching source observations/);h.filter('filter-status','unreviewed');assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);assert.match(h.container.innerHTML,/Needs review/);
+ await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/Open experiment draft/);assert.match(h.container.innerHTML,/Review draft/);assert.doesNotMatch(h.container.innerHTML,/Open reviewed experiment|Review as experiment/);
+ await h.click('review','SOURCE-1');assert.match(h.container.innerHTML,/already has an experiment record/);assert.equal(h.saves.length,0);
+ await h.click('edit','DRAFT-1');h.set('notes','Checked original context only');await h.save();assert.equal(h.dataset.tables.husbandry_events.filter(r=>r.event_type==='experiment').length,1);assert.equal(h.dataset.tables.husbandry_events.find(r=>r.event_id==='DRAFT-1').experiment.status,'unreviewed');assert.match(h.container.innerHTML,/<span>Needs source review<\/span><strong>1<\/strong>/);
+ await h.click('edit','DRAFT-1');h.set('status','completed');await h.save();assert.match(h.container.innerHTML,/<span>Needs source review<\/span><strong>0<\/strong>/);assert.equal(h.dataset.tables.husbandry_events.find(r=>r.event_id==='DRAFT-1').source_draft.review_status,'unreviewed');
+ await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/Open reviewed experiment/);
+});
+
+test('compact drafts hydrate archived timing only for inspection without expanding or altering stored records',async t=>{
+ const d=base();d.tables.experiment_sources[0].raw_values={Decap:'09:00',Sampling:'09:03',Entrainment:'LP1 (30)'};const built=compactSourceDraft(d),before=clone(built.dataset),h=await harness(t,built.dataset);
+ await h.click('open','DRAFT-1');assert.match(h.container.innerHTML,/Preserved source/);assert.match(h.container.innerHTML,/09:00|09:03/);assert.match(h.container.innerHTML,/LP1 \(30\)/);assert.deepEqual(h.dataset,before);
+ await h.click('edit','DRAFT-1');assert.equal(h.container.querySelector('[name="sampling_at"]').value,'');assert.equal(h.container.querySelector('[name="decapitation_at"]').value,'');h.set('notes','Review note');await h.save();const saved=h.dataset.tables.husbandry_events.find(r=>r.event_id==='DRAFT-1');assert.equal(saved.source_raw_values,undefined);assert.deepEqual(saved.source_ref,before.tables.husbandry_events[0].source_ref);assert.equal(saved.experiment.sampling_at,null);
+});
+
+test('compact draft evidence reports unavailable or restricted rather than empty raw values',async t=>{
+ const built=compactSourceDraft();built.dataset.tables.experiment_sources=[];const h=await harness(t,built.dataset);await h.click('open','DRAFT-1');assert.match(h.container.innerHTML,/Original source evidence is unavailable/);assert.doesNotMatch(h.container.innerHTML,/<summary>Original source values/);
+ h.dataset.source_archive_restricted=true;h.render();assert.match(h.container.innerHTML,/Source archive restricted for this account/);assert.doesNotMatch(h.container.innerHTML,/Original source evidence is unavailable/);
+});
+
+test('compact source reference inconsistencies do not hydrate a different original record',async t=>{
+ const built=compactSourceDraft();built.record.source_ref.source_id='OTHER-SOURCE';const h=await harness(t,built.dataset);await h.click('open','DRAFT-1');assert.match(h.container.innerHTML,/Original source reference is inconsistent/);assert.doesNotMatch(h.container.innerHTML,/&lt;script&gt;raw source/);
+});
+
+test('coverage displays the latest appended report while retaining older coverage data',async t=>{
+ const d=base();d.tables.experiment_source_coverage=[{total_source_workbooks:52,sheets:698,preparation_contexts:1524},{total_source_workbooks:53,sheets:700,preparation_contexts:1800}];const before=clone(d.tables.experiment_source_coverage),h=await harness(t,d);assert.match(h.container.innerHTML,/53 source workbooks/);assert.match(h.container.innerHTML,/700 Experiment Sheet tabs/);assert.doesNotMatch(h.container.innerHTML,/52 source workbooks/);assert.deepEqual(h.dataset.tables.experiment_source_coverage,before);
+});
+
+test('repeated managed searches preserve results and restriction changes invalidate raw-source search',async t=>{
+ const built=compactSourceDraft(),d=built.dataset;d.tables.husbandry_events[0].source_raw_values={private_test:'hidden-evidence-phrase'};const h=await harness(t,d);
+ const search=value=>{const input=h.container.querySelector('[name="search"]');input.value=value;h.container.oninput({target:input})};
+ search('hidden-evidence-phrase');assert.match(h.container.innerHTML,/Imported channel observation/);search('hidden-evidence');assert.match(h.container.innerHTML,/Imported channel observation/);
+ d.source_archive_restricted=true;h.render(d);assert.match(h.container.innerHTML,/No matching records/);search('Imported channel');assert.match(h.container.innerHTML,/Imported channel observation/);
 });
