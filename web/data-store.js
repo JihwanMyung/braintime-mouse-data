@@ -2,7 +2,7 @@ import {clearHistoryIndex} from './history-index.js';
 import { projectLocoboxExport } from './locobox-export.js?v=24';
 import { PUBLIC_CONFIG } from './config.js';
 import { validateManagerPermissions } from './permissions.js';
-import { normalizeDataset, ID_FIELDS } from './model.js?v=32';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=33';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
@@ -127,7 +127,11 @@ function apiError(response,body){
   if(response.status===409||body?.code==='40001')return new Error('This record changed in another session. Pull the latest cloud data and review your edit before trying again.');
   if(response.status===401)return new Error('The cloud session expired or sign-in was rejected. Sign in again.');
   if(response.status===403||body?.code==='42501')return new Error('Your account does not have permission for this cloud operation.');
-  return new Error(String(message));
+  const error=new Error(String(message));
+  // A cancelled query is not necessarily a timeout. Retry only this exact,
+  // server-confirmed read failure, never network errors or permission failures.
+  if(body?.code==='57014'&&message==='canceling statement due to statement timeout')error.statementTimeout=true;
+  return error;
 }
 async function authRequest(route,body,token){
   const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
@@ -386,26 +390,41 @@ export async function saveLacFeeVisibility({version,levels}){
  if(session()?.role!=='owner')throw new Error('Only the owner can change fee visibility.');
  const value=checkedFeeVisibility(await request('rpc/save_lac_fee_visibility',{method:'POST',body:{p_colony_id:c.colonyId,p_version:version,p_levels:levels}}));checkExportContext(context);feeVisibility=value;feeVisibilityContext=context;return clone(value);
 }
+async function readCloudPage(read,limit,check){
+  while(true){
+    check();
+    try{const page=await read(limit);check();return {page,limit};}
+    catch(error){
+      check();
+      if(error.statementTimeout!==true||limit<=1)throw error;
+      // Keep the same offset: the failed query returned no usable records.
+      // Retain the smaller page size for the rest of this stream.
+      limit=Math.max(1,Math.floor(limit/2));
+    }
+  }
+}
 async function allRecords(){
   const generation=authGeneration,context=exportContext(),c=configuration(),policy=await refreshFeeVisibility({notify:false});const result=[];
+  const check=()=>{if(generation!==authGeneration)throw new Error('The account or colony changed during loading. Open the shared colony again.');checkExportContext(context);};
   try{
   // Archive chunks have much larger payloads than individual mice. Keep those
-  // responses bounded instead of putting hundreds of chunks on a 1,000-row page.
-  for(const [filter,limit] of (policy.source_archive_allowed?[['neq.archive',1000],['eq.archive',3]]:[['neq.archive',1000]])){
-    let offset=0;
+  // responses to one chunk; ordinary rows adapt downward if the server times out.
+  for(const [filter,initialLimit] of (policy.source_archive_allowed?[['neq.archive',250],['eq.archive',1]]:[['neq.archive',250]])){
+    let offset=0,limit=initialLimit;
     while(true){
-      const page=await request(`entity_records?select=colony_id,entity_type,entity_id,payload,version,archived&colony_id=eq.${encodeURIComponent(c.colonyId)}&entity_type=${filter}&order=entity_type.asc,entity_id.asc&limit=${limit}&offset=${offset}`);
+      const loaded=await readCloudPage(size=>request(`entity_records?select=colony_id,entity_type,entity_id,payload,version,archived&colony_id=eq.${encodeURIComponent(c.colonyId)}&entity_type=${filter}&order=entity_type.asc,entity_id.asc&limit=${size}&offset=${offset}`),limit,check);
+      const page=loaded.page;limit=loaded.limit;
       if(!Array.isArray(page))throw new Error('Cloud records were not returned as a list.');
       result.push(...(policy.source_archive_allowed?page:page.filter(r=>r.entity_type!=='locations'&&!feeRecord(r))));if(page.length<limit)break;offset+=page.length;
     }
   }
   if(!policy.source_archive_allowed){
-   let offset=0;while(true){const page=await request('rpc/get_lac_fee_records',{method:'POST',body:{p_colony_id:c.colonyId,p_offset:offset,p_limit:250}});
+   let offset=0,limit=250;while(true){const loaded=await readCloudPage(size=>request('rpc/get_lac_fee_records',{method:'POST',body:{p_colony_id:c.colonyId,p_offset:offset,p_limit:size}}),limit,check);const page=loaded.page;limit=loaded.limit;
     const nextPolicy=checkedFeeVisibility(page?.visibility);if(nextPolicy.version!==policy.version||nextPolicy.estimate!==policy.estimate||nextPolicy.actual!==policy.actual||!Array.isArray(page.rows))throw new Error('Fee visibility changed while loading. Pull again.');
     if(page.rows.some(r=>!feeRecord(r)||r.colony_id!==c.colonyId))throw new Error('Invalid projected fee records.');result.push(...page.rows);
     if(page.next_offset===null)break;if(!Number.isInteger(page.next_offset)||page.next_offset<=offset)throw new Error('Invalid fee page cursor.');offset=page.next_offset;
    }
-   offset=0;while(true){const page=await request('rpc/get_managed_locations',{method:'POST',body:{p_colony_id:c.colonyId,p_offset:offset,p_limit:250}});checkExportContext(context);
+   offset=0;limit=250;while(true){const loaded=await readCloudPage(size=>request('rpc/get_managed_locations',{method:'POST',body:{p_colony_id:c.colonyId,p_offset:offset,p_limit:size}}),limit,check);const page=loaded.page;limit=loaded.limit;
     const nextPolicy=checkedFeeVisibility(page?.visibility);if(!sameFeeVisibility(nextPolicy,policy)||!Array.isArray(page.rows))throw new Error('Fee visibility changed while loading locations. Pull again.');
     for(const row of page.rows)result.push(checkedManagedLocation(row,c.colonyId));
     if(page.next_offset===null)break;if(!Number.isInteger(page.next_offset)||page.next_offset<=offset)throw new Error('Invalid location page cursor.');offset=page.next_offset;

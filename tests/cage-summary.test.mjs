@@ -16,6 +16,14 @@ function occupy(data,cage,mouse={}) {
   data.tables.mice.push({mouse_sid:`M-${data.tables.mice.length}`,state:'Stock',cage_sid:cage.cage_sid,...mouse});
 }
 
+test('SHLAC room renaming preserves saved IDs, capacities and occupancy while new names also classify by default',()=>{
+ const data=fixture();for(const room_id of ['RAT','CLEAN','SPF'])occupy(data,{cage_sid:'C-'+room_id,room_id});
+ const saved=configured(data,{rat:{locobox_mode:'cage'}}),before=summarizeCages(saved);
+ for(const current of [data,saved])for(const room of current.tables.rooms)room.name=({RAT:'SHLAC Rat room',CLEAN:'SHLAC Conventional',SPF:'SHLAC SPF'})[room.room_id]||room.name;
+ assert.deepEqual(summarizeCages(saved),before);
+ const defaults=summarizeCages(data);for(const key of ['rat','clean','spf']){assert.equal(defaults.groups[key].used,1);assert.equal(defaults.groups[key].capacity,null);assert.equal(defaults.groups[key].configured,true);}
+});
+
 test('current cage total is active or occupied IDs, never the historical cage archive',()=>{
   const data=fixture();
   occupy(data,{cage_sid:'A',room_id:'CLEAN'});

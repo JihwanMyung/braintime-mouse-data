@@ -236,6 +236,49 @@ test('paginated pull includes more than 1000 mice, batch upload caps at 200, ref
   const batches=server.calls.filter(c=>c.url.endsWith('/rpc/save_records')).map(c=>JSON.parse(c.options.body).p_changes.length);assert(batches.every(n=>n<=200));
   assert(server.calls.some(c=>c.url.includes('offset=2000')));
 });
+test('cloud pull shrinks only timed-out read pages, keeps offsets and preserves every archive and managed row',async()=>{
+ const data=createSyntheticDataset();data.tables.mice=Array.from({length:645},(_,i)=>({mouse_sid:`READ-${String(i).padStart(4,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
+ data.tables.source_history=Array.from({length:6},(_,i)=>({source_record_id:`history-${i}`,text:'archived evidence '.repeat(10000)}));
+ await connected(data);const originalFetch=fetch,attempts=[],archiveSizes=[],batches=server.batches;
+ globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')){
+  const limit=Number(u.searchParams.get('limit')),offset=Number(u.searchParams.get('offset'));
+  if(u.searchParams.get('entity_type')==='neq.archive'){
+   attempts.push({offset,limit});if(limit>(offset===0?100:30))return response({code:'57014',message:'canceling statement due to statement timeout'},500);
+  }else archiveSizes.push(limit);
+ }return originalFetch(url,options);};
+ const result=await store.pullFromCloud();
+ assert.deepEqual(result.tables.mice.map(r=>r.mouse_sid),data.tables.mice.map(r=>r.mouse_sid));assert.deepEqual(result.tables.source_history,data.tables.source_history);
+ assert.deepEqual(attempts.slice(0,6),[{offset:0,limit:250},{offset:0,limit:125},{offset:0,limit:62},{offset:62,limit:62},{offset:62,limit:31},{offset:62,limit:15}]);
+ assert(attempts.slice(6).every(row=>row.limit===15));assert(archiveSizes.length>3);assert(archiveSizes.every(size=>size===1));assert.equal(server.batches,batches);assert.equal(store.getCloudStatus().readyForEdits,true);
+});
+test('exhausted statement-timeout retries stop at one row and preserve the previous cache after partial progress',async()=>{
+ const data=createSyntheticDataset();data.tables.mice=Array.from({length:305},(_,i)=>({mouse_sid:`KEEP-${String(i).padStart(4,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
+ const before=await connected(data),mark=localStorage.getItem('mouse-colony.cloud-cache-context.v1'),originalFetch=fetch,attempts=[];
+ globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='neq.archive'){
+  const offset=Number(u.searchParams.get('offset')),limit=Number(u.searchParams.get('limit'));attempts.push({offset,limit});
+  if(offset>=250)return response({code:'57014',message:'canceling statement due to statement timeout'},500);
+ }return originalFetch(url,options);};
+ await assert.rejects(store.pullFromCloud(),/statement timeout/);
+ assert.deepEqual(attempts,[{offset:0,limit:250},...[250,125,62,31,15,7,3,1].map(limit=>({offset:250,limit}))]);
+ assert.deepEqual(idbData.get('current'),before);assert.equal(localStorage.getItem('mouse-colony.cloud-cache-context.v1'),mark);assert.equal(store.getCloudStatus().readyForEdits,false);
+});
+test('permission, network and other query cancellation failures are never retried',async()=>{
+ for(const scenario of [{code:'57014',message:'canceling statement due to user request'},{message:'canceling statement due to statement timeout'},{code:'42501',message:'canceling statement due to statement timeout',status:403},{network:true}]){
+  const before=await connected(),originalFetch=fetch;let attempts=0;
+  globalThis.fetch=async(url,options)=>{if(new URL(url).pathname.endsWith('/entity_records')){attempts++;if(scenario.network)throw new TypeError('Network unavailable');return response(scenario,scenario.status||500);}return originalFetch(url,options);};
+  await assert.rejects(store.pullFromCloud(),/canceling|permission|Network/);assert.equal(attempts,1);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
+ }
+});
+test('one archive chunk timing out stops the pull without truncating the snapshot',async()=>{
+ const before=await connected(),originalFetch=fetch;let attempts=0;
+ globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.archive'){attempts++;assert.equal(u.searchParams.get('limit'),'1');return response({code:'57014',message:'canceling statement due to statement timeout'},500);}return originalFetch(url,options);};
+ await assert.rejects(store.pullFromCloud(),/statement timeout/);assert.equal(attempts,1);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
+});
+test('account changes during a timed-out read prevent any retry with the changed session',async()=>{
+ await connected();const originalFetch=fetch;let attempts=0;
+ globalThis.fetch=async(url,options)=>{if(new URL(url).pathname.endsWith('/entity_records')){attempts++;await store.signOut();return response({code:'57014',message:'canceling statement due to statement timeout'},500);}return originalFetch(url,options);};
+ await assert.rejects(store.pullFromCloud(),/account or colony changed/);assert.equal(attempts,1);assert.equal(store.getCloudStatus().signedIn,false);assert.equal(idbData.get('current'),undefined);
+});
 test('different existing cloud payload blocks initial upload before any overwrite',async()=>{
   const d=await connected(),count=server.batches;d.tables.mice[0].comment='different import';
   await assert.rejects(store.pushToCloud(d),/already contains different data/);assert.equal(server.batches,count);
@@ -347,7 +390,7 @@ test('real augmented dataset round-trips with bounded archive payloads, RPCs and
   assert.equal(hash(loaded),hash(expected));
   const archives=[...server.records.values()].filter(r=>r.entity_type==='archive');assert(archives.length>1);assert(archives.every(r=>utf8Size(r.payload)<=MAX_ARCHIVE_PAYLOAD_BYTES));
   const writes=server.calls.filter(c=>c.url.endsWith('/rpc/save_records'));assert(writes.every(c=>Buffer.byteLength(c.options.body)<=MAX_RPC_BYTES));
-  assert(server.calls.filter(c=>c.url.includes('entity_type=eq.archive')).every(c=>new URL(c.url).searchParams.get('limit')==='3'));
+  assert(server.calls.filter(c=>c.url.includes('entity_type=eq.archive')).every(c=>new URL(c.url).searchParams.get('limit')==='1'));
   assert.equal(loaded.tables.historical_observations.length,d.tables.historical_observations.length);
 });
 
@@ -789,6 +832,12 @@ function locationFixture(count=1){
  const data=createSyntheticDataset();data.tables.locations=Array.from({length:count},(_,i)=>({location_id:`position-${String(i).padStart(3,'0')}`,label:`Box ${i+1}`,room_id:'room-1',rack_id:'rack-1',row:i+1,column:1,capacity:1,active:true,manager:'Verified caretaker',notes:'Editable note',record_origin:'current_google_sheet_map',source_current:true,source_snapshot_date:'2026-10-15',source_manager_name:'Verified source user',source_observed_tags:['P123'],source_observed_mouse_sids:['SYN-M001'],source_block_text:'HIDDEN-FINANCIAL-CELL-97531',source_manager_evidence_refs:[{raw:'HIDDEN-FINANCIAL-CELL-97531'}],manager_source:{raw:'HIDDEN-FINANCIAL-CELL-97531'}}));return data;
 }
 const restrictedPolicy=version=>({version,owner:false,estimate:true,actual:false,source_archive_allowed:false});
+test('restricted location reads adapt to timeouts without falling back to raw sources or omitting positions',async()=>{
+ await connected(locationFixture(81));server.role='editor';server.feePolicy=restrictedPolicy(1);const originalFetch=fetch,attempts=[],start=server.calls.length;
+ globalThis.fetch=async(url,options)=>{if(new URL(url).pathname.endsWith('/rpc/get_managed_locations')){const body=JSON.parse(options.body);attempts.push([body.p_offset,body.p_limit]);if(body.p_limit>40)return response({code:'57014',message:'canceling statement due to statement timeout'},500);}return originalFetch(url,options);};
+ const result=await store.pullFromCloud();assert.equal(result.tables.locations.length,81);assert.equal(new Set(result.tables.locations.map(r=>r.location_id)).size,81);assert.equal(result.source_archive_restricted,true);assert(!JSON.stringify(result).includes('HIDDEN-FINANCIAL'));
+ assert.deepEqual(attempts,[[0,250],[0,125],[0,62],[0,31],[31,31],[62,31]]);assert(!server.calls.slice(start).some(call=>call.url.includes('entity_type=eq.archive')));
+});
 test('partial fee access pages safe current locations once and saves only projected fields while preserving hidden server sources',async()=>{
  const original=locationFixture(251);await connected(original);server.role='editor';server.feePolicy=restrictedPolicy(1);
  const partial=await store.pullFromCloud();assert.equal(partial.tables.locations.length,251);assert.equal(partial.source_projection_version,2);assert(!JSON.stringify(partial).includes('HIDDEN-FINANCIAL'));

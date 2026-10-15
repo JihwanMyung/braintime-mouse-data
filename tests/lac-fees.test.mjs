@@ -98,3 +98,18 @@ test('unavailable estimates do not hide recorded zero or invent zero for missing
  h.click('tab','history');assert.match(h.container.innerHTML,/Latest estimated fee · NT\$: <strong>Unavailable<\/strong>/);
  assert.match(lacFeeHelpHTML(),/Past estimates stay Unavailable until quantities are reviewed as Recorded/);
 });
+
+
+test('current fee presentation uses SHLAC room labels while preserving recorded historical labels',()=>{
+ const data=configured(),oldLabels=['Mouse clean room','Rat room locobox','SPF room'];
+ data.tables.husbandry_events[0].lac_fee_options.groups.forEach((group,index)=>{group.label=oldLabels[index]});
+ const before=structuredClone(data),h=harness(data);
+ const currentLabels=['SHLAC Conventional','SHLAC Rat room','SHLAC SPF'];
+ for(const label of currentLabels)assert.ok(h.container.innerHTML.includes('<td>'+label+'</td>'));
+ for(const label of oldLabels)assert.ok(!h.container.innerHTML.includes('<td>'+label+'</td>'));
+ h.click('tab','options');for(const label of currentLabels)assert.ok(h.container.innerHTML.includes('<td>'+label+'</td>'));
+ h.click('edit-options');for(const label of currentLabels)assert.ok(h.container.innerHTML.includes('<legend>'+label+' ·'));
+ h.click('cancel');h.click('tab','history');for(const label of oldLabels)assert.ok(h.container.innerHTML.includes(label));
+ assert.deepEqual(data,before);assert.equal(h.saves.length,0);
+ assert.match(lacFeeHelpHTML(),/SHLAC Conventional and SHLAC Rat room charges count cages\. SHLAC SPF charges count mice/);
+});

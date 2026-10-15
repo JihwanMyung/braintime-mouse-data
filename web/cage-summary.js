@@ -1,4 +1,4 @@
-import { getCageSummaryOptions, getCageSummaryOptionsStatus } from './cage-summary-options.js?v=32';
+import { getCageSummaryOptions, getCageSummaryOptionsStatus } from './cage-summary-options.js?v=33';
 import { classifyAnimalSheetBreedingBlock } from './breeding-summary.js?v=24';
 
 const list=value=>Array.isArray(value)?value.filter(record=>record&&typeof record==='object'&&!Array.isArray(record)):[];

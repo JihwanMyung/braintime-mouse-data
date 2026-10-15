@@ -22,9 +22,46 @@ test('defaults infer explicit room names, keep capacities unknown, and count one
   assert.deepEqual(value,{schema_version:1,groups:{beh:{room_ids:['BEH'],capacity:null,locobox_mode:'cage',temporary_storage_location_ids:[]},rat:{room_ids:['RAT-1','RAT-2'],capacity:null,locobox_mode:'cage'},clean:{room_ids:['CLEAN'],capacity:null},spf:{room_ids:['SPF'],capacity:null}}});
   assert.deepEqual(dataset,before);assert.equal(getCageSummaryOptionsStatus(dataset),'default');assert.equal(getCageSummaryOptionsStatus(null),'default');
   assert.deepEqual(CAGE_SUMMARY_GROUPS.map(group=>group.unit),['locoboxes','locoboxes','cages','cages']);
+  assert.deepEqual(CAGE_SUMMARY_GROUPS.map(group=>group.label),['Animal Beh locobox','SHLAC Rat room','SHLAC Conventional','SHLAC SPF']);
   value.groups.beh.room_ids.push('OTHER');value.groups.spf.capacity=100;
   assert.deepEqual(getCageSummaryOptions(dataset).groups.beh.room_ids,['BEH']);assert.equal(getCageSummaryOptions(dataset).groups.spf.capacity,null);
   assert.deepEqual(getCageSummaryOptions(null).groups.clean,{room_ids:[],capacity:null});
+});
+
+test('SH LAC Conventional aliases map to Clean room without inferring capacities or matching other conventional spaces',()=>{
+ const dataset=empty();dataset.tables.rooms=[
+  {room_id:'LAC-1',name:'SHLAC-Conventional, Mouse Room #2'},
+  {room_id:'LAC-2',name:'SH LAC Conventional'},
+  {room_id:'LAC-3',name:' sh  lac - conventional ,  mouse room # 2 '},
+  {room_id:'OTHER',name:'Conventional room'},
+  {room_id:'OLD',name:'Old SH LAC Conventional'},
+  {room_id:'STORAGE',name:'SH LAC Conventional storage'},
+  {room_id:'RAT',name:'SHLAC-Conventional, Rat Room #2'},
+  {room_id:'ARCHIVED',name:'SH LAC Conventional',archived:true}
+ ];
+ const before=structuredClone(dataset),value=getCageSummaryOptions(dataset);
+ assert.deepEqual(value.groups.clean,{room_ids:['LAC-1','LAC-2','LAC-3'],capacity:null});
+ assert(CAGE_SUMMARY_GROUPS.every(({key})=>value.groups[key].capacity===null));assert.deepEqual(dataset,before);
+});
+
+test('saved explicit mappings and verified capacities take precedence over Conventional alias suggestions',()=>{
+ const dataset=empty();dataset.tables.rooms.push({room_id:'LAC',name:'SHLAC-Conventional, Mouse Room #2'});
+ const input=getCageSummaryOptions(dataset);input.groups.clean.room_ids=['CLEAN'];input.groups.clean.capacity=18;input.groups.beh.capacity=36;input.groups.rat.capacity=24;
+ const built=buildCageSummaryOptions(dataset,input,clock),before=structuredClone(built.dataset);
+ assert.deepEqual(getCageSummaryOptions(built.dataset),input);assert.deepEqual(built.dataset,before);assert.equal(getCageSummaryOptionsStatus(built.dataset),'saved');
+ const explicit=getCageSummaryOptions(built.dataset);explicit.groups.clean.room_ids=[];
+ assert.deepEqual(getCageSummaryOptions(buildCageSummaryOptions(built.dataset,explicit,clock).dataset).groups.clean,{room_ids:[],capacity:18});
+});
+
+test('new SHLAC room names and legacy aliases retain the same room groups',()=>{
+ const data=empty();data.tables.rooms=[
+  {room_id:'R1',name:'SHLAC Rat room'},{room_id:'R2',name:' sh lac - rat room '},{room_id:'R3',name:'Rat Room (LocoBoxes), Rat room 6'},
+  {room_id:'C1',name:'SHLAC Conventional'},{room_id:'C2',name:'Clean room'},
+  {room_id:'S1',name:'SHLAC SPF'},{room_id:'S2',name:'SH LAC SPF'},{room_id:'S3',name:'SPF room'},
+  {room_id:'OLD',name:'Old SHLAC Rat room'},{room_id:'STORE',name:'SHLAC Rat room storage'}
+ ];
+ const value=getCageSummaryOptions(data);assert.deepEqual(value.groups.rat.room_ids,['R1','R2','R3']);assert.deepEqual(value.groups.clean.room_ids,['C1','C2']);assert.deepEqual(value.groups.spf.room_ids,['S1','S2','S3']);
+ assert(CAGE_SUMMARY_GROUPS.every(({key})=>value.groups[key].capacity===null));
 });
 
 test('ambiguous, archived, conventional and arbitrary names are not assigned by inference',()=>{

@@ -8,7 +8,14 @@ const rooms=[{room_id:'OTHER',name:'A room'},{room_id:'SPF',name:'SPF room'},{ro
 test('room presentation order recognizes established names and keeps new rooms without mutation',()=>{
  const before=structuredClone(rooms);assert.deepEqual(sortRooms(rooms).map(r=>r.room_id),['BEH','RAT','CLEAN','SPF','OTHER']);assert.deepEqual(rooms,before);
  for(const name of ['Ani Beh','Animal Beh','SH Animal Behaviour'])assert.equal(roomOrderRank(name),0);
- assert.equal(roomOrderRank('Conventional room'),2);assert.equal(roomOrderRank({room_id:'room_sheet_beh',name:'Behavior room'}),0);assert.equal(roomOrderRank('Operating room'),4);
+ for(const name of ['Conventional room','SHLAC-Conventional, Mouse Room #2','SH LAC Conventional'])assert.equal(roomOrderRank(name),2);
+ for(const name of ['SHLAC Rat room','SH LAC Rat room','SHLAC-Rat room'])assert.equal(roomOrderRank(name),1);
+ for(const name of ['SHLAC SPF','SH LAC SPF','SHLAC-SPF, Room 6'])assert.equal(roomOrderRank(name),3);
+ assert.equal(roomOrderRank({room_id:'room_sheet_beh',name:'Behavior room'}),0);assert.equal(roomOrderRank('Operating room'),4);
+});
+test('current SHLAC labels retain Ani Beh, Rat, Conventional and SPF presentation order',()=>{
+ const current=[{room_id:'spf-original-id',name:'SHLAC SPF'},{room_id:'clean-original-id',name:'SHLAC Conventional'},{room_id:'rat-original-id',name:'SHLAC Rat room'},{room_id:'beh-original-id',name:'Ani Beh'}],before=structuredClone(current);
+ assert.deepEqual(sortRooms(current).map(room=>room.name),['Ani Beh','SHLAC Rat room','SHLAC Conventional','SHLAC SPF']);assert.deepEqual(current,before);
 });
 test('Animal Sheet and housing/Locobox choices share room order without renumbering rack positions',()=>{
  const dataset={tables:{rooms,racks:rooms.map(r=>({rack_id:'K'+r.room_id,room_id:r.room_id,name:'Rack 1'})),locations:rooms.flatMap(r=>[2,1].map(column=>({location_id:r.room_id+column,room_id:r.room_id,rack_id:'K'+r.room_id,label:'Slot '+column,row:1,column,record_origin:'app_created'}))),mice:[],cages:[],light_events:[],husbandry_events:[]}},before=structuredClone(dataset);
