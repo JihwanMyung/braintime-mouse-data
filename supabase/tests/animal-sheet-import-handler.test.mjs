@@ -5,7 +5,7 @@ import {SOURCE_SHEETS} from '../functions/import-animal-sheet/source.mjs';
 const ANIMAL_SOURCE_ID='SYNTHETIC_ANIMAL_SOURCE_0000000000000001';
 const colony='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',job='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',token='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const vars={SUPABASE_URL:'https://test.supabase.co',SUPABASE_SERVICE_ROLE_KEY:'SERVER-ONLY',SHEET_COLONY_ID:colony,ANIMAL_SOURCE_SPREADSHEET_ID:ANIMAL_SOURCE_ID,SHEET_SYNC_SECRET:'S'.repeat(64),GOOGLE_SERVICE_ACCOUNT_JSON:'SYNTHETIC ACCOUNT'};
-const raw={spreadsheetId:ANIMAL_SOURCE_ID,properties:{title:'PRIVATE WORKBOOK'},sheets:SOURCE_SHEETS.map(s=>({properties:{sheetId:s.sheetId},data:[{rowData:[]}]}))};
+const raw={spreadsheetId:ANIMAL_SOURCE_ID,properties:{title:'PRIVATE WORKBOOK'},sheets:SOURCE_SHEETS.map(s=>({properties:{sheetId:s.sheetId,title:`Current ${s.kind}`},data:[{rowData:[]}]}))};
 const context={token,baseline_revision:2,source_spreadsheet_id:ANIMAL_SOURCE_ID,records:[{entity_type:'mice',entity_id:'M1',payload:{mouse_sid:'M1',physical_tag:'P1'},version:1,archived:false}],previous_baseline:{entries:[]}};
 const parsed={content_hash:'a'.repeat(64),coverage:{sheets:3},issues:[]},plan={changes:[],historyRecords:[],conflicts:[],nextBaseline:{entries:[]},summary:{unchanged:1}};
 function fixture(options={}){
@@ -23,10 +23,11 @@ await test('only server-secret POST requests execute and malformed input never f
  for(const req of [new Request('https://test.supabase.co'),request({},'bad'),request({job_id:job,unexpected:true}),request({job_id:'bad'}),request({job_id:'x'.repeat(2000)})]){const f=fixture(),r=await f.handler(req);assert([400,401,405].includes(r.status));assert.equal(f.calls.length,0);}
  for(const changed of [{SUPABASE_URL:'https://test.supabase.co/evil'},{SUPABASE_URL:'https://user:pass@test.supabase.co'},{SHEET_COLONY_ID:'bad'},{ANIMAL_SOURCE_SPREADSHEET_ID:'other'}]){const f=fixture({vars:changed}),r=await f.handler(request());assert.equal(r.status,503);assert.equal(f.calls.length,0);}
 });
-await test('successful import reads original sheet once, preserves raw snapshot and scopes tokens to their services',async()=>{
+await test('successful import reads only current sheets after small ID-to-title lookup, preserves raw snapshot and scopes tokens to their services',async()=>{
  const f=fixture(),response=await f.handler(request());assert.equal(response.status,200);const value=await response.json();assert.equal(value.status,'completed');
- const google=f.calls.filter(c=>c.url.startsWith('https://sheets.googleapis.com/'));assert.equal(google.length,1);assert.equal(google[0].init.method,'GET');assert.equal(google[0].init.headers.Authorization,'Bearer GOOGLE-ONLY');assert(!JSON.stringify(google).includes('SERVER-ONLY'));assert(google[0].url.includes(ANIMAL_SOURCE_ID));
- const fields=new URL(google[0].url).searchParams.get('fields');for(const field of ['note','userEnteredValue','effectiveValue','numberFormat','borders','merges'])assert(fields.includes(field));
+ const google=f.calls.filter(c=>c.url.startsWith('https://sheets.googleapis.com/'));assert.equal(google.length,2);assert.equal(google[0].init.method,'GET');assert.equal(google[0].init.headers.Authorization,'Bearer GOOGLE-ONLY');assert(!JSON.stringify(google).includes('SERVER-ONLY'));assert(google[0].url.includes(ANIMAL_SOURCE_ID));
+ const fields=new URL(google[1].url).searchParams.get('fields');for(const field of ['note','userEnteredValue','effectiveValue','numberFormat','borders','merges'])assert(fields.includes(field));
+ assert.deepEqual(new URL(google[1].url).searchParams.getAll('ranges'),SOURCE_SHEETS.map(s=>`'Current ${s.kind}'`));
  const db=f.calls.filter(c=>c.url.includes('/rest/v1/'));assert(db.every(c=>c.init.headers.Authorization==='Bearer SERVER-ONLY'));assert(db.every(c=>c.init.redirect==='error'));assert(!JSON.stringify(db).includes('GOOGLE-ONLY'));
  assert(f.state.parseCalls[0].w.sheets.every(s=>Array.isArray(s.merges)));assert.equal(f.state.parseCalls[0].options.dataset.tables.mice[0].physical_tag,'P1');
  const commit=db.find(c=>c.url.includes('/commit_'));assert.deepEqual(commit.body.p_raw_workbook,raw);assert(!('merges' in commit.body.p_raw_workbook.sheets[0]));assert.equal(commit.body.p_token,token);assert.equal(commit.body.p_baseline_revision,2);assert.equal(commit.body.p_plan.summary.source_issue_count,0);
@@ -57,4 +58,12 @@ await test('Google OAuth assertion requests only spreadsheet read access and nev
  const bytes=new Uint8Array(await crypto.subtle.exportKey('pkcs8',keys.privateKey)),privateKey='-----BEGIN PRIVATE KEY-----\n'+Buffer.from(bytes).toString('base64')+'\n-----END PRIVATE KEY-----';
  let claim;const result=await googleReadToken(JSON.stringify({client_email:'sync@example.iam.gserviceaccount.com',private_key:privateKey}),async(url,init)=>{assert.equal(url,'https://oauth2.googleapis.com/token');assert.equal(init.redirect,'error');assert.equal(init.method,'POST');const assertion=init.body.get('assertion');claim=JSON.parse(Buffer.from(assertion.split('.')[1],'base64url'));assert(!assertion.includes('PRIVATE KEY'));return Response.json({access_token:'google-token'});},new Date('2026-10-15T00:00:00Z'));
  assert.equal(result,'google-token');assert.equal(claim.scope,'https://www.googleapis.com/auth/spreadsheets.readonly');assert.equal(claim.exp-claim.iat,3600);assert.equal(claim.aud,'https://oauth2.googleapis.com/token');
+});
+
+await test('oversized current maps fail before parse and duplicate or extra current sheets fail closed',async()=>{
+ // Injecting a valid metadata response followed by oversized grid response never commits.
+ let n=0;const f=fixture({googleResponse:()=>++n===1?Response.json(raw):new Response('oversize',{headers:{'content-length':'8000001'}})});
+ assert.equal((await(await f.handler(request())).json()).code,'source_too_large');assert.equal(f.state.parseCalls.length,0);
+ const g=fixture({raw:{...raw,sheets:[...raw.sheets,raw.sheets[0]]}});
+ assert.equal((await(await g.handler(request())).json()).code,'source_schema_changed');assert.equal(g.state.parseCalls.length,0);
 });

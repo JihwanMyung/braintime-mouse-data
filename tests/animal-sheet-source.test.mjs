@@ -39,40 +39,67 @@ function borderedGrid(sheet,row,col,bodyRows=5){
 }
 const locations=result=>result.records.filter(r=>r.entity_type==='locations').map(r=>r.payload);
 
-test('complete blank SPF cage grids retain physical coordinates, empty body and explicit border provenance',async()=>{
- const w=fixture(),s=w.sheets[2];borderedGrid(s,7,14);slot(s,26,2,'SPF-F1');borderedGrid(s,26,20,6);
+function confirmedBlankFixture(){const w=fixture(),s=w.sheets[2];s.properties.gridProperties.columnCount=71;slot(s,15,2,'SPF-D1');return w}
+
+test('only the owner-confirmed unnamed SPF grid is retained with border and coordinate provenance',async()=>{
+ const w=confirmedBlankFixture(),s=w.sheets[2];borderedGrid(s,15,46);slot(s,26,2,'SPF-F1');borderedGrid(s,26,59,6);borderedGrid(s,26,65,6);
  const before=structuredClone(w),result=await parseAnimalSheetWorkbook(w,{capturedAt}),blank=locations(result).filter(p=>p.source_grid_basis);
- assert.equal(result.parser_version,2);assert.equal(blank.length,2);assert.deepEqual(w,before);
- for(const p of blank){assert.equal(p.source_grid_basis,'border_verified_cage_grid');assert.equal(p.source_grid_label_status,'unlabelled');assert.equal(p.source_label,'');assert.equal(p.label,'Unlabelled grid '+p.source_cell);assert.equal(p.room_id,'room_sheet_spf');assert.equal(p.source_current,true);assert.deepEqual(p.source_observed_tags,[]);assert.equal(p.location_id,'loc_'+(await sourceHash(`${ANIMAL_SOURCE_ID}|1250760483|${p.source_cell}`)).slice(0,20));assert.equal(p.rack_id,locations(result).find(x=>x.source_sheet_id===1250760483&&!x.source_grid_basis).rack_id);}
- assert.deepEqual(blank.map(p=>p.source_grid_boundary_range),['N7:S13','T26:Y33']);
- // Later labelled source uses the same coordinate-derived ID, never a new grid.
- put(s,7,14,'SPF-E2',{effectiveFormat:s.data[0].rowData[6].values[13].effectiveFormat});
- const labelled=locations(await parseAnimalSheetWorkbook(w,{capturedAt})).find(p=>p.source_cell==='N7'&&p.source_sheet_id===1250760483);
- assert.equal(labelled.location_id,blank[0].location_id);assert.equal(labelled.label,'SPF-E2');
+ assert.equal(result.parser_version,3);assert.equal(blank.length,1);assert.deepEqual(w,before);
+ const p=blank[0];assert.equal(p.source_grid_basis,'owner_confirmed_physical_grid');assert.equal(p.source_grid_confirmation,'owner_physical_layout_2026-10-15');assert.equal(p.source_grid_border_verified,true);assert.equal(p.source_grid_label_status,'unlabelled');assert.equal(p.source_label,'');assert.equal(p.label,'Unlabelled grid AT15');assert.equal(p.room_id,'room_sheet_spf');assert.equal(p.source_current,true);assert.deepEqual(p.source_observed_tags,[]);assert.equal(p.location_id,'loc_'+(await sourceHash(`${ANIMAL_SOURCE_ID}|1250760483|AT15`)).slice(0,20));assert.equal(p.source_grid_boundary_range,'AT15:AY21');
+ put(s,15,46,'SPF-D8',{effectiveFormat:s.data[0].rowData[14].values[45].effectiveFormat});
+ const labelled=locations(await parseAnimalSheetWorkbook(w,{capturedAt})).find(p=>p.source_cell==='AT15'&&p.source_sheet_id===1250760483);
+ assert.equal(labelled.location_id,p.location_id);assert.equal(labelled.label,'SPF-D8');
 });
 
-test('blank merges, notes, formulas, partial borders and non-SPF grids cannot create phantom capacity',async()=>{
+test('templates, notes, formulas, partial borders and non-SPF grids cannot create phantom capacity',async()=>{
  const mutations=[
-  (w,s)=>{delete s.data[0].rowData[6].values[13].effectiveFormat.borders.top;},
-  (w,s)=>{s.data[0].rowData[12].values[16].effectiveFormat.borders.bottom.style='DOTTED';},
-  (w,s)=>{delete s.data[0].rowData[9].values[18].effectiveFormat.borders.right;},
-  (w,s)=>{s.data[0].rowData[6].values[13].note='Storage notes';},
-  (w,s)=>{s.data[0].rowData[6].values[13].userEnteredValue={formulaValue:'=""'};},
-  (w,s)=>{s.data[0].rowData[6].values[13].effectiveValue={stringValue:'Notes'};},
-  (w,s)=>{s.data[0].rowData[6].values[1].effectiveValue={stringValue:'Unrecognised peer'};slot(s,40,2,'SPF-E9');},
+  (w,s)=>{delete s.data[0].rowData[14].values[45].effectiveFormat.borders.top;},
+  (w,s)=>{s.data[0].rowData[20].values[48].effectiveFormat.borders.bottom.style='DOTTED';},
+  (w,s)=>{delete s.data[0].rowData[17].values[50].effectiveFormat.borders.right;},
+  (w,s)=>{s.data[0].rowData[14].values[45].note='Storage notes';},
+  (w,s)=>{s.data[0].rowData[14].values[45].userEnteredValue={formulaValue:'=""'};},
+  (w,s)=>{s.data[0].rowData[14].values[45].effectiveValue={stringValue:'Notes'};},
+  (w,s)=>{s.data[0].rowData[14].values[1].effectiveValue={stringValue:'Unrecognised peer'};},
   (w,s)=>{s.merges.at(-1).endRowIndex++;},
   (w,s)=>{for(const row of s.data[0].rowData)for(const cell of row.values??[])if(cell.effectiveFormat)delete cell.effectiveFormat.borders;},
  ];
- for(const mutate of mutations){const w=fixture(),s=w.sheets[2];borderedGrid(s,7,14);mutate(w,s);assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,0);}
- for(const index of [0,1]){const w=fixture();borderedGrid(w.sheets[index],7,14);assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,0);}
- const w=fixture();borderedGrid(w.sheets[2],15,14);assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,0);
+ for(const mutate of mutations){const w=confirmedBlankFixture(),s=w.sheets[2];borderedGrid(s,15,46);mutate(w,s);assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,0);}
+ for(const index of [0,1]){const w=fixture();slot(w.sheets[index],15,2,'SPF-D1');borderedGrid(w.sheets[index],15,46);assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,0);}
+ const w=confirmedBlankFixture();borderedGrid(w.sheets[2],15,52);assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,0);
 });
 
-test('new blank grid discoveries use ordinary additive merge and preserve existing observations and history',async()=>{
+test('native merged-anchor borders establish only the actual outer edge of the confirmed SPF slot',async()=>{
+ const w=confirmedBlankFixture(),s=w.sheets[2];borderedGrid(s,15,46);
+ // Google CellData stores AT15:AY15 and AX21:AY21 outlines on their anchors.
+ s.data[0].rowData[14].values[45].effectiveFormat.borders.right={style:'SOLID_THICK'};
+ for(let c=46;c<51;c++)delete s.data[0].rowData[14].values[c].effectiveFormat;
+ s.merges.push({sheetId:s.properties.sheetId,startRowIndex:20,endRowIndex:21,startColumnIndex:49,endColumnIndex:51});
+ s.data[0].rowData[20].values[49].effectiveFormat.borders.right={style:'SOLID_THICK'};
+ delete s.data[0].rowData[20].values[50].effectiveFormat;
+ assert.equal(locations(await parseAnimalSheetWorkbook(w,{capturedAt})).filter(p=>p.source_grid_basis).length,1);
+ // A conflicting explicit border is authoritative; absent merge metadata or
+ // a merge extending beyond the confirmed block cannot supply a boundary.
+ const conflicting=structuredClone(w);conflicting.sheets[2].data[0].rowData[14].values[46].effectiveFormat={borders:{top:{style:'DOTTED'}}};
+ assert.equal(locations(await parseAnimalSheetWorkbook(conflicting,{capturedAt})).filter(p=>p.source_grid_basis).length,0);
+ for(const mutate of [x=>x.merges.pop(),x=>{x.merges.at(-1).endColumnIndex++;},x=>{x.merges.at(-1).endRowIndex++;}]){
+  const invalid=structuredClone(w);mutate(invalid.sheets[2]);assert.equal(locations(await parseAnimalSheetWorkbook(invalid,{capturedAt})).filter(p=>p.source_grid_basis).length,0);
+ }
+});
+
+test('confirmed35 Conventional and20 SPF physical slots preserve right-side labels and withdraw only explicit CLOSE slots',async()=>{
  const {planAnimalSheetMerge}=await import('../supabase/functions/import-animal-sheet/merge.mjs');
- const w=fixture(),before=await parseAnimalSheetWorkbook(w,{capturedAt}),current=before.records.map(r=>({...structuredClone(r),version:1,archived:false}));
- const baseline={schema_version:1,source_id:ANIMAL_SOURCE_ID,entries:before.records.map(r=>({...structuredClone(r),source_present:true}))};
- borderedGrid(w.sheets[2],7,14);const after=await parseAnimalSheetWorkbook(w,{capturedAt}),plan=await planAnimalSheetMerge(after,current,baseline);
- assert.equal(plan.changes.length,1);assert.equal(plan.changes[0].entity_type,'locations');assert.equal(plan.changes[0].expected_version,0);assert.equal(plan.conflicts.length,0);assert.equal(plan.summary.updated,0);assert.equal(plan.summary.withdrawn,0);assert.equal(plan.historyRecords.length,1);assert.equal(plan.historyRecords[0].payload.animal_sheet_change.action,'added');
+ const w=fixture(),con=w.sheets[1],spf=w.sheets[2];con.merges=[];con.data=[{rowData:[]}];con.properties.gridProperties.columnCount=92;spf.merges=[];spf.data=[{rowData:[]}];spf.properties.gridProperties.columnCount=71;
+ for(const [i,row]of [7,16,25,34,45].entries())for(let j=0;j<7;j++)slot(con,row,2+j*6,`CAL-${String.fromCharCode(65+i)}${j+1}`);
+ for(let j=0;j<7;j++)slot(con,7,49+j*6,`CAR-A${j+1}`);
+ for(const [row,letter]of [[15,'D'],[26,'F']])for(let j=0;j<7;j++)slot(spf,row,2+j*6,`SPF-${letter}${j+1}`);
+ slot(spf,26,46,'SPF-E1');slot(spf,26,52,'SPF-E2');for(let j=0;j<3;j++){slot(spf,41,2+j*6,`SPF-E${j+1}`);put(spf,41,7+j*6,'on');}put(spf,38,2,'Right (3)');
+ const before=await parseAnimalSheetWorkbook(w,{capturedAt});
+ for(let j=0;j<7;j++)put(con,44,2+j*6,'CLOSE');borderedGrid(spf,15,46);borderedGrid(spf,26,59,6);borderedGrid(spf,26,65,6);
+ const after=await parseAnimalSheetWorkbook(w,{capturedAt}),loc=locations(after);
+ assert.equal(loc.filter(p=>p.room_id==='room_sheet_conventional').length,35);assert.equal(loc.filter(p=>p.room_id==='room_sheet_spf').length,20);assert.equal(loc.filter(p=>p.room_id==='room_sheet_spf'&&p.row===41).length,3);assert.equal(after.issues.filter(i=>i.code==='explicitly_closed_position').length,7);
+ const current=before.records.map(r=>({...structuredClone(r),version:1,archived:false})),baseline={schema_version:1,source_id:ANIMAL_SOURCE_ID,entries:before.records.map(r=>({...structuredClone(r),source_present:true}))},plan=await planAnimalSheetMerge(after,current,baseline);
+ assert.equal(plan.summary.added,1);assert.equal(plan.summary.withdrawn,7);assert.equal(plan.summary.updated,0);assert.equal(plan.conflicts.length,0);assert.equal(plan.changes.filter(r=>r.payload.source_current===false).length,7);assert(plan.changes.every(r=>r.archived===false));assert.equal(plan.historyRecords.filter(r=>r.payload.animal_sheet_change.action==='withdrawn').length,7);
  assert.deepEqual(current,before.records.map(r=>({...r,version:1,archived:false})));
+ // A closure mentioned in animal notes cannot close another physical position.
+ const other=confirmedBlankFixture();put(other.sheets[2],16,2,'CLOSE');assert(locations(await parseAnimalSheetWorkbook(other,{capturedAt})).some(p=>p.source_cell==='B15'&&p.source_sheet_id===1250760483));
 });

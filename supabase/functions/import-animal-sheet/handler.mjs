@@ -43,15 +43,27 @@ export function createHandler({env,fetchImpl=fetch,parse=parseAnimalSheetWorkboo
    const access=await tokenProvider(env.get('GOOGLE_SERVICE_ACCOUNT_JSON'),fetchImpl,now());
    // Only GET the original source. The existing outbound function owns its
    // separate output workbook and is never invoked or modified here.
+   const readGoogle=async(url,limit)=>{
+    const response=await fetchImpl(url,{method:'GET',cache:'no-store',redirect:'error',headers:{Authorization:'Bearer '+access},signal:AbortSignal.timeout(60000)});
+    if(response.status===403||response.status===404)fail('source_access_denied');if(!response.ok)fail('source_read_failed');
+    return boundedJSON(response,limit,'source_too_large');
+   };
+   const endpoint='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(sourceId);
+   const metadata=await readGoogle(endpoint+'?fields='+encodeURIComponent('spreadsheetId,sheets(properties(sheetId,title))'),1000000);
+   if(metadata.spreadsheetId!==sourceId)fail('source_schema_changed');
+   const titles=SOURCE_SHEETS.map(def=>{
+    const matches=metadata.sheets?.filter(sheet=>sheet.properties?.sheetId===def.sheetId)||[];
+    if(matches.length!==1||typeof matches[0].properties.title!=='string'||!matches[0].properties.title)fail('source_schema_changed');
+    return matches[0].properties.title;
+   });
    const fields='spreadsheetId,properties(title,locale,timeZone),sheets(properties(sheetId,title,gridProperties),merges,data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue,formattedValue,note,effectiveFormat(numberFormat,borders),userEnteredFormat(numberFormat)))))';
-   const url='https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(sourceId)+'?includeGridData=true&fields='+encodeURIComponent(fields);
-   const response=await fetchImpl(url,{method:'GET',cache:'no-store',redirect:'error',headers:{Authorization:'Bearer '+access},signal:AbortSignal.timeout(60000)});
-   if(response.status===403||response.status===404)fail('source_access_denied');if(!response.ok)fail('source_read_failed');
-   const rawWorkbook=await boundedJSON(response,24000000,'source_too_large'),workbook=structuredClone(rawWorkbook),captured=now().toISOString();
-   // Google omits empty repeated merge metadata. Normalize that omission only;
-   // never fabricate missing grid data or required worksheets.
-   for(const sheet of workbook.sheets||[])if(!sheet.merges)sheet.merges=[];
-   if(workbook.spreadsheetId!==sourceId||SOURCE_SHEETS.some(def=>!workbook.sheets?.some(sheet=>sheet.properties?.sheetId===def.sheetId)))fail('source_schema_changed');
+   const query=new URLSearchParams({includeGridData:'true',fields});
+   for(const title of titles)query.append('ranges',"'"+title.replaceAll("'","''")+"'");
+   // A daily import needs only current maps, never every historical worksheet.
+   // Bound the current response before parsing and avoid a second deep copy.
+   const rawWorkbook=await readGoogle(endpoint+'?'+query,8000000),captured=now().toISOString();
+   if(rawWorkbook.spreadsheetId!==sourceId||rawWorkbook.sheets?.length!==SOURCE_SHEETS.length||SOURCE_SHEETS.some(def=>rawWorkbook.sheets.filter(sheet=>sheet.properties?.sheetId===def.sheetId).length!==1))fail('source_schema_changed');
+   const workbook={...rawWorkbook,sheets:rawWorkbook.sheets.map(sheet=>({...sheet,merges:sheet.merges||[]}))};
    const dataset={tables:{}};for(const row of context.records)(dataset.tables[row.entity_type]??=[]).push(row.payload);
    let parsed,plan;try{parsed=await parse(workbook,{capturedAt:captured,expectedSourceId:sourceId,dataset,managerDirectory:context.manager_directory||[]})}catch{fail('source_schema_changed')}
    try{plan=await merge(parsed,context.records,context.previous_baseline||{})}catch{fail('source_merge_failed')}
