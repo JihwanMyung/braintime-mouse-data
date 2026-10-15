@@ -1,5 +1,5 @@
 import { summarizeBreeding } from './breeding-summary.js?v=24';
-import { summarizeCages } from './cage-summary.js?v=24';
+import { summarizeCages } from './cage-summary.js?v=32';
 
 const rows=value=>Array.isArray(value)?value.filter(row=>row&&typeof row==='object'&&!Array.isArray(row)):[];
 const id=value=>typeof value==='string'?value.trim():typeof value==='number'&&Number.isFinite(value)?String(value):'';
@@ -47,7 +47,7 @@ function unweanedSummary(litters,day) {
  * Locoboxes use the shared room mappings and physical-box rules from Cages.
  */
 export function summarizeOverview(dataset,{asOf=localDate()}={}) {
-  const breeding=summarizeBreeding(dataset,{asOf}),day=calendarDay(asOf),tables=dataset?.tables||{},housing=summarizeCages(dataset);
+  const breeding=summarizeBreeding(dataset,{asOf}),day=calendarDay(asOf),tables=dataset?.tables||{},housing=summarizeCages(dataset,{asOf});
   const locoboxGroups=[housing.groups.beh,housing.groups.rat],estimate=breeding.groupEstimate;
   return {
     asOf,livingMice:breeding.total,activeGroups:estimate.totalGroups,registeredActiveGroups:estimate.registeredCount,breedingEstimate:estimate,
@@ -56,6 +56,7 @@ export function summarizeOverview(dataset,{asOf=localDate()}={}) {
     breedingCages:{count:estimate.totalGroups,unknown:Boolean(estimate.sourceEstimatedCount||estimate.sourceConflicts.length||estimate.unresolvedRegisteredGroups.length||estimate.issues.length),unresolvedGroups:estimate.unresolvedRegisteredGroups.length},
     locoboxes:{
       count:locoboxGroups.reduce((sum,group)=>sum+group.used,0),
+      ...(locoboxGroups.some(group=>group.estimatedUsed)?{estimated:true}:{}),
       unknown:Boolean(housing.unassignedMice||housing.unassignedCages||locoboxGroups.some(group=>
         !group.configured||group.roomMappingUnknown||group.unitUnknown||group.unlocatedCages||group.unlinkedPositions)),
     },

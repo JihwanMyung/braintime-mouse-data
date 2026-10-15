@@ -2,7 +2,7 @@ import { validateLocoboxRecord } from './locobox-model.js?v=24';
 import { validateIacucRecord } from './iacuc-model.js?v=24';
 import { validateLacFeeRecord } from './lac-fee-model.js?v=24';
 import { validateUserAcronym } from './user-acronyms.js';
-import { validateCageSummaryOptions } from './cage-summary-options.js?v=24';
+import { validateCageSummaryOptions } from './cage-summary-options.js?v=32';
 import { validateBreedingOptions } from './breeding-options.js?v=24';
 import { validateStrainDefinition } from './strain-registry.js?v=24';
 import { validateGeneticProfile } from './genotype-schema.js?v=24';

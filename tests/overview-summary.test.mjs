@@ -129,12 +129,12 @@ test('occupied locoboxes combine Beh and Rat with physical-box grouping scoped t
   assert.deepEqual(summarize(data).locoboxes,{count:2,unknown:false});
 });
 
-test('locobox uncertainty propagates unlinked source positions, missing cages and unknown unit mappings',()=>{
+test('locobox uncertainty propagates unlinked source positions, missing cages and invalid unit mappings',()=>{
   for(const update of [
     data=>{data.tables.locations[2].evidence_status='source_position_unlinked'},
     data=>{data.tables.mice[0].cage_sid='MISSING'},
     data=>{data.tables.mice[0].cage_sid=null},
-    data=>{data.tables.husbandry_events[0].cage_summary_options.groups.beh.locobox_mode='unknown'},
+    data=>{data.tables.husbandry_events[0].cage_summary_options.groups.beh.locobox_mode='invalid'},
     data=>{data.tables.husbandry_events[0].cage_summary_options.groups.rat.room_ids=['MISSING']},
   ]) {
     const data=locoboxFixture();update(data);assert.equal(summarize(data).locoboxes.unknown,true);
@@ -145,4 +145,14 @@ test('summary is pure, deterministic and validates its date',()=>{
   const data=fixture(),before=structuredClone(data);assert.deepEqual(summarize(data),summarize(data));assert.deepEqual(data,before);
   assert.equal(summarizeOverview(null,{asOf}).livingMice,0);
   for(const date of ['2026-02-30',null,123])assert.throws(()=>summarizeOverview(data,{asOf:date}),/valid YYYY-MM-DD/);
+});
+
+
+test('overview includes current Animal Sheet box estimates and applies Ani Beh storage exclusions',()=>{
+  let data={tables:{rooms:[{room_id:'BEH',name:'Ani Beh'},{room_id:'RAT',name:'Rat room'}],cages:[],mice:[],locations:[{location_id:'B1',room_id:'BEH',record_origin:'current_google_sheet_map',source_current:true,source_snapshot_date:asOf,source_observed_tags:['P-M123']},{location_id:'R1',room_id:'RAT',record_origin:'current_google_sheet_map',source_current:true,source_snapshot_date:asOf,source_observed_tags:['P-F456']}],husbandry_events:[]}};
+  assert.equal(summarize(data).locoboxes.count,2);assert.equal(summarize(data).locoboxes.estimated,true);
+  const options=getCageSummaryOptions(data);options.groups.beh.temporary_storage_location_ids=['B1'];
+  data=buildCageSummaryOptions(data,options,{now:'2026-10-14T00:00:00Z'}).dataset;
+  assert.equal(summarize(data).locoboxes.count,1);assert.equal(summarize(data).locoboxes.estimated,true);
+  assert.equal(summarizeOverview(data,{asOf:'2026-10-13'}).locoboxes.count,0);
 });

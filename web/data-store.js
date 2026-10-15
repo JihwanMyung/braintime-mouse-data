@@ -2,7 +2,7 @@ import {clearHistoryIndex} from './history-index.js';
 import { projectLocoboxExport } from './locobox-export.js?v=24';
 import { PUBLIC_CONFIG } from './config.js';
 import { validateManagerPermissions } from './permissions.js';
-import { normalizeDataset, ID_FIELDS } from './model.js?v=24';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=32';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';

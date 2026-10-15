@@ -92,12 +92,92 @@ test('locobox ID mode groups positions within rooms, while equal box IDs in sepa
   assert.equal(result.groups.beh.used,2);assert.equal(result.groups.beh.mappedPositions,4);assert.equal(result.groups.beh.unlocatedCages,1);
 });
 
-test('unknown box units and absent room mappings are explicit, never inferred physical capacity',()=>{
+test('default cage-based box counting leaves absent room mappings and physical capacity unknown',()=>{
   const data=fixture();data.tables.locations.push({location_id:'P1',room_id:'BEH'});occupy(data,{cage_sid:'A',location_id:'P1'});
   const result=summarizeCages(data);
-  assert.equal(result.groups.beh.used,0);assert.equal(result.groups.beh.unitUnknown,true);assert.equal(result.groups.beh.capacity,null);assert.equal(result.groups.beh.mappedPositions,1);
+  assert.equal(result.groups.beh.used,1);assert.equal(result.groups.beh.unitUnknown,false);assert.equal(result.groups.beh.capacity,null);assert.equal(result.groups.beh.mappedPositions,1);
   data.tables.rooms.find(room=>room.room_id==='CLEAN').name='Conventional Mouse Room #2';
   const renamed=summarizeCages(data);assert.equal(renamed.groups.clean.configured,false);assert.equal(renamed.groups.clean.roomMappingUnknown,true);
+});
+
+const asOf='2026-10-15';
+const source=(location_id='SRC1',extra={})=>({location_id,room_id:'BEH',label:location_id,source_cell:'A7',source_file_id:'SYNTHETIC_WORKBOOK',record_origin:'current_google_sheet_map',source_current:true,source_snapshot_date:asOf,source_last_seen_at:asOf+'T00:00:00Z',source_block_text:"A7: L1\nA8: PB'-M101",source_observed_tags:["PB'-M101"],evidence_status:'source_position_unlinked',...extra});
+const summarize=data=>summarizeCages(data,{asOf});
+const sourceChange=(location,action,extra={})=>({event_id:'CHANGE-'+action,event_type:'animal_sheet_source_change',event_date:asOf,source_file_id:location.source_file_id,source_capture_at:asOf+'T01:00:00Z',animal_sheet_change:{schema_version:1,entity_type:'locations',entity_id:location.location_id,action,observation_date:asOf},...extra});
+
+test('defaults and saved legacy unknown count occupied room cages, except Ani Beh temporary storage',()=>{
+  const data=fixture();data.tables.rooms[0].name='Ani Beh';
+  occupy(data,{cage_sid:'BEH-BOX',room_id:'BEH'});occupy(data,{cage_sid:'BEH-TEMP',room_id:'BEH',cage_type:'Temporary storage'});
+  occupy(data,{cage_sid:'RAT-BOX',room_id:'RAT'});occupy(data,{cage_sid:'RAT-TEMP',room_id:'RAT',cage_type:'Temporary storage'});
+  for(const d of [data,configured(data,{beh:{locobox_mode:'unknown'},rat:{locobox_mode:'unknown'}})]){
+    const r=summarize(d);assert.equal(r.groups.beh.used,1);assert.equal(r.groups.rat.used,2);assert.equal(r.groups.beh.temporaryStorageExcluded,1);assert.equal(r.groups.rat.temporaryStorageExcluded,0);
+    assert.equal(r.groups.beh.unlocatedCages,0);assert.equal(r.groups.rat.unitUnknown,false);assert.equal(r.cages.used,4);
+  }
+  assert.equal(summarize(data).groups.beh.capacity,null);
+  data.tables.cages.find(c=>c.cage_sid==='BEH-TEMP').room_id='RAT';
+  assert.equal(summarize(data).groups.rat.used,3);
+});
+
+test('conflicting duplicate temporary types or source eligibility cannot select an arbitrary row',()=>{
+  const data=fixture();occupy(data,{cage_sid:'BOX',room_id:'BEH'});data.tables.cages.push({...data.tables.cages[0],cage_type:'Temporary storage'});
+  const r=summarize(data);assert.equal(r.groups.beh.used,0);assert.equal(r.unassignedCages,1);
+  for(const conflict of [{source_current:false},{source_snapshot_date:'2026-10-14'},{source_observed_tags:['WT-F55']},{source_label_conflict:true}]){
+    const d=fixture();d.tables.locations=[source(),source('SRC1',conflict)];const s=summarize(d);assert.equal(s.groups.beh.estimatedUsed,0);assert(s.issues.some(x=>/conflicting records/.test(x)));
+  }
+});
+
+test('current source-only animal columns estimate box use without creating registered cages or animals',()=>{
+  const data=fixture();data.tables.locations=[source(),source('SRC2',{room_id:'RAT',source_block_text:'A7: B1\nA8: WT-F102'})];const before=structuredClone(data),r=summarize(data);
+  assert.equal(r.groups.beh.used,1);assert.equal(r.groups.beh.estimatedUsed,1);assert.equal(r.groups.rat.estimatedUsed,1);assert.deepEqual(r.groups.beh.sourceDates,[asOf]);assert.deepEqual(r.cages,{used:0,total:0});assert.deepEqual(data,before);
+});
+
+test('source estimates require current dated evidence and never infer occupancy from history, genotypes or side notes',()=>{
+  const invalid=[{source_current:false},{source_current:undefined},{record_origin:'historical_snapshot_projection'},{source_historical:true},{history_read_only:true},{source_label_conflict:true},{source_import_conflict:'review'},{source_snapshot_date:'2026-02-30'},{source_snapshot_date:'2026-10-16'},{app_archived_at:asOf},
+    {source_block_text:'A7: L1\nA8: P\nA9: F\nA10: LP1\nB8: PB\'-M101'},{source_block_text:"A7: L1\nA8: PB'-M101\nA8 comment: died"}];
+  for(const extra of invalid){const data=fixture();data.tables.locations=[source('SRC1',extra)];assert.equal(summarize(data).groups.beh.estimatedUsed,0,JSON.stringify(extra));}
+  const data=fixture();data.tables.locations=[source('SRC1',{source_snapshot_date:'2026-09-01'})];assert.equal(summarize(data).groups.beh.estimatedUsed,1,'an unchanged current source retains its original capture date');
+  data.tables.locations=[];data.tables.husbandry_events=[{event_type:'animal_sheet_cage_snapshot',source_cage_snapshot:{snapshot_date:asOf,block_text:"A8: PB'-M101"}}];assert.equal(summarize(data).groups.beh.used,0);
+  for(const value of ['2026-02-30',null,1])assert.throws(()=>summarizeCages(data,{asOf:value}),/valid YYYY-MM-DD/);
+});
+
+test('sanitized source-tag fallback accepts numbered animal tags but not genotype-only labels or injected notes',()=>{
+  const data=fixture();data.tables.locations=[source('SRC1',{source_cell:undefined,source_block_text:undefined,source_observed_tags:["PB'-M101","PB'-M101"]})];assert.equal(summarize(data).groups.beh.estimatedUsed,1);
+  for(const tags of [['P',"B'",'LD','L0R1','Sample from M5'],['P-M101\nA3: sample'],['P-M101 died']]){
+    data.tables.locations[0].source_observed_tags=tags;assert.equal(summarize(data).groups.beh.estimatedUsed,0);
+  }
+});
+
+test('source tags repeated within one explicit box count once, but repeated across physical boxes remain unresolved',()=>{
+  const data=fixture();data.tables.locations=[source('SRC1',{locobox_id:'BOX-A'}),source('SRC2',{locobox_id:'BOX-A'})];
+  let configuredData=configured(data,{beh:{locobox_mode:'box_id'}}),r=summarize(configuredData);assert.equal(r.groups.beh.used,1);assert.equal(r.groups.beh.estimatedUsed,1);assert.equal(r.groups.beh.unlinkedPositions,0);assert.equal(r.issues.length,0);
+  configuredData.tables.locations[1].locobox_id='BOX-B';r=summarize(configuredData);assert.equal(r.groups.beh.used,0);assert.equal(r.groups.beh.unlinkedPositions,2);assert(r.issues.some(x=>/multiple current Animal Sheet/.test(x)));
+  configuredData.tables.locations[1].room_id='RAT';configuredData.tables.locations[1].locobox_id='BOX-A';r=summarize(configuredData);assert.equal(r.groups.beh.used,0);assert.equal(r.groups.rat.used,0,'box IDs do not merge rooms');
+});
+
+test('a registered occupied cage prevents duplicate source use by physical position, box and animal tag',()=>{
+  const data=fixture();data.tables.locations=[source('SRC1',{locobox_id:'BOX-A'}),source('SRC2',{locobox_id:'BOX-A'})];occupy(data,{cage_sid:'LIVE',location_id:'SRC1'},{physical_tag:"PB′-M101"});
+  const d=configured(data,{beh:{locobox_mode:'box_id'}}),r=summarize(d);assert.equal(r.groups.beh.used,1);assert.equal(r.groups.beh.estimatedUsed,0);assert.equal(r.groups.beh.unlinkedPositions,0);
+  const elsewhere=fixture();elsewhere.tables.locations=[source()];occupy(elsewhere,{cage_sid:'LIVE',room_id:'CLEAN'},{physical_tag:"PB′-M101"});
+  const e=summarize(elsewhere);assert.equal(e.groups.clean.used,1);assert.equal(e.groups.beh.estimatedUsed,0);assert.equal(e.groups.beh.unlinkedPositions,1);assert(e.issues.some(x=>/overlaps a registered/.test(x)));
+  elsewhere.tables.mice[0].state='Ended';assert.equal(summarize(elsewhere).groups.beh.estimatedUsed,1,'an ended mouse does not establish current registered occupancy');
+});
+
+test('linked empty cages and temporary storage cannot be revived by source-only tags',()=>{
+  for(const cage of [{cage_sid:'EMPTY',state:'Active'},{cage_sid:'TEMP',state:'Active',cage_type:'Temporary storage'}]){
+    const data=fixture();data.tables.locations=[source('SRC1',{locobox_id:'BOX-A'}),source('SRC2',{locobox_id:'BOX-A'})];data.tables.cages=[{...cage,location_id:'SRC1'}];
+    const r=summarize(configured(data,{beh:{locobox_mode:'box_id'}}));assert.equal(r.groups.beh.used,0);assert.equal(r.groups.beh.estimatedUsed,0);
+  }
+  const data=fixture();data.tables.locations=[source()];const d=configured(data,{beh:{locobox_mode:'cage',temporary_storage_location_ids:['SRC1']}});const r=summarize(d);assert.equal(r.groups.beh.used,0);assert.equal(r.groups.beh.temporaryStorageExcluded,1);assert.equal(r.groups.beh.unlinkedPositions,0);
+});
+
+test('newer unresolved source changes block stale estimates while older, future and other-workbook changes do not',()=>{
+  for(const action of ['conflict','withdrawn']){
+    const data=fixture();const pos=source();data.tables.locations=[pos];data.tables.husbandry_events=[sourceChange(pos,action)];let r=summarize(data);assert.equal(r.groups.beh.estimatedUsed,0);assert(r.issues.some(x=>/conflict or withdrawal/.test(x)));
+    data.tables.husbandry_events.push(sourceChange(pos,'updated',{source_capture_at:asOf+'T02:00:00Z'}));assert.equal(summarize(data).groups.beh.estimatedUsed,1);
+  }
+  for(const extra of [{source_capture_at:'2026-10-14T01:00:00Z'},{source_file_id:'OTHER_WORKBOOK'},{app_archived_at:asOf},{animal_sheet_change:{schema_version:1,entity_type:'locations',entity_id:'SRC1',action:'conflict',observation_date:'2026-10-16'}}]){
+    const data=fixture();const pos=source();data.tables.locations=[pos];data.tables.husbandry_events=[sourceChange(pos,'conflict',extra)];assert.equal(summarize(data).groups.beh.estimatedUsed,1,JSON.stringify(extra));
+  }
 });
 
 test('configured zero and over-capacity usage are retained without truncation',()=>{

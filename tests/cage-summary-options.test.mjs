@@ -17,9 +17,9 @@ const make=(extra={},dataset=empty())=>{
   return buildCageSummaryOptions(dataset,input,clock);
 };
 
-test('defaults infer explicit room names only, and keep capacities and box counting unknown',()=>{
+test('defaults infer explicit room names, keep capacities unknown, and count one LocoBox per occupied cage',()=>{
   const dataset=empty(),before=structuredClone(dataset),value=getCageSummaryOptions(dataset);
-  assert.deepEqual(value,{schema_version:1,groups:{beh:{room_ids:['BEH'],capacity:null,locobox_mode:'unknown'},rat:{room_ids:['RAT-1','RAT-2'],capacity:null,locobox_mode:'unknown'},clean:{room_ids:['CLEAN'],capacity:null},spf:{room_ids:['SPF'],capacity:null}}});
+  assert.deepEqual(value,{schema_version:1,groups:{beh:{room_ids:['BEH'],capacity:null,locobox_mode:'cage',temporary_storage_location_ids:[]},rat:{room_ids:['RAT-1','RAT-2'],capacity:null,locobox_mode:'cage'},clean:{room_ids:['CLEAN'],capacity:null},spf:{room_ids:['SPF'],capacity:null}}});
   assert.deepEqual(dataset,before);assert.equal(getCageSummaryOptionsStatus(dataset),'default');assert.equal(getCageSummaryOptionsStatus(null),'default');
   assert.deepEqual(CAGE_SUMMARY_GROUPS.map(group=>group.unit),['locoboxes','locoboxes','cages','cages']);
   value.groups.beh.room_ids.push('OTHER');value.groups.spf.capacity=100;
@@ -55,7 +55,7 @@ test('current source aliases match punctuation explicitly without widening name 
   assert.deepEqual(options.groups.spf.room_ids,['SPF-SOURCE']);
   assert.deepEqual(options.groups.clean.room_ids,[]);
   assert.equal(options.groups.rat.capacity,null);
-  assert.equal(options.groups.rat.locobox_mode,'unknown');
+  assert.equal(options.groups.rat.locobox_mode,'cage');
 });
 
 test('immutable shared upsert retains provenance, nested metadata, unrelated rows and creation time',()=>{
@@ -76,7 +76,7 @@ test('capacity validation distinguishes unknown, zero and whole finite nonnegati
     for(const capacity of [null,0,100000])assert.equal(make({[key]:{capacity}}).record.cage_summary_options.groups[key].capacity,capacity);
   }
   for(const locobox_mode of [null,undefined,'rack','',1])assert.throws(()=>make({beh:{locobox_mode}}),/supported locobox/);
-  for(const locobox_mode of ['unknown','position','box_id'])assert.equal(make({rat:{locobox_mode}}).record.cage_summary_options.groups.rat.locobox_mode,locobox_mode);
+  for(const locobox_mode of ['unknown','cage','position','box_id'])assert.equal(make({rat:{locobox_mode}}).record.cage_summary_options.groups.rat.locobox_mode,locobox_mode);
 });
 
 test('room assignments reject missing, archived, duplicate and invalid references',()=>{
@@ -139,6 +139,7 @@ function harness(overrides={},initial=empty()) {
   return {container,hooks,saves,messages,get dataset(){return dataset},
     field(group,field,value){container.oninput({target:{value,dataset:{cageSummaryGroup:group,cageSummaryField:field}}})},
     room(group,id,checked){container.onchange({target:{checked,dataset:{cageSummaryGroup:group,cageSummaryField:'room_ids',roomId:id}}})},
+    storage(id,checked,group='beh'){container.onchange({target:{checked,dataset:{cageSummaryGroup:group,cageSummaryField:'temporary_storage_location_ids',locationId:id}}})},
     async save(){let prevented=false;await container.onsubmit({target:{matches:selector=>selector==='[data-cage-summary-options-form]'},preventDefault(){prevented=true}});assert.ok(prevented)},
     render(next=dataset){dataset=next;renderCageSummaryOptions(container,dataset,hooks)}
   };
@@ -201,4 +202,104 @@ test('pending saves disable controls and ignore duplicate submits and edits',asy
   const h=harness({saveDataset:async()=>{saves++;await pending}});h.field('spf','capacity','120');const saving=h.save();
   await new Promise(resolve=>setImmediate(resolve));assert.match(h.container.innerHTML,/aria-busy="true"/);await h.save();h.field('spf','capacity','150');h.room('clean','OTHER',true);
   finish();await saving;assert.equal(saves,1);assert.match(h.container.innerHTML,/name="spf_capacity"[^>]*value="120"/);assert.doesNotMatch(h.container.innerHTML,/aria-busy="true"/);
+});
+
+
+const positioned=()=>{
+  const dataset=empty();
+  dataset.tables.racks=[{rack_id:'K1',room_id:'BEH',name:'Rack A'},{rack_id:'K2',room_id:'RAT-1',name:'Rat rack'}];
+  dataset.tables.locations=[{location_id:'P1',room_id:'BEH',rack_id:'K1',label:'A1'},{location_id:'P2',rack_id:'K1',label:'A2'},{location_id:'R1',room_id:'RAT-1',rack_id:'K2',label:'R1'}];
+  return dataset;
+};
+
+test('exact Ani Beh aliases are recognized without treating old or temporary room names as defaults',()=>{
+  const dataset=empty();dataset.tables.rooms=[
+    {room_id:'A',name:'Ani Beh'},{room_id:'B',name:'SH Ani Beh'},{room_id:'C',name:' SH  Ani   Beh '},
+    {room_id:'D',name:'Ani Beh storage'},{room_id:'E',name:'Old Ani Beh'},{room_id:'F',name:'SH Ani Behavior'}
+  ];
+  assert.deepEqual(getCageSummaryOptions(dataset).groups.beh.room_ids,['A','B','C']);
+});
+
+test('legacy unknown counting mode and missing exclusions load as cage mode with an empty exclusion list',()=>{
+  const built=make({beh:{locobox_mode:'unknown'},rat:{locobox_mode:'unknown'}}),record=built.record;
+  delete record.cage_summary_options.groups.beh.temporary_storage_location_ids;
+  const before=structuredClone(built.dataset),value=getCageSummaryOptions(built.dataset);
+  assert.deepEqual(validateCageSummaryOptions(record),[]);assert.equal(getCageSummaryOptionsStatus(built.dataset),'saved');
+  assert.equal(value.groups.beh.locobox_mode,'cage');assert.equal(value.groups.rat.locobox_mode,'cage');assert.deepEqual(value.groups.beh.temporary_storage_location_ids,[]);
+  assert.deepEqual(built.dataset,before);
+  assert.match(harness({},built.dataset).container.innerHTML,/<option value="cage" selected>One LocoBox per occupied cage/);
+});
+
+test('temporary storage saves direct and rack-inherited Ani Beh positions and preserves custom metadata',()=>{
+  const built=make({beh:{temporary_storage_location_ids:['P1','P2']}},positioned());
+  built.record.cage_summary_options.groups.beh.custom_metadata={note:'keep',revision:3};
+  const value=getCageSummaryOptions(built.dataset);assert.deepEqual(value.groups.beh.temporary_storage_location_ids,['P1','P2']);
+  value.groups.beh.temporary_storage_location_ids.pop();
+  assert.deepEqual(getCageSummaryOptions(built.dataset).groups.beh.temporary_storage_location_ids,['P1','P2']);
+  const next=buildCageSummaryOptions(built.dataset,value,clock);
+  assert.deepEqual(next.record.cage_summary_options.groups.beh.temporary_storage_location_ids,['P1']);
+  assert.deepEqual(next.record.cage_summary_options.groups.beh.custom_metadata,{note:'keep',revision:3});
+  const olderClient=getCageSummaryOptions(next.dataset);delete olderClient.groups.beh.temporary_storage_location_ids;
+  assert.deepEqual(buildCageSummaryOptions(next.dataset,olderClient,clock).record.cage_summary_options.groups.beh.temporary_storage_location_ids,['P1']);
+});
+
+test('temporary storage rejects malformed arrays and missing, conflicting, archived, or out-of-room positions',()=>{
+  for(const ids of [null,'P1',[null],[1],[''],['  '],['P1','P1']])assert.throws(()=>make({beh:{temporary_storage_location_ids:ids}},positioned()),/unique nonempty strings/);
+  for(const id of ['MISSING','R1'])assert.throws(()=>make({beh:{temporary_storage_location_ids:[id]}},positioned()),/selected Ani Beh rooms/);
+  for(const mutate of [
+    data=>{data.tables.locations[0].archived=true},
+    data=>{data.tables.locations[0].app_archived_at='2026-10-15'},
+    data=>{data.tables.locations.push({...data.tables.locations[0]})},
+    data=>{data.tables.locations[0].rack_id='MISSING'},
+    data=>{data.tables.locations[0].rack_id='K2'},
+    data=>{data.tables.racks[0].archived=true},
+    data=>{data.tables.racks.push({...data.tables.racks[0]})},
+    data=>{data.tables.racks[0].room_id='RAT-1'},
+    data=>{delete data.tables.locations[0].room_id;delete data.tables.racks[0].room_id}
+  ]){
+    const data=positioned();mutate(data);
+    assert.throws(()=>make({beh:{temporary_storage_location_ids:['P1']}},data),/unique ID and consistent room\/rack references/);
+  }
+});
+
+test('saved exclusions become invalid when their position is removed, archived, or moved to another room',()=>{
+  const built=make({beh:{temporary_storage_location_ids:['P1']}},positioned());
+  for(const mutate of [
+    data=>{data.tables.locations.shift()},
+    data=>{data.tables.locations[0].archived=true},
+    data=>{Object.assign(data.tables.locations[0],{room_id:'RAT-1',rack_id:'K2'})}
+  ]){
+    const data=structuredClone(built.dataset);mutate(data);
+    assert.equal(getCageSummaryOptionsStatus(data),'invalid');
+  }
+});
+
+test('temporary storage checkboxes show room, rack and position, save uniquely, and escape labels',async()=>{
+  const data=positioned();data.tables.locations[1].label='<script>A2</script>';
+  const h=harness({},data);
+  assert.match(h.container.innerHTML,/aria-label="Ani Beh temporary storage positions"/);
+  assert.match(h.container.innerHTML,/SH Animal Beh \/ Rack A \/ A1/);
+  assert.match(h.container.innerHTML,/&lt;script&gt;A2&lt;\/script&gt;/);assert.doesNotMatch(h.container.innerHTML,/<script>|data-location-id="R1"/);
+  h.storage('P1',true);h.storage('P1',true);h.storage('P2',true);h.storage('R1',true);h.storage('P1',true,'rat');
+  await h.save();assert.equal(h.saves.length,1);
+  assert.deepEqual(getCageSummaryOptions(h.dataset).groups.beh.temporary_storage_location_ids,['P1','P2']);
+  assert.match(h.container.innerHTML,/data-location-id="P1"[^>]* checked/);
+  const viewer=harness({canEdit:()=>false},h.dataset);
+  assert.match(viewer.container.innerHTML,/SH Animal Beh \/ Rack A \/ A1/);assert.doesNotMatch(viewer.container.innerHTML,/<input|<form|<select/);
+  viewer.storage('P1',false);await viewer.save();assert.equal(viewer.saves.length,0);
+});
+
+test('room changes keep selected exclusions visible for review and require explicit removal',async()=>{
+  const h=harness({},positioned());h.storage('P1',true);h.room('beh','BEH',false);
+  assert.match(h.container.innerHTML,/data-location-id="P1"[^>]* checked/);assert.match(h.container.innerHTML,/Review position or room/);
+  await h.save();assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/selected Ani Beh rooms/);
+  h.storage('P1',false);await h.save();assert.equal(h.saves.length,1);
+  assert.deepEqual(getCageSummaryOptions(h.dataset).groups.beh.temporary_storage_location_ids,[]);
+});
+
+test('temporary storage positions are revalidated after refresh and retain the draft on failure',async()=>{
+  const h=harness({},positioned());h.storage('P2',true);
+  h.hooks.reloadDataset=async()=>{const data=positioned();data.tables.racks[0].archived=true;return data};
+  await h.save();assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/selected Ani Beh rooms/);
+  assert.match(h.container.innerHTML,/data-location-id="P2"[^>]* checked/);assert.match(h.container.innerHTML,/Review position or room/);
 });
