@@ -2,7 +2,7 @@
 const mounts=new WeakMap();
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const apps={mouse:'Mouse Data',reagents:'Reagents'},events={session_start:'Session opened',page_view:'Section opened',sign_out:'Sign-out requested'};
-const sections={overview:'Overview',mice:'Mice',matings:'Breeding',litters:'Litters',cages:'Cages',family:'Family tree',planner:'Breeding planner',experiments:'Experiments',iacuc:'IACUC',housing:'Housing & light',locobox:'Locobox',cryo:'Cryopreservation',fees:'LAC fees',archive:'Source archive',brainbot:'Brainbot (BB)',settings:'Settings',inventory:'Inventory',safety:'Chemical safety',usage:'Usage',orders:'Orders',vendors:'Vendors',equipment:'Equipment',history:'History',review:'Review'};
+const sections={overview:'Overview',mice:'Mice',matings:'Breeding',litters:'Litters',cages:'Cages',family:'Family tree',planner:'Planning',experiments:'Experiments',iacuc:'IACUC',housing:'Housing & light',locobox:'Locobox',cryo:'Cryopreservation',fees:'LAC fees',archive:'Source archive',brainbot:'Brainbot (BB)',settings:'Settings',inventory:'Inventory',safety:'Chemical safety',usage:'Usage',orders:'Orders',vendors:'Vendors',equipment:'Equipment',history:'History',review:'Review'};
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const decimal=v=>typeof v==='string'&&/^[1-9]\d*$/.test(v);
 const stamp=value=>{const date=new Date(value);return Number.isFinite(date.getTime())?new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Taipei',year:'numeric',month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(date):'Not recorded';};
