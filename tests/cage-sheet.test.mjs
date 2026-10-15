@@ -124,3 +124,73 @@ test('historical light applicability uses noon in Taipei, preserving event time-
  // Taipei noon is 04:00 UTC, still the preceding day in New York in January.
  assert.doesNotMatch(ui.host.innerHTML,/UNIQUE-HISTORICAL-SCHEDULE/);
 });
+
+// Resolve a rendered button, then simulate a click on its nested icon. The parent
+// card remains reachable to catch accidental cage selection or movement.
+function renderedButtonTarget(host,attribute,value){
+ const article=[...host.innerHTML.matchAll(/<article\b([^>]*)>([\s\S]*?)<\/article>/g)].find(([,attrs,content])=>content.includes(`${attribute}="${value}"`));
+ assert.ok(article,`Rendered cage card containing ${attribute}=${value}`);
+ const match=[...article[2].matchAll(/<button\b([^>]*)>/g)].find(([,attrs])=>attrs.includes(`${attribute}="${value}"`));
+ assert.ok(match,'Rendered button exists');
+ const attributes=Object.fromEntries([...match[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(([,key,val])=>[key,val]));
+ const dataset=Object.fromEntries(Object.entries(attributes).filter(([key])=>key.startsWith('data-')).map(([key,val])=>[key.slice(5).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase()),val]));
+ const cardAttributes=Object.fromEntries([...article[1].matchAll(/([\w-]+)="([^"]*)"/g)].map(([,key,val])=>[key,val]));
+ const card={dataset:{cage:cardAttributes['data-cage'],sheetSlot:cardAttributes['data-sheet-slot']}};
+ const button={dataset,hasAttribute:key=>Object.hasOwn(attributes,key),matches:selector=>selector==='button'};
+ return {button,closest(selector){
+   if(selector==='.sheet-cage')return card;
+   return selector.split(',').some(part=>part==='button'||(part.startsWith('[')&&button.hasAttribute(part.slice(1,-1))))?button:null;
+ }};
+}
+
+test('current read-only viewers can open header print actions for cages and source positions in either layout',()=>{
+ const data=movementSample();data.tables.cages[0].location_id='P1';
+ for(const layout of ['compact','detailed']){
+  const calls=[],ui=renderHarness(data,{layout,canEdit:()=>false,printLabel:id=>calls.push(['cage',id]),printPositionLabel:id=>calls.push(['position',id])});
+  assert.match(ui.host.innerHTML,/<header>[\s\S]*?data-sheet-label="C1"[^>]*aria-label="Print label for cage A1"[^>]*><svg/);
+  assert.match(ui.host.innerHTML,/<header>[\s\S]*?data-sheet-position-label="P2"[^>]*aria-label="Print label for position B2"[^>]*><svg/);
+  assert.doesNotMatch(ui.host.innerHTML,/<footer>[^<]*(?:<button[^>]*>[^<]*<\/button>)*<button[^>]*data-sheet-(?:position-)?label=/);
+  ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-label','C1')});
+  ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-position-label','P2')});
+  assert.deepEqual(calls,[['cage','C1'],['position','P2']]);assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),false);
+ }
+});
+
+test('nested print icons do not select cages or complete a pending move',()=>{
+ const data=movementSample();data.tables.cages[0].location_id='P1';
+ const calls=[],ui=renderHarness(data,{printLabel:id=>calls.push(id),printPositionLabel:id=>calls.push(id)});
+ ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move','C1')});
+ assert.match(ui.host.innerHTML,/Moving cage C1/);
+ const target=renderedButtonTarget(ui.host,'data-sheet-position-label','P2');
+ ui.host.onclick({target});
+ ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-label','C1')});
+ assert.deepEqual(calls,['P2','C1']);assert.match(ui.host.innerHTML,/Moving cage C1/);assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);
+ let prevented=false;ui.host.onkeydown({key:'Enter',target:target.button,preventDefault(){prevented=true;}});assert.equal(prevented,false);
+});
+
+test('printing waits for pending sheet edits to be synced or discarded on both print routes',()=>{
+ const data=movementSample();data.tables.cages[0].location_id='P1';
+ let calls=0;const ui=renderHarness(data,{printLabel:()=>calls++,printPositionLabel:()=>calls++});
+ ui.input({sheetType:'mice',sheetId:'M1',sheetField:'genotype'},'P');
+ ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-label','C1')});
+ ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-position-label','P2')});
+ assert.equal(calls,0);assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);
+ assert.match(ui.host.innerHTML,/Sync or discard pending edits before printing/);assert.equal(data.tables.mice[0].genotype,undefined);clearCageSheetDrafts();
+});
+
+test('mouse-reference-derived cages never masquerade as a registered print target',()=>{
+ const data=movementSample();data.tables.cages=[];
+ const ui=renderHarness(data);
+ assert.doesNotMatch(ui.host.innerHTML,/data-sheet-label="C1"/);
+ assert.match(ui.host.innerHTML,/data-sheet-position-label="P1"/);assert.match(ui.host.innerHTML,/data-sheet-position-label="P2"/);
+});
+
+test('historical views block cage and source-position print dispatch even for stale targets',()=>{
+ const data=movementSample();data.tables.cages[0].location_id='P1';
+ let calls=0;const current=renderHarness(data),cageTarget=renderedButtonTarget(current.host,'data-sheet-label','C1'),positionTarget=renderedButtonTarget(current.host,'data-sheet-position-label','P2');
+ for(const layout of ['compact','detailed']){
+  const ui=renderHarness(data,{layout,readOnly:true,selectedDate:'2026-01-02',printLabel:()=>calls++,printPositionLabel:()=>calls++});
+  assert.doesNotMatch(ui.host.innerHTML,/data-sheet-label=|data-sheet-position-label=/);
+  ui.host.onclick({target:cageTarget});ui.host.onclick({target:positionTarget});assert.equal(calls,0);assert.equal(hasCageSheetDrafts(),false);
+ }
+});

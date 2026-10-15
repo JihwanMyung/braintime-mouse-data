@@ -205,6 +205,24 @@ assert(!$('print-preview').open,'choosing Design 2 closes the compact preview');
 assert($('cage-label-dialog').open);assert(labelRenders.at(-1).hooks.initialCage===dataset.tables.cages[0].cage_sid);
 assert(labelRenders.at(-1).hooks.allowFullLocoboxHistory===true,'local full history requires the explicit full export gate');
 assert(rosterCalls===0,'local labels do not fetch private contacts');labelRenders.at(-1).hooks.onClose();
+// Every current Cages view reaches the same format picker without creating data.
+const oldCageUI={route,detail,cageView,cageDate,query,filters};route='cages';detail=null;cageDate='';query='';filters={};cageView='table';
+renderCages();assert($('main').innerHTML.includes('<th>Label</th>'));assert($('main').innerHTML.includes('aria-label="Print label for cage'));
+await action('lac-cage-label',{dataset:{id:'SYN-C1'}});assert(labelRenders.at(-1).hooks.initialCage==='SYN-C1');labelRenders.at(-1).hooks.onClose();
+cageView='rack';renderCages();const printHooks=cageSheetRenders.at(-1).hooks;
+assert(typeof printHooks.printPositionLabel==='function');
+const tablesBefore=JSON.stringify(dataset.tables);await printHooks.printPositionLabel('SOURCE-POS');
+let positionLabel=labelRenders.at(-1);assert(positionLabel.hooks.initialPosition==='SOURCE-POS');assert(positionLabel.hooks.initialCage==='');assert(JSON.stringify(dataset.tables)===tablesBefore,'source printing never creates cage/animal records');positionLabel.hooks.onClose();
+const originalDraftCheck=hasCageSheetDrafts,beforePending=labelRenders.length;hasCageSheetDrafts=()=>true;
+await openCageLabel('SYN-C1');await openCageLabel(null,'front','SOURCE-POS');assert(labelRenders.length===beforePending);assert($('toast').textContent.includes('Sync or discard'));
+hasCageSheetDrafts=originalDraftCheck;
+const sourcePosition={location_id:'SOURCE-POS',label:'L7',source_current:true,source_snapshot_date:'2026-10-16'};dataset.tables.locations.push(sourcePosition);
+await printHooks.printPositionLabel('SOURCE-POS');positionLabel=labelRenders.at(-1);
+positionLabel.hooks.onOriginalPreview('',{positionId:'SOURCE-POS',draft:{cage_label:'L7',animal_ids:'PB-M123\\nPB-M456',contact_name:'Test manager',room_code:'Test room'}});
+assert($('print-preview').innerHTML.includes('Source labels'));assert($('print-preview').innerHTML.includes('PB-M123'));assert($('print-preview').innerHTML.includes('data-position-id="SOURCE-POS"'));assert(!$('print-preview').innerHTML.includes('0 Stock mice'));
+await action('lac-cage-label',{dataset:{positionId:'SOURCE-POS'}});assert(labelRenders.at(-1).hooks.initialPosition==='SOURCE-POS');labelRenders.at(-1).hooks.onClose();
+dataset.tables.locations.pop();({route,detail,cageView,cageDate,query,filters}=oldCageUI);
+
 for(const state of [{...owner,role:'editor'},{...owner,role:'manager'},{...owner,role:'viewer'},{...owner,signedIn:false}]){cloud=state;await openCageLabel('SYN-C1');assert(labelRenders.at(-1).hooks.members.length===0);labelRenders.at(-1).hooks.onClose();}
 assert(rosterCalls===0,'only a signed-in owner may fetch the private roster');
 const privateRows=[{name:'Current User',acronym:'CU',phone:'000-0000',email:'current@example.test',status:'current',archived:false,notes:'private note',provenance:{source:'private'}},{name:'Former User',phone:'999-9999',status:'historical'},{name:'Review User',phone:'888-8888',status:'review'},{name:'Archived User',phone:'777-7777',status:'current',archived:true}];
@@ -253,7 +271,7 @@ vm.runInContext(`
  render();assert($('main').innerHTML.includes('id="cage-date"'));assert($('main').innerHTML.includes('2020-01-02'));
  const currentHook=cageSheetRenders.at(-1).hooks;assert(!currentHook.readOnly);assert(currentHook.canEdit('cages'));
  setCageDate('2020-01-02');const historic=cageSheetRenders.at(-1);
- assert(historic.hooks.readOnly&&historic.hooks.selectedDate==='2020-01-02');assert(!historic.hooks.canEdit('cages'));assert(!historic.hooks.openCage&&!historic.hooks.openMouse&&!historic.hooks.printLabel&&!historic.hooks.openLocobox);
+ assert(historic.hooks.readOnly&&historic.hooks.selectedDate==='2020-01-02');assert(!historic.hooks.canEdit('cages'));assert(!historic.hooks.openCage&&!historic.hooks.openMouse&&!historic.hooks.printLabel&&!historic.hooks.printPositionLabel&&!historic.hooks.openLocobox);
  assert(historic.sheetDataset.history_projection.read_only);assert(historic.sheetDataset.tables.mice.length===0,'present-day mice are never projected backward');assert($('main').innerHTML.includes('Historical view · Read only'));assert($('add-button').hidden);assert(currentHook.context!==historic.hooks.context);
  const pending=hasCageSheetDrafts;hasCageSheetDrafts=()=>true;setCageDate('');assert(cageDate==='2020-01-02');assert($('toast').textContent.includes('Sync or discard'));hasCageSheetDrafts=pending;
  cageView='table';render();assert($('main').innerHTML.includes('SYN-OLD'));assert(!$('main').innerHTML.includes('data-action="edit"'));
