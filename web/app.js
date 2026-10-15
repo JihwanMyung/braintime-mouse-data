@@ -32,7 +32,7 @@ import { buildFamilyGenotypes } from './family-genotypes.js?v=39';
 import { renderCryopreservation } from './cryopreservation.js?v=24';
 import { renderExperiments, experimentHelpHTML } from './experiments.js?v=49';
 import { experimentsForMouse, samplesForMouse } from './experiment-model.js?v=43';
-import { renderLacFees, lacFeeHelpHTML } from './lac-fees.js?v=33';
+import { renderLacFees, lacFeeHelpHTML } from './lac-fees.js?v=50';
 import { renderAnimalSheetImport, animalSheetImportHelpHTML } from './animal-sheet-import.js?v=42';
 import { renderLocobox, locoboxHelpHTML } from './locobox.js?v=24';
 import { renderIacuc, iacucHelpHTML } from './iacuc.js?v=48';
@@ -64,6 +64,7 @@ let plannerMouseId = null, plannerTargetDraft = null;
 let experimentMouseId=null, experimentRecordId=null, iacucEntity=null,locoboxCage=null,locoboxPosition=null,locoboxContextKey=0;
 let familyClassifications = new Map();
 let plannerRenderToken = 0;
+let pageRenderGeneration = 0;
 let cryoRenderToken = 0, cryoHistoryPending = null;
 let strainIndexDataset=null, strainAssignments=new Map();
 let breedingScope='living', cageView='rack', cageDate='';
@@ -142,6 +143,7 @@ function renderConnection() {
 function navigation() { $('navigation').innerHTML=Object.entries(titles).filter(([key])=>!cloud.passwordRecovery&&(key!=='brainbot'||(cloud.mode==='cloud'&&cloud.signedIn&&cloud.role==='owner'))).map(([key,label])=>`<button class="nav-item${['cryo','locobox'].includes(key)?' nav-subitem':''}${route===key?' active':''}" data-route="${key}" aria-current="${route===key?'page':'false'}" title="${esc(label)}"><span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true">${icons[key]}</svg></span><span class="nav-label">${key==='overview'?`<span class="nav-label-full">${esc(label)}</span><span class="nav-label-compact">Overview</span>`:esc(label)}</span>${entity[key]&&dataset?`<span class="nav-count">${count((key==='cages'?cageRecords():records(key,false)).length)}</span>`:''}</button>`).join(''); }
 function navigate(view,id=null) { route=titles[view]?view:'overview';detail=id&&entity[route]?{type:route,id:String(id)}:null;query='';filters={};page=0;sortKey='';sortDesc=false;selectedMice.clear();location.hash=detail?`${route}/${encodeURIComponent(detail.id)}`:route;render(); }
 function render() {
+ const generation=++pageRenderGeneration;
  if(cageImportSession&&!cageImportSession.valid())cageImportSession.close();
  if(startupLoading){renderStartupLoading();return;}
  clearAccessLogView();accessActivity.observe(route);
@@ -162,7 +164,7 @@ function render() {
  if(route==='experiments'){renderExperimentSection();return}
  if(route==='locobox'){renderLocobox($('main'),dataset,{printLabel:id=>openCageLabel(id,'locobox'),initialCage:locoboxCage,initialLocationId:locoboxPosition,initialContextKey:locoboxContextKey,canEdit:()=>canEditRecords('housing'),openCage:id=>navigate('cages',id),openMouse:id=>navigate('mice',id),toast:showToast,save:async next=>{await store.saveDataset(next);dataset=await store.loadDataset();await refreshCloud();render();}});return;}
  if(route==='iacuc'){renderIacuc($('main'),dataset,{initialEntity:iacucEntity,canEdit:()=>canEditRecords('iacuc'),openMouse:id=>navigate('mice',id),openCage:id=>navigate('cages',id),toast:showToast,save:async next=>{await store.saveDataset(next);dataset=await store.loadDataset();await refreshCloud();render();}});return;}
- if(route==='fees'){renderLacFees($('main'),dataset,{getVisibility:()=>store.getLacFeeVisibility(),saveVisibility:input=>store.saveLacFeeVisibility(input),canEdit:()=>canEditRecords('fees'),toast:showToast,help:()=>showHelp(false,false,false,false,false,false,false,true),save:async next=>{await store.saveDataset(next);dataset=await store.loadDataset();await refreshCloud();render();}});return;}
+ if(route==='fees'){renderLacFees($('main'),dataset,{isCurrent:()=>generation===pageRenderGeneration&&route==='fees'&&!detail,getVisibility:()=>store.getLacFeeVisibility(),saveVisibility:input=>store.saveLacFeeVisibility(input),canEdit:()=>canEditRecords('fees'),toast:showToast,help:()=>showHelp(false,false,false,false,false,false,false,true),save:async next=>{await store.saveDataset(next);dataset=await store.loadDataset();await refreshCloud();render();}});return;}
  if(route==='archive'){renderArchive();return}
  renderTable();
 }

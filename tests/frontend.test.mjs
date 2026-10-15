@@ -418,4 +418,19 @@ startupStatus.email='owner@example.test';startupVerified=true;const pullsBeforeV
 
 const deniedBoot=bootContext();deniedBoot.store={...startupStore,getLacFeeVisibility:async()=>{throw Error('Permission could not be verified')}};vm.createContext(deniedBoot);vm.runInContext(source,deniedBoot);await new Promise(resolve=>setTimeout(resolve,10));assert(element('main').innerHTML.includes('Connection settings'));assert.equal(vm.runInContext('dataset',deniedBoot),null);assert.equal(vm.runInContext('startupLoading',deniedBoot),false);
 
+// A slow fee access lookup must never replace the page selected afterward.
+for(const fail of [false,true]){
+ let finishFee,failFee;
+ const routeStore={loadDataset:async()=>model.createSyntheticDataset(),getCloudStatus:()=>({mode:'local',configured:true,signedIn:false}),getLacFeeVisibility:()=>new Promise((resolve,reject)=>{finishFee=resolve;failFee=reject;})};
+ const routeContext={...context,store:routeStore,PUBLIC_CONFIG:{},location:new URL('https://braintimelab.github.io/mouse-data/#overview')};
+ vm.createContext(routeContext);vm.runInContext(source,routeContext);await new Promise(resolve=>setTimeout(resolve,10));
+ vm.runInContext("navigate('fees');",routeContext);assert.match(element('main').innerHTML,/Loading fee access/);
+ vm.runInContext("navigate('settings');",routeContext);const settingsHTML=element('main').innerHTML;
+ assert.equal(element('page-title').textContent,'Settings');assert.equal(routeContext.location.hash,'#settings');assert.match(settingsHTML,/settings-grid/);
+ if(fail)failFee(new Error('Late permission failure'));else finishFee({version:1,owner:false,estimate:true,actual:true,source_archive_allowed:true});
+ await new Promise(resolve=>setTimeout(resolve,0));
+ assert.equal(element('main').innerHTML,settingsHTML,'late fee result preserves the selected Settings body');
+ assert.equal(element('main').onclick,null,'navigation keeps obsolete fee handlers cleared');
+}
+
 console.log('PASS: frontend synthetic rendering, current candidate pedigree, editor, table filters, print card, housing, manifest assets and shell-only cache checks. Browser inspection remains separate.');

@@ -113,3 +113,33 @@ test('current fee presentation uses SHLAC room labels while preserving recorded 
  assert.deepEqual(data,before);assert.equal(h.saves.length,0);
  assert.match(lacFeeHelpHTML(),/SHLAC Conventional and SHLAC Rat room charges count cages\. SHLAC SPF charges count mice/);
 });
+
+
+test('late fee visibility success or failure cannot repaint a page after navigation',async()=>{
+ for(const fail of [false,true]){
+  let current=true,resolve,reject;
+  const h=harness(withInvoice(),{isCurrent:()=>current,getVisibility:()=>new Promise((yes,no)=>{resolve=yes;reject=no})});
+  assert.match(h.container.innerHTML,/Loading fee access/);
+  current=false;h.container.innerHTML='<section>Settings stays visible</section>';
+  if(fail)reject(new Error('Late permission failure'));else resolve(visibility());
+  await settle();assert.equal(h.container.innerHTML,'<section>Settings stays visible</section>');
+ }
+});
+
+test('returning to fees keeps the new page when an older visibility response completes',async()=>{
+ let finishOld;
+ const h=harness(withInvoice(),{getVisibility:()=>new Promise(resolve=>{finishOld=resolve}),isCurrent:()=>false});
+ renderLacFees(h.container,h.dataset,{getVisibility:async()=>visibility({estimate:false,actual:false}),isCurrent:()=>true});
+ await settle();const current=h.container.innerHTML;assert.match(current,/not available at your access level/);
+ finishOld(visibility({owner:true,levels:levels()}));await settle();assert.equal(h.container.innerHTML,current);
+});
+
+test('a completed fee save can update the current remounted fee view without leaving it busy',async()=>{
+ let h;
+ h=harness(configured(),{isCurrent:()=>true,save:async next=>{
+  renderLacFees(h.container,next,{canEdit:()=>true,isCurrent:()=>true,nowDate:()=> '2026-10-14'});
+ }});
+ h.click('edit-month');h.field('notes','Verified remount');await h.save();
+ assert.match(h.container.innerHTML,/Saved as a new fee revision/);
+ assert.doesNotMatch(h.container.innerHTML,/data-lac-fee-form| disabled/);
+});
