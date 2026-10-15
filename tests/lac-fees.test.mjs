@@ -22,7 +22,7 @@ test('new fee setup leaves rates and mappings unknown until the user enters them
 
 test('source provenance and notes are shown as escaped text in immutable history',()=>{const p=blankLacFeeMonth('2026-09');p.notes='<script>note</script>';const d=buildLacFeeMonth(p,configured(),null,{sourceRecord:{source_note:'<script>source</script>'}}).dataset,h=harness(d);h.click('tab','history');assert.match(h.container.innerHTML,/&lt;script&gt;note/);assert.match(h.container.innerHTML,/&lt;script&gt;source/);assert.doesNotMatch(h.container.innerHTML,/<script>/)});
 
-test('dated snapshot editor requires an observed date and explicitly projects count using calendar month days',async()=>{const h=harness();h.field('selected_month','2026-09');h.click('edit-month');for(let i=0;i<3;i++){h.field('l'+i+'_evidence_kind','snapshot_projection');assert.match(h.container.innerHTML,new RegExp('name="l'+i+'_evidence_start"[^>]*value=""'));h.field('l'+i+'_evidence_start','2026-09-20');h.field('l'+i+'_snapshot_count',i===0?'2':'0');h.field('l'+i+'_evidence_reference','Animal Sheet snapshot');h.click('project-snapshot',String(i))}h.field('actual_total','700');h.field('actual_date','2026-10-04');h.field('invoice_reference','September invoice');await h.save();assert.equal(h.saves.length,1);const p=h.dataset.tables.husbandry_events.find(r=>r.lac_fee_month).lac_fee_month;assert.equal(p.lines[0].quantity,60);assert.equal(p.lines[0].evidence_end,'2026-09-20');assert.equal(p.lines[0].snapshot_count,2);assert.match(h.container.innerHTML,/Dated snapshot estimate · occupancy changes not known/);assert.match(h.container.innerHTML,/Snapshot projection from 2026-09-20/);assert.match(h.container.innerHTML,/<strong>720<\/strong>/);assert.match(h.container.innerHTML,/Within target/)});
+test('past snapshots retain observed counts and actual fees while estimates stay unavailable',async()=>{const h=harness();h.field('selected_month','2026-09');h.click('edit-month');for(let i=0;i<3;i++){h.field('l'+i+'_evidence_kind','snapshot_projection');assert.match(h.container.innerHTML,new RegExp('name="l'+i+'_evidence_start"[^>]*value=""'));h.field('l'+i+'_evidence_start','2026-09-20');h.field('l'+i+'_snapshot_count',i===0?'2':'0');h.field('l'+i+'_evidence_reference','Animal Sheet snapshot');h.click('project-snapshot',String(i))}h.field('actual_total','700');h.field('actual_date','2026-10-04');h.field('invoice_reference','September invoice');await h.save();assert.equal(h.saves.length,1);const p=h.dataset.tables.husbandry_events.find(r=>r.lac_fee_month).lac_fee_month;assert.equal(p.lines[0].quantity,60);assert.equal(p.lines[0].evidence_end,'2026-09-20');assert.equal(p.lines[0].snapshot_count,2);assert.match(h.container.innerHTML,/Snapshot evidence · monthly usage unavailable/);assert.match(h.container.innerHTML,/snapshot does not establish usage for the full billing month/);assert.match(h.container.innerHTML,/<strong>Unavailable<\/strong>/);assert.match(h.container.innerHTML,/<strong>700<\/strong>/);assert.equal((h.container.innerHTML.match(/<td>Unavailable<\/td>/g)||[]).length,3);assert.doesNotMatch(h.container.innerHTML,/<strong>720<\/strong>|Within target/);h.click('tab','history');assert.match(h.container.innerHTML,/Latest estimated fee · NT\$: <strong>Unavailable<\/strong>/);assert.match(h.container.innerHTML,/actual_total&quot;: 700/)});
 test('snapshot projections are never silently regenerated when the entered count changes',async()=>{const h=harness();h.field('selected_month','2026-09');h.click('edit-month');h.field('l0_evidence_kind','snapshot_projection');h.field('l0_evidence_start','2026-09-20');h.field('l0_snapshot_count','2');h.field('l0_evidence_reference','Snapshot');h.click('project-snapshot','0');h.field('l0_snapshot_count','3');await h.save();assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/times calendar month days/);h.click('project-snapshot','0');await h.save();assert.equal(h.saves.length,1);assert.equal(h.dataset.tables.husbandry_events.find(r=>r.lac_fee_month).lac_fee_month.lines[0].quantity,90)});
 
 test('malformed shared option scalars are escaped even when validation withholds the estimate',()=>{const d=configured();d.tables.husbandry_events[0].lac_fee_options.target_percent='<img src=x onerror=alert(1)>';const h=harness(d);assert.doesNotMatch(h.container.innerHTML,/<img/);assert.match(h.container.innerHTML,/&lt;img/);h.click('tab','options');assert.doesNotMatch(h.container.innerHTML,/<img/);assert.match(h.container.innerHTML,/&lt;img/)});
@@ -58,4 +58,43 @@ test('actual recorded charges are not relabeled as paid until an explicit paymen
 
 test('a delayed owner policy save cannot restore owner-only controls after a new permission context',async()=>{
  let finish;const h=harness(withInvoice(),{getVisibility:async()=>visibility({owner:true,levels:levels()}),saveVisibility:()=>new Promise(resolve=>{finish=resolve})});await settle();h.click('tab','visibility');const pending=h.container.onsubmit({target:{hasAttribute:k=>k==='data-lac-fee-visibility-form'},preventDefault(){}});await settle();h.hooks.getVisibility=async()=>visibility({estimate:false,actual:false,source_archive_allowed:false});h.render();await settle();finish(visibility({version:5,owner:true,levels:levels()}));await pending;assert.match(h.container.innerHTML,/Fee access changed/);assert.doesNotMatch(h.container.innerHTML,/data-lac-fee-visibility-form|9,473|PRIVATE/);
+});
+
+
+test('month dropdown includes current and past months, gaps, and older recorded months in reverse order',()=>{
+ const old=blankLacFeeMonth('2018-12'),d=buildLacFeeMonth(old,configured()).dataset,h=harness(d);
+ assert.match(h.container.innerHTML,/<label for="fee-selected_month">Month<\/label><select id="fee-selected_month"[^>]*data-fee-field="selected_month"/);
+ const options=[...h.container.innerHTML.matchAll(/<option value="(\d{4}-\d{2})"/g)].map(match=>match[1]);
+ assert.equal(options[0],'2026-10');assert.equal(options.at(-1),'2018-12');assert.equal(options.length,95);
+ assert.ok(options.includes('2026-09'));assert.ok(options.includes('2020-02'));
+ assert.match(h.container.innerHTML,/<option value="2026-10" selected>2026-10 · Current<\/option>/);
+ h.container.onchange({target:{dataset:{feeField:'selected_month'},value:'2026-09'}});
+ assert.match(h.container.innerHTML,/<option value="2026-09" selected>/);assert.match(h.container.innerHTML,/<strong>Unavailable<\/strong>/);
+ assert.match(h.container.innerHTML,/No dated quantity evidence/);assert.equal(h.saves.length,0);
+ h.click('tab','history');h.container.onchange({target:{dataset:{feeField:'selected_month'},value:'2018-12'}});
+ assert.match(h.container.innerHTML,/<option value="2018-12" selected>/);assert.match(h.container.innerHTML,/Estimated fee · NT\$/);
+ assert.doesNotMatch(h.container.innerHTML,/Latest estimated fee/);
+});
+
+test('month dropdown offers recent months even before historical invoices are recorded',()=>{
+ const h=harness();const options=[...h.container.innerHTML.matchAll(/<option value="(\d{4}-\d{2})"/g)].map(match=>match[1]);
+ assert.equal(options.length,36);assert.equal(options[0],'2026-10');assert.equal(options.at(-1),'2023-11');
+});
+
+test('current dated snapshot projections remain clearly labeled and usable',()=>{
+ const p=blankLacFeeMonth('2026-10');for(const [i,line] of p.lines.entries())Object.assign(line,{evidence_kind:'snapshot_projection',snapshot_count:i===0?2:0,quantity:i===0?62:0,evidence_start:'2026-10-10',evidence_end:'2026-10-10',evidence_reference:'Synthetic current snapshot'});
+ const h=harness(buildLacFeeMonth(p,configured()).dataset);
+ assert.match(h.container.innerHTML,/Dated snapshot projection · occupancy changes not known/);assert.match(h.container.innerHTML,/<strong>744<\/strong>/);
+ assert.doesNotMatch(h.container.innerHTML,/monthly usage unavailable/);
+});
+
+test('unavailable estimates do not hide recorded zero or invent zero for missing groups',()=>{
+ const p=blankLacFeeMonth('2026-09');Object.assign(p,{actual_total:0,actual_date:'2026-10-05',invoice_reference:'Synthetic zero invoice'});p.lines[0].actual_amount=0;
+ const h=harness(buildLacFeeMonth(p,configured()).dataset);h.field('selected_month','2026-09');
+ assert.match(h.container.innerHTML,/Estimated fee · NT\$<\/span><strong>Unavailable<\/strong>/);
+ assert.match(h.container.innerHTML,/Actual recorded · NT\$<\/span><strong>0<\/strong>/);
+ assert.equal((h.container.innerHTML.match(/<td>Unavailable<\/td>/g)||[]).length,3);
+ assert.match(h.container.innerHTML,/<td>Unavailable<\/td><td>0<\/td>/);
+ h.click('tab','history');assert.match(h.container.innerHTML,/Latest estimated fee · NT\$: <strong>Unavailable<\/strong>/);
+ assert.match(lacFeeHelpHTML(),/Past estimates stay Unavailable until quantities are reviewed as Recorded/);
 });

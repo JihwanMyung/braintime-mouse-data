@@ -30,16 +30,59 @@ test('fee revisions append and preserve source provenance; stale and in-place ed
 test('invalid unit assignments, exclusions, unsupported historical claims and tolerances fail validation',()=>{let p=options();p.groups[2].unit='cage';assert.throws(()=>buildLacFeeOptions(p,base()),/SPF fees use mice/);p=options();p.excluded_room_ids.push('C');assert.throws(()=>buildLacFeeOptions(p,base()),/exclusions/);p=options();p.maximum_percent=11;assert.throws(()=>buildLacFeeOptions(p,base()),/at most 10/);p=options();p.target_percent=9;p.maximum_percent=5;assert.throws(()=>buildLacFeeOptions(p,base()),/target/);const m=monthly('2024-02');m.lines[0].evidence_reference=null;assert.throws(()=>buildLacFeeMonth(m,configured()),/source reference/);m.lines[0].quantity_unit='mouse_day';assert.throws(()=>buildLacFeeMonth(m,configured()),/units/);assert.throws(()=>buildLacFeeMonth({month:null,actual_total:10},configured()),/billing month/)});
 
 function snapshotMonth(month,date){const p=monthly(month);p.lines.forEach((l,i)=>Object.assign(l,{evidence_kind:'snapshot_projection',snapshot_count:[1,1,3][i],evidence_start:date,evidence_end:date,evidence_reference:'Dated Animal Sheet snapshot'}));return p}
-test('same-month historical snapshots produce explicit approximations without assuming daily occupancy',()=>{const d=buildLacFeeMonth(snapshotMonth('2024-02','2024-02-20'),configured()).dataset,r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2026-10-14'});assert.equal(r.basis,'snapshot_projection');assert.equal(r.estimate,232);assert.equal(r.comparison.status,'within_target');assert(r.groups.every(g=>g.reason==='Snapshot projection from 2024-02-20; occupancy changes not known'));assert(r.groups.every(g=>g.snapshot_date==='2024-02-20'))});
-test('snapshot estimates may use a rate documented on their snapshot date without backdating the rate',()=>{const d=buildLacFeeMonth(snapshotMonth('2024-02','2024-02-20'),configured('2024-02-20')).dataset,r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2026-10-14'});assert.equal(r.estimate,232);assert(r.groups.every(g=>g.rate_effective_from==='2024-02-20'));assert.equal(getLacFeeOptions(d,'2024-02-01'),null);const old=snapshotMonth('2024-02','2024-02-19'),missing=calculateLacFeeMonth(buildLacFeeMonth(old,configured('2024-02-20')).dataset,'2024-02',{nowDate:'2026-10-14'});assert.equal(missing.estimate,null)});
+test('historical snapshots retain their evidence and actual charges without estimating full-month usage',()=>{
+ const d=buildLacFeeMonth(snapshotMonth('2024-02','2024-02-20'),configured()).dataset,before=clone(d),r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2026-10-14'});
+ assert.equal(r.basis,'snapshot_projection');assert.equal(r.estimate,null);assert.equal(r.partial_estimate,0);assert.equal(r.actual,232);assert.equal(r.comparison.status,'unknown');assert.equal(r.comparison.absolute_percent,null);
+ assert(r.groups.every(g=>g.charge===null&&g.quantity===null&&/full billing month/.test(g.reason)));assert(r.groups.every(g=>g.snapshot_date==='2024-02-20'));assert.deepEqual(d,before);
+ const current=calculateLacFeeMonth(d,'2024-02',{nowDate:'2024-02-20'});assert.equal(current.estimate,232);
+ assert.equal(calculateLacFeeMonth(d,'2024-02',{nowDate:'2024-03-01'}).estimate,null,'the same snapshot expires as a monthly forecast when the month ends');
+});
+test('current snapshot forecasts may use a rate documented on their snapshot date without backdating the rate',()=>{const d=buildLacFeeMonth(snapshotMonth('2024-02','2024-02-20'),configured('2024-02-20')).dataset,r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2024-02-20'});assert.equal(r.estimate,232);assert(r.groups.every(g=>g.rate_effective_from==='2024-02-20'));assert.equal(getLacFeeOptions(d,'2024-02-01'),null);const old=snapshotMonth('2024-02','2024-02-19'),missing=calculateLacFeeMonth(buildLacFeeMonth(old,configured('2024-02-20')).dataset,'2024-02',{nowDate:'2024-02-20'});assert.equal(missing.estimate,null)});
 test('snapshot dates and count-to-unit arithmetic are checked; a different month never supplies a snapshot',()=>{let p=snapshotMonth('2024-02','2024-02-20');p.lines[0].quantity=28;assert.throws(()=>buildLacFeeMonth(p,configured()),/times calendar month days/);p=snapshotMonth('2024-02','2024-02-20');p.lines[0].evidence_end='2024-02-21';assert.throws(()=>buildLacFeeMonth(p,configured()),/one exact observation date/);p=snapshotMonth('2024-02','2024-01-20');assert.throws(()=>buildLacFeeMonth(p,configured()),/within their billing month/);p=snapshotMonth('2024-02','2024-02-20');p.lines[0].snapshot_count=1.5;assert.throws(()=>buildLacFeeMonth(p,configured()),/whole cages or mice/)});
 test('multiple snapshots and mixed snapshots/intervals remain ambiguous instead of being summed',()=>{for(const kind of ['snapshot_projection','dated_occupancy']){const p=snapshotMonth('2024-02','2024-02-20');p.lines.push({...p.lines[0],evidence_kind:kind});const r=calculateLacFeeMonth(buildLacFeeMonth(p,configured()).dataset,'2024-02',{nowDate:'2026-10-14'});assert.equal(r.estimate,null);assert.match(r.groups[0].reason,/mixing snapshots and occupancy intervals is ambiguous/)}});
 
-test('source formula placeholders remain provisional and explicitly ambiguous quantities never become estimated usage',()=>{const p=snapshotMonth('2024-02','2024-02-20');p.lines[2].quantity_basis='source_formula';p.lines[2].quantity_note='SPF range includes placeholder labels';let d=buildLacFeeMonth(p,configured()).dataset,r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2026-10-14'});assert.equal(r.estimate,232);assert.match(r.groups[2].reason,/not independently confirmed/);assert.equal(r.groups[2].quantity_note,p.lines[2].quantity_note);p.lines[2].quantity_basis='ambiguous';d=buildLacFeeMonth(p,configured()).dataset;r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2026-10-14'});assert.equal(r.estimate,null);assert.equal(r.groups[2].quantity,null);assert.equal(r.comparison.status,'unknown');assert.equal(d.tables.husbandry_events.at(-1).lac_fee_month.lines[2].quantity,87)});
+test('source formula placeholders remain provisional and explicitly ambiguous quantities never become estimated usage',()=>{const p=snapshotMonth('2024-02','2024-02-20');p.lines[2].quantity_basis='source_formula';p.lines[2].quantity_note='SPF range includes placeholder labels';let d=buildLacFeeMonth(p,configured()).dataset,r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2024-02-20'});assert.equal(r.estimate,232);assert.match(r.groups[2].reason,/not independently confirmed/);assert.equal(r.groups[2].quantity_note,p.lines[2].quantity_note);p.lines[2].quantity_basis='ambiguous';d=buildLacFeeMonth(p,configured()).dataset;r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2024-02-20'});assert.equal(r.estimate,null);assert.equal(r.groups[2].quantity,null);assert.equal(r.comparison.status,'unknown');assert.equal(d.tables.husbandry_events.at(-1).lac_fee_month.lines[2].quantity,87)});
 test('an unknown current-month source snapshot never falls back to projecting current inventory',()=>{const p=blankLacFeeMonth('2024-02');p.lines.forEach(l=>Object.assign(l,{evidence_kind:'snapshot_projection',quantity_basis:'ambiguous',quantity_note:'Source row count needs review'}));const r=calculateLacFeeMonth(buildLacFeeMonth(p,configured()).dataset,'2024-02',{nowDate:'2024-02-20'});assert.notEqual(r.basis,'current_snapshot_projection');assert.equal(r.estimate,null);assert(r.groups.every(g=>g.quantity===null))});
 
-test('snapshot-only observed rates never carry forward into later snapshots or calendar months',()=>{const p=options('2024-02-20');p.rate_scope='snapshot_only';const d=buildLacFeeOptions(p,base()).dataset;assert(getLacFeeOptions(d,'2024-02-20'));assert.equal(getLacFeeOptions(d,'2024-02-21'),null);assert.equal(getLacFeeOptions(d,'2024-03-01'),null);const good=buildLacFeeMonth(snapshotMonth('2024-02','2024-02-20'),d).dataset;assert.equal(calculateLacFeeMonth(good,'2024-02',{nowDate:'2026-10-14'}).estimate,232);const later=buildLacFeeMonth(snapshotMonth('2024-02','2024-02-21'),d).dataset;assert.equal(calculateLacFeeMonth(later,'2024-02',{nowDate:'2026-10-14'}).estimate,null)});
+test('snapshot-only observed rates never carry forward into later snapshots or calendar months',()=>{const p=options('2024-02-20');p.rate_scope='snapshot_only';const d=buildLacFeeOptions(p,base()).dataset;assert(getLacFeeOptions(d,'2024-02-20'));assert.equal(getLacFeeOptions(d,'2024-02-21'),null);assert.equal(getLacFeeOptions(d,'2024-03-01'),null);const good=buildLacFeeMonth(snapshotMonth('2024-02','2024-02-20'),d).dataset;assert.equal(calculateLacFeeMonth(good,'2024-02',{nowDate:'2024-02-21'}).estimate,232);const later=buildLacFeeMonth(snapshotMonth('2024-02','2024-02-21'),d).dataset;assert.equal(calculateLacFeeMonth(later,'2024-02',{nowDate:'2024-02-21'}).estimate,null)});
 
 test('confirmed payments require an explicit paid date while legacy actuals remain recorded charges',()=>{
  const p=blankLacFeeMonth('2026-10');p.actual_total=100;p.actual_date='2026-10-15';p.invoice_reference='Synthetic invoice';delete p.actual_basis;let d=buildLacFeeMonth(p,base()).dataset;assert.equal(calculateLacFeeMonth(d,'2026-10',{nowDate:'2026-10-15'}).actual_basis,'recorded_charge');p.actual_basis='confirmed_paid';assert.throws(()=>buildLacFeeMonth(p,base()),/payment date/);p.paid_date='2026-02-30';assert.throws(()=>buildLacFeeMonth(p,base()),/payment date/);p.paid_date='2026-10-15';d=buildLacFeeMonth(p,base()).dataset;assert.equal(calculateLacFeeMonth(d,'2026-10',{nowDate:'2026-10-15'}).actual_basis,'confirmed_paid');p.actual_basis='recorded_charge';assert.throws(()=>buildLacFeeMonth(p,base()),/requires confirmed paid/);
+});
+
+
+test('historical formula-only quantities and snapshot-only rates cannot establish monthly charges',()=>{
+ const p=monthly('2024-02');p.lines[0].quantity_basis='source_formula';
+ const r=calculateLacFeeMonth(buildLacFeeMonth(p,configured()).dataset,'2024-02',{nowDate:'2026-10-15'});
+ assert.equal(r.estimate,null);assert.equal(r.groups[0].charge,null);assert.match(r.groups[0].reason,/Source-formula quantities need review/);assert.equal(r.actual,232);assert.equal(r.comparison.absolute_percent,null);
+ const rate=options('2024-02-01');rate.rate_scope='snapshot_only';
+ const d=buildLacFeeMonth(monthly('2024-02'),buildLacFeeOptions(rate,base()).dataset).dataset;
+ const snapshotRate=calculateLacFeeMonth(d,'2024-02',{nowDate:'2026-10-15'});
+ assert.equal(snapshotRate.estimate,null);assert(snapshotRate.groups.every(g=>g.charge===null&&/snapshot-only rate/.test(g.reason)));
+});
+
+test('future observations and missing evidence types cannot authorize a fee estimate',()=>{
+ const future=buildLacFeeMonth(snapshotMonth('2024-02','2024-02-20'),configured()).dataset;
+ assert.equal(calculateLacFeeMonth(future,'2024-02',{nowDate:'2024-02-19'}).estimate,null);
+ const d=buildLacFeeMonth(monthly('2024-02'),configured()).dataset;
+ delete d.tables.husbandry_events.at(-1).lac_fee_month.lines[0].evidence_kind;
+ const r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2026-10-15'});
+ assert.equal(r.estimate,null);assert.match(r.groups[0].reason,/evidence type/);
+});
+
+
+test('conflicting applicable rates and unsupported quantity certainty leave historical fees unavailable',()=>{
+ let d=configured();const duplicate=clone(d.tables.husbandry_events[0]);duplicate.event_id+='-duplicate';duplicate.lac_fee_options.groups[0].rate=99;d.tables.husbandry_events.push(duplicate);
+ d=buildLacFeeMonth(monthly('2024-02'),d).dataset;
+ let r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2026-10-15'});
+ assert.equal(r.estimate,null);assert(r.groups.every(g=>g.charge===null));assert(r.warnings.some(w=>/Conflicting billing rates/.test(w)));assert.equal(r.actual,232);
+ const d2=buildLacFeeMonth(monthly('2024-02'),configured()).dataset;d2.tables.husbandry_events.at(-1).lac_fee_month.lines[0].quantity_basis='unreviewed';
+ r=calculateLacFeeMonth(d2,'2024-02',{nowDate:'2026-10-15'});assert.equal(r.estimate,null);assert.equal(r.groups[0].charge,null);assert.match(r.groups[0].reason,/certainty is unsupported/);
+});
+
+
+test('conflicting monthly records never contribute arbitrary group charges or partial totals',()=>{
+ const d=buildLacFeeMonth(monthly('2024-02'),configured()).dataset,duplicate=clone(d.tables.husbandry_events.at(-1));duplicate.event_id+='-duplicate';duplicate.lac_fee_month.lines[0].quantity=999;d.tables.husbandry_events.push(duplicate);
+ const r=calculateLacFeeMonth(d,'2024-02',{nowDate:'2026-10-15'});
+ assert.equal(r.estimate,null);assert.equal(r.partial_estimate,0);assert(r.groups.every(g=>g.charge===null));assert.equal(r.comparison.status,'unknown');
 });
