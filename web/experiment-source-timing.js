@@ -1,5 +1,5 @@
 // Source labels are evidence, not normalized events. In particular, preparation,
-// removal from culture, maternal decapitation and donor decapitation are distinct.
+// in-dish explant, removal from culture, maternal and donor decapitation are distinct.
 const text=value=>typeof value==='string'?value:JSON.stringify(value);
 const labelText=value=>String(value).replace(/^[A-Z]{1,3}\s*·\s*/,'').replace(/\s+/g,' ').trim();
 const scheme=/\b(?:LP[12]?|SP[12]?|DD|LL|LD\s*\d*\s*:\s*\d+|long photoperiod|short photoperiod|entrain(?:ed|ment)?)\b/i;
@@ -23,6 +23,7 @@ export function sourceTimingEvidence(source) {
     if(/co[ -]?culture/i.test(label)&&/decap/i.test(label))kind='Co-culture donor timing';
     else if(/decap/i.test(label))kind=/\bdate\b/i.test(label)?'Date field mentioning decapitation':'Decapitation label';
     else if(phase)kind='Circadian timing label';
+    else if(/\bin[- ]dish\s+explant\s+(?:time|hour|date)\b/i.test(label))kind='In-dish explant timing';
     else if(/sampl(?:ing|e).*\b(?:time|hour|date|duration)\b|RNA sampling time/i.test(label))kind='Sampling timing';
     else if(/post[ -]?hoc sampling/i.test(label))kind='Post-hoc sampling';
     else if(/\b(?:time|date)\b.*prep|\b(?:prep\.?|prepare)\s*(?:time|at)\b/i.test(label))kind='Preparation timing';
@@ -39,6 +40,6 @@ export function sourceTimingEvidence(source) {
     if(/hour\s*-\s*7|converted|mod\s*24/i.test(label+' '+value))warnings.add('Derived or historical phase labels require context. Do not infer ZT/CT basis, apply modulo 24, or convert clock time automatically.');
     if(/entrainment/i.test(kind)&&/\(\s*\d+(?:\.\d+)?\s*\)/.test(value))warnings.add('Parenthesized numbers are preserved as written; the source may use them for groups, counts or duration.');
   }
-  if(rows.length)warnings.add('These are source labels and values. Preparation, decapitation, sampling and circadian phase remain separate until reviewed.');
+  if(rows.length)warnings.add('These are source labels and values. Preparation, decapitation, in-dish explant, sampling and circadian phase remain separate until reviewed.');
   return {rows,warnings:[...warnings]};
 }

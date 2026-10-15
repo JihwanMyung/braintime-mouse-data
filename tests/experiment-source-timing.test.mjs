@@ -28,3 +28,12 @@ test('ranges, schedules and HTML are returned as inert unmodified text',()=>{
   const result=sourceTimingEvidence({raw_values:{'H · Sampling hour':'24h sampling (08:00, 11:00)','RNA sampling time 1':'<b>14:30-16:30</b>'}});
   assert.equal(result.rows[1].value,'<b>14:30-16:30</b>');assert.equal(result.rows[0].value,'24h sampling (08:00, 11:00)');
 });
+
+
+test('in-dish explant time is a separate literal source event, not sampling or inferred phase',()=>{
+  const source={date:'2026-10-02',raw_values:{sample:{'Decapitation time':'11:25','In-dish explant time':'11:34','Sampling time':'11:30'},preparation:{'H · In dish explant hour':'11:34 (operator note)'}}},before=structuredClone(source),result=sourceTimingEvidence(source);
+  assert.deepEqual(result.rows.map(row=>row.value),['11:25','11:34','11:30','11:34 (operator note)']);
+  assert.match(result.rows[0].label,/^Decapitation label/);assert.match(result.rows[1].label,/^In-dish explant timing · sample \/ In-dish explant time$/);assert.match(result.rows[2].label,/^Sampling timing/);assert.match(result.rows[3].label,/^In-dish explant timing/);
+  assert.equal(result.rows.some(row=>/Circadian timing/.test(row.label)),false);assert.deepEqual(Object.keys(result),['rows','warnings']);assert.deepEqual(source,before);
+  const phase=sourceTimingEvidence({raw_values:{'In-dish explant time (ZT)':'4.5'}});assert.match(phase.rows[0].label,/^Circadian timing label/);assert.equal(phase.rows[0].value,'4.5');
+});

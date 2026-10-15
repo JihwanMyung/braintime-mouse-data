@@ -322,7 +322,7 @@ function compactSourceDraft(dataset=base()){
 }
 
 test('generated drafts remain in Needs source review and open their existing record instead of duplicating it',async t=>{
- const built=compactSourceDraft(),h=await harness(t,built.dataset);assert.match(h.container.innerHTML,/Source draft/);assert.match(h.container.innerHTML,/<span>Needs source review<\/span><strong>1<\/strong>/);
+ const built=compactSourceDraft(),h=await harness(t,built.dataset);assert.match(h.container.innerHTML,/data-id="sources" aria-pressed="true"/);await h.click('tab','experiments');assert.match(h.container.innerHTML,/Source draft/);assert.match(h.container.innerHTML,/<span>Needs source review<\/span><strong>1<\/strong>/);
  await h.click('tab','sources');h.filter('filter-status','reviewed');assert.match(h.container.innerHTML,/No matching source observations/);h.filter('filter-status','unreviewed');assert.match(h.container.innerHTML,/data-id="SOURCE-1"/);assert.match(h.container.innerHTML,/Needs review/);
  await h.click('source','SOURCE-1');assert.match(h.container.innerHTML,/Open experiment draft/);assert.match(h.container.innerHTML,/Review draft/);assert.doesNotMatch(h.container.innerHTML,/Open reviewed experiment|Review as experiment/);
  await h.click('review','SOURCE-1');assert.match(h.container.innerHTML,/already has an experiment record/);assert.equal(h.saves.length,0);
@@ -351,7 +351,7 @@ test('coverage displays the latest appended report while retaining older coverag
 });
 
 test('repeated managed searches preserve results and restriction changes invalidate raw-source search',async t=>{
- const built=compactSourceDraft(),d=built.dataset;d.tables.husbandry_events[0].source_raw_values={private_test:'hidden-evidence-phrase'};const h=await harness(t,d);
+ const built=compactSourceDraft(),d=built.dataset;d.tables.husbandry_events[0].source_raw_values={private_test:'hidden-evidence-phrase'};const h=await harness(t,d);await h.click('tab','experiments');
  const search=value=>{const input=h.container.querySelector('[name="search"]');input.value=value;h.container.oninput({target:input})};
  search('hidden-evidence-phrase');assert.match(h.container.innerHTML,/Imported channel observation/);search('hidden-evidence');assert.match(h.container.innerHTML,/Imported channel observation/);
  d.source_archive_restricted=true;h.render(d);assert.match(h.container.innerHTML,/No matching records/);search('Imported channel');assert.match(h.container.innerHTML,/Imported channel observation/);
@@ -400,7 +400,7 @@ test('import warnings remain historical after explicit status review and ordinar
 
 test('unreviewed source draft rows show recorded identifiers and unique possible matches instead of zero-use counts',async t=>{
  const built=compactSourceDraft();built.record.source_observation.raw_identifiers=['P1','P1','<animal tag>','Other','Fourth'];built.record.experiment.participants.push({mouse_sid:null,raw_identifier:'Other',link_status:'unresolved',candidate_sids:['M1','M2','M2','MISSING'],role:null,notes:null});
- const before=clone(built.dataset),h=await harness(t,built.dataset),html=h.container.innerHTML;
+ const before=clone(built.dataset),h=await harness(t,built.dataset);await h.click('tab','experiments');const html=h.container.innerHTML;
  assert.match(html,/Recorded animal identifiers/);assert.match(html,/<span title="P1">P1<\/span>/);assert.match(html,/&lt;animal tag&gt;/);assert.match(html,/<summary>1 more<\/summary>/);assert.match(html,/Fourth/);
  assert.match(html,/<span class="badge amber">Unconfirmed<\/span>/);assert.match(html,/2 possible animal matches/);assert.doesNotMatch(html,/0 animals · 0 samples|<animal tag>/);
  assert.match(html,/<span>Confirmed animals<\/span><strong>0<\/strong>/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
@@ -408,19 +408,39 @@ test('unreviewed source draft rows show recorded identifiers and unique possible
 
 test('source draft sample labels remain specimen evidence and never imply candidate animal use',async t=>{
  const built=compactSourceDraft();built.record.source_observation.identifier_kind='sample_label';built.record.source_observation.raw_identifiers=['WB-SCN-01','P1'];
- const before=clone(built.dataset),h=await harness(t,built.dataset);assert.match(h.container.innerHTML,/Recorded sample labels/);assert.match(h.container.innerHTML,/WB-SCN-01/);assert.match(h.container.innerHTML,/<span class="badge amber">Unconfirmed<\/span>/);
+ const before=clone(built.dataset),h=await harness(t,built.dataset);await h.click('tab','experiments');assert.match(h.container.innerHTML,/Recorded sample labels/);assert.match(h.container.innerHTML,/WB-SCN-01/);assert.match(h.container.innerHTML,/<span class="badge amber">Unconfirmed<\/span>/);
  assert.doesNotMatch(h.container.innerHTML,/possible animal match|Recorded animal identifiers|0 animals · 0 samples/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
 });
 
 test('draft rows fall back to participant identifiers and show honest missing identifiers without hydrating source archive',async t=>{
  const built=compactSourceDraft();delete built.record.source_observation.raw_identifiers;built.dataset.tables.experiment_sources=[];
- const h=await harness(t,built.dataset);assert.match(h.container.innerHTML,/<span title="P1">P1<\/span>/);assert.match(h.container.innerHTML,/1 possible animal match/);assert.doesNotMatch(h.container.innerHTML,/0 animals · 0 samples/);
+ const h=await harness(t,built.dataset);await h.click('tab','experiments');assert.match(h.container.innerHTML,/<span title="P1">P1<\/span>/);assert.match(h.container.innerHTML,/1 possible animal match/);assert.doesNotMatch(h.container.innerHTML,/0 animals · 0 samples/);
  const next=clone(h.dataset);next.tables.husbandry_events[0].experiment.participants=[];h.render(next);assert.match(h.container.innerHTML,/Identifiers not recorded/);assert.match(h.container.innerHTML,/<span class="badge amber">Unconfirmed<\/span>/);assert.doesNotMatch(h.container.innerHTML,/possible animal match|0 animals · 0 samples/);
 });
 
 test('reviewed records retain confirmed counts and partially linked drafts show explicit confirmed associations',async t=>{
- const built=compactSourceDraft();built.record.experiment.participants=[confirmed('M1')];const h=await harness(t,built.dataset);
+ const built=compactSourceDraft();built.record.experiment.participants=[confirmed('M1')];const h=await harness(t,built.dataset);await h.click('tab','experiments');
  assert.match(h.container.innerHTML,/Recorded animal identifiers/);assert.match(h.container.innerHTML,/1 confirmed animal/);assert.doesNotMatch(h.container.innerHTML,/possible animal match/);
  const next=clone(h.dataset);next.tables.husbandry_events[0].experiment.status='completed';h.render(next);assert.match(h.container.innerHTML,/1 animals · 0 samples/);assert.doesNotMatch(h.container.innerHTML,/Recorded animal identifiers|<span class="badge amber">Unconfirmed<\/span>/);
  const ordinary=buildExperiment({title:'Manual unreviewed record',status:'unreviewed',assays:['qPCR'],participants:[confirmed('M1')],event_date:'2026-10-14'},base()),other=await harness(t,ordinary.dataset);assert.match(other.container.innerHTML,/1 animals · 0 samples/);assert.doesNotMatch(other.container.innerHTML,/Recorded animal identifiers/);
+});
+
+test('only generated unreviewed drafts default to Source history so newer unsupported source records remain visible',async t=>{
+ const built=compactSourceDraft();built.dataset.tables.experiment_sources.push({...clone(built.dataset.tables.experiment_sources[0]),source_id:'LATEST-SOURCE',kind:'instrument_channel',date:'2026-10-05',sheet_name:'Current imaging'});const before=clone(built.dataset),h=await harness(t,built.dataset);
+ assert.match(h.container.innerHTML,/data-id="sources" aria-pressed="true"/);assert.match(h.container.innerHTML,/2026-10-05/);assert.match(h.container.innerHTML,/data-exp-action="source" data-id="LATEST-SOURCE"/);assert.match(h.container.innerHTML,/<span>Managed experiments<\/span><strong>1<\/strong>/);assert.deepEqual(h.dataset,before);
+ await h.click('tab','experiments');h.render(clone(h.dataset));assert.match(h.container.innerHTML,/data-id="experiments" aria-pressed="true"/);assert.match(h.container.innerHTML,/Imported channel observation/);
+});
+
+test('a manual or reviewed experiment retains the Experiments default even with source drafts',async t=>{
+ for(const reviewStatus of ['planned','in_progress','completed','cancelled']){
+  const built=compactSourceDraft(),reviewed=clone(built.record);reviewed.event_id='REVIEWED';reviewed.source_id='SOURCE-REVIEWED';reviewed.experiment.status=reviewStatus;built.dataset.tables.husbandry_events.push(reviewed);
+  const h=await harness(t,built.dataset);assert.match(h.container.innerHTML,/data-id="experiments" aria-pressed="true"/);
+ }
+ const built=compactSourceDraft(),manual=clone(built.record);manual.event_id='MANUAL';delete manual.record_origin;delete manual.source_id;delete manual.source_draft;built.dataset.tables.husbandry_events.push(manual);
+ const h=await harness(t,built.dataset);assert.match(h.container.innerHTML,/data-id="experiments" aria-pressed="true"/);
+});
+
+test('explicit record and mouse entry take precedence over the source-draft default',async t=>{
+ const built=compactSourceDraft(),h=await harness(t,built.dataset,{initialRecordId:'DRAFT-1'});assert.match(h.container.innerHTML,/<h2>Imported channel observation<\/h2>/);assert.match(h.container.innerHTML,/Preserved source/);await h.click('back');assert.match(h.container.innerHTML,/data-id="experiments" aria-pressed="true"/);
+ const linked=compactSourceDraft();linked.record.experiment.participants=[confirmed('M1')];const byMouse=await harness(t,linked.dataset,{initialMouseId:'M1'});assert.match(byMouse.container.innerHTML,/data-id="experiments" aria-pressed="true"/);assert.match(byMouse.container.innerHTML,/Imported channel observation/);
 });
