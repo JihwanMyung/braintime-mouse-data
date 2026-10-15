@@ -9,6 +9,13 @@ test('only explicit recovered source observations are listed',()=>{
 test('exact candidate matching preserves prime modifiers and multiple matches',()=>{
   const d=fixture();assert.deepEqual(sourceAnimalCandidates(' P′12 ',d).map(m=>m.mouse_sid),['SID-1','SID-2']);assert.deepEqual(sourceAnimalCandidates('P12',d).map(m=>m.mouse_sid),['SID-3']);assert.deepEqual(sourceAnimalCandidates('Old P1',d).map(m=>m.mouse_sid),['SID-1']);assert.deepEqual(sourceAnimalCandidates('P1',d),[]);
 });
+test('bare numeric source labels cannot match internal SIDs but explicit external aliases remain eligible',()=>{
+ const d={tables:{mice:[{mouse_sid:'37',physical_tag:'F-OTHER',sex:'F'},{mouse_sid:'TAG-37',physical_tag:'37',sex:'M'},{mouse_sid:'ALT-37',alternate_id:'３７'},{mouse_sid:'00038',physical_tag:'DIFFERENT'},{mouse_sid:'SID-39',physical_tag:'P39'}]}};
+ const before=structuredClone(d);
+ for(const raw of ['37',' 37 ','３７'])assert.deepEqual(sourceAnimalCandidates(raw,d).map(m=>m.mouse_sid),['TAG-37','ALT-37']);
+ assert.deepEqual(sourceAnimalCandidates('00038',d),[]);assert.deepEqual(sourceAnimalCandidates('SID-39',d).map(m=>m.mouse_sid),['SID-39']);
+ const refs=sourceParticipants({raw_identifiers:['37','00038','SID-39']},d);assert.deepEqual(refs.map(r=>r.candidate_sids),[['TAG-37','ALT-37'],[],['SID-39']]);assert(refs.every(r=>r.link_status==='unresolved'&&r.mouse_sid===null));assert.deepEqual(d,before);
+});
 test('even a single exact candidate remains unresolved until user review',()=>{
   const d=fixture(),refs=sourceParticipants({raw_identifiers:['SID-1','Unknown']},d);assert.equal(refs[0].mouse_sid,null);assert.equal(refs[0].link_status,'unresolved');assert.deepEqual(refs[0].candidate_sids,['SID-1']);assert.deepEqual(refs[1].candidate_sids,[]);
   assert.equal(sourceParticipants(d.tables.experiment_sources[0],d).length,2);

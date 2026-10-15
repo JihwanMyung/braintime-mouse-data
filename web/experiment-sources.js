@@ -57,8 +57,12 @@ export function sourceAnimalCandidates(identifier,dataset) {
   const mice=array(dataset.tables?.mice);let cache=mouseCaches.get(dataset);
   if(!cache||cache.input!==mice||cache.length!==mice.length) {
     const index=new Map();
-    for(const mouse of mice)for(const alias of new Set([mouse?.mouse_sid,mouse?.physical_tag,mouse?.alternate_id].map(normalized).filter(Boolean))) {
-      const matches=index.get(alias)??[];if(!matches.some(existing=>existing.mouse_sid===mouse.mouse_sid))matches.push(mouse);index.set(alias,matches);
+    for(const mouse of mice){
+      // A bare number in a source sheet may be a name tag, not our internal
+      // serial ID. Numeric external tags remain eligible explicit aliases.
+      const sid=normalized(mouse?.mouse_sid),aliases=[mouse?.physical_tag,mouse?.alternate_id].map(normalized);
+      if(sid&&!/^\d+$/.test(sid))aliases.push(sid);
+      for(const alias of new Set(aliases.filter(Boolean))){const matches=index.get(alias)??[];if(!matches.some(existing=>existing.mouse_sid===mouse.mouse_sid))matches.push(mouse);index.set(alias,matches);}
     }
     cache={input:mice,length:mice.length,index};mouseCaches.set(dataset,cache);
   }

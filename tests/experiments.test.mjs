@@ -368,10 +368,11 @@ test('compact draft detail translates review flags without exposing technical me
 
 test('unresolved participant details link saved candidate mice without promoting or inventing identities',async t=>{
  const built=compactSourceDraft();built.record.experiment.participants[0].candidate_sids=['M1','M1','M2','MISSING'];built.record.experiment.participants[0].raw_identifier='<untrusted tag>';
+ for(const mouse of built.dataset.tables.mice)mouse.physical_tag='<untrusted tag>';
  const before=clone(built.dataset),h=await harness(t,built.dataset,{canEdit:()=>false});await h.click('open','DRAFT-1');
  assert.match(h.container.innerHTML,/Unresolved: &lt;untrusted tag&gt;/);assert.match(h.container.innerHTML,/Possible matches, verify before confirming \(ambiguous\) · Unconfirmed/);
  for(const id of ['M1','M2'])assert.equal((h.container.innerHTML.match(new RegExp(`data-exp-action="mouse" data-id="${id}"`,'g'))||[]).length,1);
- assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="MISSING"|Confirm SID/);assert.match(h.container.innerHTML,/Some saved candidates are unavailable/);
+ assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="MISSING"|Confirm SID/);
  await h.click('mouse','M1');assert.deepEqual(h.messages,[{mouse:'M1'}]);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);assert.equal(built.record.experiment.participants[0].mouse_sid,null);
 });
 
@@ -400,6 +401,7 @@ test('import warnings remain historical after explicit status review and ordinar
 
 test('unreviewed source draft rows show recorded identifiers and unique possible matches instead of zero-use counts',async t=>{
  const built=compactSourceDraft();built.record.source_observation.raw_identifiers=['P1','P1','<animal tag>','Other','Fourth'];built.record.experiment.participants.push({mouse_sid:null,raw_identifier:'Other',link_status:'unresolved',candidate_sids:['M1','M2','M2','MISSING'],role:null,notes:null});
+ built.dataset.tables.mice[1].alternate_id='Other';
  const before=clone(built.dataset),h=await harness(t,built.dataset);await h.click('tab','experiments');const html=h.container.innerHTML;
  assert.match(html,/Recorded animal identifiers/);assert.match(html,/<span title="P1">P1<\/span>/);assert.match(html,/&lt;animal tag&gt;/);assert.match(html,/<summary>1 more<\/summary>/);assert.match(html,/Fourth/);
  assert.match(html,/<span class="badge amber">Unconfirmed<\/span>/);assert.match(html,/2 possible animal matches/);assert.doesNotMatch(html,/0 animals · 0 samples|<animal tag>/);
@@ -443,4 +445,34 @@ test('a manual or reviewed experiment retains the Experiments default even with 
 test('explicit record and mouse entry take precedence over the source-draft default',async t=>{
  const built=compactSourceDraft(),h=await harness(t,built.dataset,{initialRecordId:'DRAFT-1'});assert.match(h.container.innerHTML,/<h2>Imported channel observation<\/h2>/);assert.match(h.container.innerHTML,/Preserved source/);await h.click('back');assert.match(h.container.innerHTML,/data-id="experiments" aria-pressed="true"/);
  const linked=compactSourceDraft();linked.record.experiment.participants=[confirmed('M1')];const byMouse=await harness(t,linked.dataset,{initialMouseId:'M1'});assert.match(byMouse.container.innerHTML,/data-id="experiments" aria-pressed="true"/);assert.match(byMouse.container.innerHTML,/Imported channel observation/);
+});
+
+function numericSourceDraft({externalTag=false,confirmedLink=false}={}){
+ const built=compactSourceDraft();built.dataset.tables.mice=[{mouse_sid:'37',physical_tag:'Different tag',sex:'F',state:'Stock'},...(externalTag?[{mouse_sid:'TAG37',physical_tag:'37',sex:'M',state:'Stock'}]:[])];built.dataset.tables.experiment_sources[0].raw_identifiers=['37'];
+ built.record.source_observation.raw_identifiers=['37'];built.record.experiment.participants=[confirmedLink?confirmed('37'):{mouse_sid:null,raw_identifier:'37',link_status:'unresolved',candidate_sids:['37',...(externalTag?['TAG37']:[])],role:null,notes:null}];return built;
+}
+
+test('numeric SID coincidence is excluded from source statistics and mouse-specific possible matches',async t=>{
+ const built=numericSourceDraft({externalTag:true}),before=clone(built.dataset),h=await harness(t,built.dataset,{initialMouseId:'37'});
+ assert.match(h.container.innerHTML,/No matching source observations/);assert.match(h.container.innerHTML,/<span>Possible source matches<\/span><strong>0<\/strong>/);assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="37"/);
+ const tagged=await harness(t,built.dataset,{initialMouseId:'TAG37'});assert.match(tagged.container.innerHTML,/data-exp-action="source" data-id="SOURCE-1"/);assert.match(tagged.container.innerHTML,/<span>Possible source matches<\/span><strong>1<\/strong>/);assert.match(tagged.container.innerHTML,/data-exp-action="mouse" data-id="TAG37"/);assert.deepEqual(built.dataset,before);
+});
+
+test('saved imported numeric-SID candidates are filtered in draft list, detail and editor without rewriting originals',async t=>{
+ const built=numericSourceDraft({externalTag:true}),before=clone(built.dataset),h=await harness(t,built.dataset);await h.click('tab','experiments');assert.match(h.container.innerHTML,/1 possible animal match/);assert.doesNotMatch(h.container.innerHTML,/2 possible animal matches/);
+ await h.click('open','DRAFT-1');assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="37"/);assert.match(h.container.innerHTML,/data-exp-action="mouse" data-id="TAG37"/);assert.match(h.container.innerHTML,/Unconfirmed/);
+ await h.click('edit','DRAFT-1');assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="37"/);assert.match(h.container.innerHTML,/data-exp-action="mouse" data-id="TAG37"/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
+ // Explicitly reviewed status does not rehabilitate unresolved import guesses.
+ const next=clone(h.dataset);next.tables.husbandry_events[0].experiment.status='completed';h.render(next);await h.click('open','DRAFT-1');assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="37"/);
+});
+
+test('unsupported numeric-only draft candidates remain unresolved when collecting a new sample',async t=>{
+ const built=numericSourceDraft(),before=clone(built.dataset),h=await harness(t,built.dataset);await h.click('tab','experiments');assert.match(h.container.innerHTML,/<span title="37">37<\/span>/);assert.doesNotMatch(h.container.innerHTML,/possible animal match/);
+ await h.click('open','DRAFT-1');assert.match(h.container.innerHTML,/No matching animal recorded. Identity remains unconfirmed/);assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="37"/);
+ await h.click('sample-from','DRAFT-1');assert.doesNotMatch(h.container.innerHTML,/data-exp-action="mouse" data-id="37"/);h.set('label','Unresolved source specimen');await h.save();
+ const sample=h.dataset.tables.husbandry_events.find(r=>r.event_type==='experiment_sample');assert.deepEqual(sample.experiment_sample.donors[0].candidate_sids,[]);assert.equal(sample.experiment_sample.donors[0].mouse_sid,null);assert.equal(sample.experiment_sample.donors[0].raw_identifier,'37');assert.deepEqual(h.dataset.tables.husbandry_events.find(r=>r.event_id==='DRAFT-1'),before.tables.husbandry_events[0]);
+});
+
+test('confirmed numeric SID links remain intact in imported records and mouse entry',async t=>{
+ const built=numericSourceDraft({confirmedLink:true}),before=clone(built.dataset),h=await harness(t,built.dataset,{initialMouseId:'37'});assert.match(h.container.innerHTML,/data-id="experiments" aria-pressed="true"/);assert.match(h.container.innerHTML,/1 confirmed animal/);await h.click('open','DRAFT-1');assert.match(h.container.innerHTML,/data-exp-action="mouse" data-id="37"/);assert.deepEqual(h.dataset,before);assert.equal(h.saves.length,0);
 });
