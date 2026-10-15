@@ -37,6 +37,65 @@ export function listLacFeeMonths(dataset){const map=new Map();for(const r of fee
 function build(type,input,dataset,previous,options){if(previous&&previous.event_type!==type)throw new Error('Choose a matching fee record to revise.');if(previous&&type==='lac_fee_month'&&listLacFeeMonths(dataset).find(r=>r.lac_fee_month.month===previous.lac_fee_month.month)?.event_id!==previous.event_id)throw new Error('A newer monthly fee revision exists. Reopen the latest record.');if(previous&&!events(dataset).some(r=>r.event_id===previous.event_id&&JSON.stringify(r)===JSON.stringify(previous)))throw new Error('Fee records changed. Reopen the latest record.');const defaults=type==='lac_fee_options'?blankLacFeeOptions():blankLacFeeMonth(),p={...defaults,...clone(previous?.[type]??{}),...clone(input)};p.revision=previous?previous[type].revision+1:0;p.supersedes_event_id=previous?.event_id??null;const stamp=options.now??new Date().toISOString(),event_id=options.eventId??`LAC-FEE-${type==='lac_fee_options'?'OPTIONS':'MONTH'}-${crypto.randomUUID()}`;if(events(dataset).some(r=>r.event_id===event_id))throw new Error('This fee event ID already exists.');const provenance=Object.fromEntries(Object.entries(previous??options.sourceRecord??{}).filter(([k])=>k.startsWith('source')||k==='record_origin'));const record={...provenance,event_id,event_type:type,event_date:type==='lac_fee_options'?p.effective_from:feeMonthBounds(p.month)?.start,record_origin:provenance.record_origin??'app_created',app_created_at:stamp,app_modified_at:stamp,[type]:p};const errors=validateLacFeeRecord(record,dataset).errors;if(errors.length)throw new Error(errors.join(' '));const next=clone(dataset??{tables:{}});next.tables??={};next.tables.husbandry_events??=[];next.tables.husbandry_events.push(record);return {record,dataset:next}}
 export const buildLacFeeOptions=(input,dataset,previous=null,options={})=>build('lac_fee_options',input,dataset,previous,options);
 export const buildLacFeeMonth=(input,dataset,previous=null,options={})=>build('lac_fee_month',input,dataset,previous,options);
+/** Prepare both immutable revisions together; the caller must save this dataset atomically.
+ * This moves recorded charges only. Occupancy dates, rates and payment dates are never inferred. */
+export function buildLacFeeActualMonthCorrection(dataset,originalRecord,targetMonth,options={}){
+ if(originalRecord?.event_type!=='lac_fee_month'||archived(originalRecord)||!object(originalRecord.lac_fee_month))throw new Error('Choose a current monthly fee record to correct.');
+ const source=originalRecord.lac_fee_month,sourceMonth=source.month;
+ if(!feeMonthBounds(targetMonth)||targetMonth===sourceMonth)throw new Error('Choose a different valid usage month.');
+ if(!events(dataset).some(r=>r.event_id===originalRecord.event_id&&JSON.stringify(r)===JSON.stringify(originalRecord)))throw new Error('Fee records changed. Reopen the latest record.');
+ const latest=month=>{
+  const chosen=listLacFeeMonths(dataset).find(r=>r.lac_fee_month.month===month);
+  if(chosen&&feeRecords(dataset,'lac_fee_month').filter(r=>r.lac_fee_month.month===month&&r.lac_fee_month.revision===chosen.lac_fee_month.revision).length!==1)throw new Error('Conflicting monthly fee records require review before moving an actual amount.');
+  return chosen;
+ };
+ if(latest(sourceMonth)?.event_id!==originalRecord.event_id)throw new Error('A newer monthly fee revision exists. Reopen the latest record.');
+ const targetRecord=latest(targetMonth),target=targetRecord?.lac_fee_month;
+ const hasActual=p=>present(p?.actual_total)||(p?.lines??[]).some(line=>present(line.actual_amount));
+ if(!hasActual(source))throw new Error('This record has no actual amount to move.');
+ if(hasActual(target))throw new Error('The target usage month already has an actual amount. Review it before combining invoices.');
+ if(target&&target.currency!==source.currency)throw new Error('The target usage month uses a different currency.');
+ for(const record of [originalRecord,targetRecord].filter(Boolean)){
+  const errors=validateLacFeeRecord(record,dataset).errors;if(errors.length)throw new Error(errors.join(' '));
+ }
+ const reason=options.reason??'Owner confirmed the usage month for this recorded charge.';
+ if(typeof reason!=='string'||!reason.trim()||reason.length>2000)throw new Error('Enter a usage-month correction reason of at most 2000 characters.');
+ const stamp=options.now??new Date().toISOString(),sourceEventId=options.sourceEventId??`LAC-FEE-MONTH-${crypto.randomUUID()}`,targetEventId=options.targetEventId??`LAC-FEE-MONTH-${crypto.randomUUID()}`;
+ if(typeof sourceEventId!=='string'||!sourceEventId.trim()||typeof targetEventId!=='string'||!targetEventId.trim()||sourceEventId===targetEventId||events(dataset).some(r=>[sourceEventId,targetEventId].includes(r.event_id)))throw new Error('Correction event IDs must be distinct and new.');
+ const correction={schema_version:1,original_event_id:originalRecord.event_id,original_month:sourceMonth,target_month:targetMonth,
+  source_revision_event_id:sourceEventId,target_revision_event_id:targetEventId,
+  actual_source_id:originalRecord.source_actual_observation?.source_id??null,
+  confirmation_basis:'owner_confirmed_usage_month',reason:reason.trim()};
+ const note=`Owner-confirmed usage-month correction: actual charge moved from ${sourceMonth} to ${targetMonth}. ${reason.trim()}`;
+ const noteWith=previous=>[previous,note].filter(Boolean).join('\n');
+ const cleared={...clone(source),actual_total:null,actual_date:null,actual_basis:'recorded_charge',paid_date:null,invoice_reference:null,
+  lines:source.lines.map(line=>({...clone(line),actual_amount:null})),notes:noteWith(source.notes)};
+ const assigned=target?clone(target):blankLacFeeMonth(targetMonth);
+ Object.assign(assigned,{currency:source.currency,actual_total:nullable(source.actual_total),actual_date:nullable(source.actual_date),
+  actual_basis:source.actual_basis??'recorded_charge',paid_date:nullable(source.paid_date),invoice_reference:nullable(source.invoice_reference),notes:noteWith(assigned.notes)});
+ for(const group of LAC_FEE_GROUPS){
+  const actualLines=source.lines.filter(line=>line.group_key===group.key&&present(line.actual_amount));
+  if(!actualLines.length)continue;
+  // Keep the target's interval evidence intact. The moved charge has no new quantity/date evidence.
+  const line=blankLacFeeMonth(targetMonth).lines.find(line=>line.group_key===group.key);
+  line.actual_amount=actualLines.reduce((sum,line)=>sum+line.actual_amount,0);
+  line.evidence_reference=[...new Set(actualLines.map(line=>line.evidence_reference||source.invoice_reference).filter(Boolean))].join('\n')||null;
+  if(target)assigned.lines.push(line);
+  else assigned.lines[assigned.lines.findIndex(existing=>existing.group_key===group.key)]=line;
+ }
+ // Validate the two fee revisions on a small working set before cloning the complete workspace once.
+ const feeWorkingSet={tables:{husbandry_events:events(dataset).filter(record=>record.event_type==='lac_fee_month')}};
+ const sourceBuilt=buildLacFeeMonth(cleared,feeWorkingSet,originalRecord,{now:stamp,eventId:sourceEventId});
+ sourceBuilt.record.source_actual_month_correction={...clone(correction),side:'source'};
+ const targetBuilt=buildLacFeeMonth(assigned,sourceBuilt.dataset,targetRecord??null,{now:stamp,eventId:targetEventId});
+ targetBuilt.record.source_actual_month_correction={...clone(correction),side:'target'};
+ targetBuilt.record.source_billing_month_basis='owner_confirmed_usage_month';
+ // Keep the invoice's original source wording separate from the corrected operational month.
+ for(const key of ['source_actual_observation','source_actual_date_basis'])if(Object.hasOwn(originalRecord,key))targetBuilt.record[key]=clone(originalRecord[key]);
+ const savedSource=events(targetBuilt.dataset).find(r=>r.event_id===sourceEventId),savedTarget=targetBuilt.record,next=clone(dataset);
+ next.tables.husbandry_events.push(savedSource,savedTarget);
+ return {dataset:next,sourceRecord:savedSource,targetRecord:savedTarget,records:[savedSource,savedTarget]};
+}
 export function compareLacFees(estimate,actual,options={target_percent:5,maximum_percent:10}){if(!amount(estimate)||!amount(actual))return {difference:null,absolute_percent:null,status:'unknown'};const difference=estimate-actual;if(actual===0)return {difference,absolute_percent:estimate===0?0:null,status:estimate===0?'within_target':'zero_actual_mismatch'};const absolute_percent=Math.abs(difference)/actual*100;return {difference,absolute_percent,status:absolute_percent<=options.target_percent+1e-9?'within_target':absolute_percent<=options.maximum_percent+1e-9?'within_maximum':'above_maximum'}}
 function housing(record,dataset){const t=dataset.tables??{},location=(t.locations??[]).find(p=>p.location_id===record.location_id),rack_id=record.rack_id||location?.rack_id||null,rack=(t.racks??[]).find(r=>r.rack_id===rack_id);return {room_id:record.room_id||location?.room_id||rack?.room_id||null,rack_id}}
 function currentQuantities(dataset,options){const t=dataset.tables??{},mice=(t.mice??[]).filter(m=>!archived(m)&&m.state==='Stock'),cages=new Map((t.cages??[]).filter(c=>!archived(c)).map(c=>[c.cage_sid,c])),counts=Object.fromEntries(LAC_FEE_GROUPS.map(g=>[g.key,{mice:0,cages:new Set()}]));let excluded=0,unmapped=0;for(const m of mice){const cage=cages.get(m.cage_sid),refs=housing(cage??m,dataset);if(options.excluded_room_ids.includes(refs.room_id)){excluded++;continue}const matches=options.groups.filter(g=>g.room_ids.includes(refs.room_id)&&(!g.rack_ids.length||g.rack_ids.includes(refs.rack_id)));if(matches.length!==1||(matches[0].unit==='cage'&&!m.cage_sid)){unmapped++;continue}const count=counts[matches[0].key];count.mice++;if(m.cage_sid)count.cages.add(m.cage_sid)}return {counts,excluded_mice:excluded,unmapped_mice:unmapped}}

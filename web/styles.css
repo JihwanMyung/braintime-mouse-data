@@ -224,3 +224,5 @@
 @media(max-width:620px){.nav-label-full{display:none}.nav-label-compact{display:inline}}
 
 .lac-fees .fee-unavailable{display:block;font-size:12px;line-height:1.25;font-weight:400;color:var(--muted,#61656b)}
+
+.lac-fees .exp-stats{grid-template-columns:repeat(4,minmax(0,1fr));margin-top:16px}
