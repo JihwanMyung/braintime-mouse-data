@@ -109,9 +109,9 @@ function installServer(){
       return new Response(server.objects.get(path),{headers:{'Content-Type':'application/json'}});
     }
     if(u.pathname.endsWith('/entity_records')){
-      const type=u.searchParams.get('entity_type'),after=u.searchParams.get('entity_id');
-      const all=[...server.records.values()].filter(r=>(type?.startsWith('eq.')?r.entity_type===type.slice(3):type==='neq.archive'?r.entity_type!=='archive':true)&&(!after||r.entity_id.localeCompare(after.slice(3))>0)).sort((a,b)=>`${a.entity_type}:${a.entity_id}`.localeCompare(`${b.entity_type}:${b.entity_id}`));
-      const offset=Number(u.searchParams.get('offset')??0);return response(all.slice(offset,offset+Number(u.searchParams.get('limit')??1000)));
+      const type=u.searchParams.get('entity_type'),after=u.searchParams.get('entity_id'),selected=after?.startsWith('in.(')?after.slice(4,-1).split(','):null;
+      const all=[...server.records.values()].filter(r=>(type?.startsWith('eq.')?r.entity_type===type.slice(3):type==='neq.archive'?r.entity_type!=='archive':true)&&(!after||(selected?selected.includes(r.entity_id):after.startsWith('eq.')?r.entity_id===after.slice(3):r.entity_id.localeCompare(after.slice(3))>0))).sort((a,b)=>`${a.entity_type}:${a.entity_id}`.localeCompare(`${b.entity_type}:${b.entity_id}`));
+      const offset=Number(u.searchParams.get('offset')??0),page=all.slice(offset,offset+Number(u.searchParams.get('limit')??1000));return response(u.searchParams.get('select')?.includes('payload')?page:page.map(({payload,...metadata})=>metadata));
     }
     if(u.pathname.endsWith('/rpc/save_records')){
       server.batches++;if(server.failBatch===server.batches)throw new TypeError('Network unavailable');
@@ -247,12 +247,12 @@ test('cloud pull shrinks only timed-out read pages, keeps keyset cursors and pre
   const limit=Number(u.searchParams.get('limit')),cursor=u.searchParams.get('entity_id');
   if(u.searchParams.get('entity_type')==='eq.mice'){
    attempts.push({cursor,limit});if(limit>(cursor===null?100:30))return response({code:'57014',message:'canceling statement due to statement timeout'},500);
-  }else if(u.searchParams.get('entity_type')==='eq.archive')archiveSizes.push(limit);
+  }else if(u.searchParams.get('entity_type')==='eq.archive'&&u.searchParams.get('select').includes('payload'))archiveSizes.push(limit);
  }return originalFetch(url,options);};
  const result=await store.pullFromCloud();
  assert.deepEqual(result.tables.mice.map(r=>r.mouse_sid),data.tables.mice.map(r=>r.mouse_sid));assert.deepEqual(result.tables.source_history,data.tables.source_history);
  assert.deepEqual(attempts.slice(0,8),[{cursor:null,limit:1000},{cursor:null,limit:500},{cursor:null,limit:250},{cursor:null,limit:125},{cursor:null,limit:62},{cursor:'gt.READ-0061',limit:62},{cursor:'gt.READ-0061',limit:31},{cursor:'gt.READ-0061',limit:15}]);
- assert(attempts.slice(8).every(row=>row.limit===15));assert(archiveSizes.length>1);assert(archiveSizes.every(size=>size===3));assert.equal(server.batches,batches);assert.equal(store.getCloudStatus().readyForEdits,true);
+ assert(attempts.slice(8).every(row=>row.limit===15));assert(archiveSizes.length>1);assert(archiveSizes.every(size=>size>=1&&size<=3));assert.equal(server.batches,batches);assert.equal(store.getCloudStatus().readyForEdits,true);
 });
 test('exhausted statement-timeout retries stop at one row and preserve the previous cache after partial progress',async()=>{
  const data=createSyntheticDataset();data.tables.mice=Array.from({length:1005},(_,i)=>({mouse_sid:`KEEP-${String(i).padStart(4,'0')}`,sex:'Unknown',sire_sids:[],dam_sids:[]}));
@@ -272,10 +272,10 @@ test('permission, network and other query cancellation failures are never retrie
   await assert.rejects(store.pullFromCloud(),/canceling|permission|Network/);assert.equal(attempts,1);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
  }
 });
-test('one archive chunk timing out stops the pull without truncating the snapshot',async()=>{
+test('the archive manifest timing out stops the pull without truncating the snapshot',async()=>{
  const before=await connected(),originalFetch=fetch;const attempts=[];
  globalThis.fetch=async(url,options)=>{const u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.archive'){attempts.push(Number(u.searchParams.get('limit')));return response({code:'57014',message:'canceling statement due to statement timeout'},500);}return originalFetch(url,options);};
- await assert.rejects(store.pullFromCloud(),/statement timeout/);assert.deepEqual(attempts,[3,1]);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
+ await assert.rejects(store.pullFromCloud(),/statement timeout/);assert.deepEqual(attempts,[1]);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
 });
 test('account changes during a timed-out read prevent any retry with the changed session',async()=>{
  await connected();const originalFetch=fetch;let attempts=0;
@@ -440,7 +440,7 @@ test('real augmented dataset round-trips with bounded archive payloads, RPCs and
   assert.equal(hash(loaded),hash(expected));
   const archives=[...server.records.values()].filter(r=>r.entity_type==='archive');assert(archives.length>1);assert(archives.every(r=>utf8Size(r.payload)<=MAX_ARCHIVE_PAYLOAD_BYTES));
   const writes=server.calls.filter(c=>c.url.endsWith('/rpc/save_records'));assert(writes.every(c=>Buffer.byteLength(c.options.body)<=MAX_RPC_BYTES));
-  assert(server.calls.filter(c=>c.url.includes('entity_type=eq.archive')).every(c=>new URL(c.url).searchParams.get('limit')==='3'));
+  assert(server.calls.filter(c=>c.url.includes('entity_type=eq.archive')&&new URL(c.url).searchParams.get('select').includes('payload')).every(c=>Number(new URL(c.url).searchParams.get('limit'))<=3));
   assert.equal(loaded.tables.historical_observations.length,d.tables.historical_observations.length);
 });
 
@@ -1092,4 +1092,148 @@ test('explicit local demo backup remains complete and makes no cloud backup requ
  await fresh();await store.saveDataset(createSyntheticDataset(),{localOnly:true,localKind:'demo'});const before=server.calls.length;
  const backup=await store.getLocalBackup();assert.equal(backup.full_workspace,true);assert.equal(backup.permission.level,'max');assert.equal(backup.sections.workspace.tables.mice.length,3);
  assert.equal(server.calls.length,before);
+});
+
+test('selected archive fetch reads manifest first and only referenced chunk payloads with three bounded workers',async()=>{
+ const data=createSyntheticDataset();data.tables.parallel_history=Array.from({length:12},(_,i)=>({id:i,text:String.fromCharCode(65+i).repeat(140000)}));
+ const before=await connected(data),orphan=(await encodeArchive({...data,tables:{orphan_history:[{text:'UNREFERENCED-ARCHIVE-PAYLOAD'}]}})).find(isArchiveChunk);
+ server.records.set(`archive:${orphan.entity_id}`,{...orphan,colony_id:cid,version:7});
+ const originalFetch=fetch,archiveQueries=[];let inFlight=0,maximum=0;
+ globalThis.fetch=async(url,options)=>{const parsed=new URL(url),query=parsed.searchParams;if(parsed.pathname.endsWith('/entity_records')&&query.get('entity_type')==='eq.archive'){
+  archiveQueries.push(query);if(query.get('entity_id')?.startsWith('in.(')){
+   assert.deepEqual(idbData.get('current'),before,'an unfinished pull must not publish partial history');inFlight++;maximum=Math.max(maximum,inFlight);
+   try{await new Promise(resolve=>setTimeout(resolve,2));return await originalFetch(url,options);}finally{inFlight--;}
+  }
+ }return originalFetch(url,options);};
+ const loaded=await store.pullFromCloud();assert.deepEqual(loaded,before);assert.equal(maximum,3);
+ const payloadQueries=archiveQueries.filter(query=>query.get('select').includes('payload'));
+ assert.equal(payloadQueries[0].get('entity_id'),'eq.reconstruction');assert(payloadQueries.every(query=>Number(query.get('limit'))<=3));
+ const chunkQueries=payloadQueries.slice(1);assert(chunkQueries.length>3);assert(chunkQueries.every(query=>query.get('entity_id').startsWith('in.(')&&!query.get('entity_id').includes(orphan.entity_id)));
+ assert(archiveQueries.some(query=>!query.get('select').includes('payload')&&query.get('limit')==='1000'));
+ assert.equal(archiveQueries.at(-1).get('entity_id'),'eq.reconstruction');assert(!archiveQueries.at(-1).get('select').includes('payload'));
+});
+
+test('an archive retry reuses an unreferenced immutable chunk with its recorded version',async()=>{
+ const data=createSyntheticDataset();data.tables.retry_history=[{text:'previous archive'}];const before=await connected(data),change=structuredClone(before);change.tables.retry_history=[{text:'staged new archive'}];
+ server.failBatch=server.batches+2;await assert.rejects(store.saveDataset(change),/not confirmed/);server.failBatch=null;
+ const newChunk=(await encodeArchive(change)).find(row=>row.payload.table==='retry_history'),staged=server.records.get(`archive:${newChunk.entity_id}`);assert(staged);
+ const oldVersion=staged.version;assert.deepEqual((await store.pullFromCloud()).tables.retry_history,before.tables.retry_history);
+ const start=server.calls.length;await store.saveDataset(change);
+ const writes=server.calls.slice(start).filter(call=>call.url.endsWith('/rpc/save_records')).flatMap(call=>JSON.parse(call.options.body).p_changes);
+ assert.equal(writes.find(row=>row.entity_id===newChunk.entity_id).expected_version,oldVersion);assert.deepEqual((await store.pullFromCloud()).tables.retry_history,change.tables.retry_history);
+});
+
+test('selected archive batches reduce only confirmed timeout pages without omitting chunks',async()=>{
+ const data=createSyntheticDataset();data.tables.slow_history=Array.from({length:7},(_,i)=>({id:i,text:String.fromCharCode(65+i).repeat(140000)}));const before=await connected(data),originalFetch=fetch,limits=[],start=server.calls.length;
+ globalThis.fetch=async(url,options)=>{const query=new URL(url).searchParams;if(query.get('entity_id')?.startsWith('in.(')){
+  const n=Number(query.get('limit'));limits.push(n);if(n>1)return response({code:'57014',message:'canceling statement due to statement timeout'},500);
+ }return originalFetch(url,options);};
+ assert.deepEqual(await store.pullFromCloud(),before);assert(limits.includes(3));assert(limits.includes(1));
+ const ids=server.calls.slice(start).filter(call=>new URL(call.url).searchParams.get('entity_id')?.startsWith('in.(')).map(call=>new URL(call.url).searchParams.get('entity_id'));
+ assert(ids.every(value=>/^in\.\(chunk:[a-f0-9]{64}\)$/.test(value)),'each successful fallback page selects one literal chunk ID');
+});
+
+test('selected archive rejects unknown descriptors and references before issuing chunk reads',async()=>{
+ for(const scenario of ['format','table','id','descriptor']){
+  const before=await connected(),head=server.records.get('archive:reconstruction');
+  if(scenario==='format')head.payload.archive_format='unknown-format';
+  if(scenario==='table')head.payload.archive_tables.mice={row_count:0,chunk_ids:[]};
+  if(scenario==='id')head.payload.archive_tables.unknown={row_count:1,chunk_ids:['chunk:bad,entity_type.eq.mice']};
+  if(scenario==='descriptor')head.payload.archive_tables.unknown={row_count:-1,chunk_ids:[]};
+  const start=server.calls.length;await assert.rejects(store.pullFromCloud(),/not supported|Invalid archive/);
+  assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
+  assert(!server.calls.slice(start).some(call=>new URL(call.url).searchParams.get('entity_id')?.startsWith('in.(')));
+ }
+});
+
+test('missing, corrupt, duplicate or unrelated selected chunks fail closed and preserve the verified snapshot',async()=>{
+ for(const failure of ['missing-index','missing-response','corrupt','duplicate','foreign-colony','version','archived','unknown-id']){
+  const data=createSyntheticDataset();data.tables.guard_history=Array.from({length:4},(_,i)=>({id:i,text:String.fromCharCode(65+i).repeat(140000)}));
+  const before=await connected(data),originalFetch=fetch;let changed=false;
+  if(failure==='missing-index'){const id=server.records.get('archive:reconstruction').payload.archive_tables.guard_history.chunk_ids[0];server.records.delete(`archive:${id}`);}
+  globalThis.fetch=async(url,options)=>{const query=new URL(url).searchParams,reply=await originalFetch(url,options);if(!changed&&query.get('entity_id')?.startsWith('in.(')){
+   changed=true;const rows=await reply.json();
+   if(failure==='missing-response')rows.pop();
+   if(failure==='corrupt')rows[0].payload.rows[0]={tampered:true};
+   if(failure==='duplicate')rows[1]=rows[0];
+   if(failure==='foreign-colony')rows[0].colony_id=uid;
+   if(failure==='version')rows[0].version++;
+   if(failure==='archived')rows[0].archived=true;
+   if(failure==='unknown-id')rows[0].entity_id='chunk:'+'0'.repeat(64);
+   return response(rows);
+  }return reply;};
+  await assert.rejects(store.pullFromCloud(),/missing|Missing|invalid|checksum/);assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);
+ }
+});
+
+test('a replaced manifest or changed account during selected archive reads cannot publish old data',async()=>{
+ for(const failure of ['manifest','account']){
+  const data=createSyntheticDataset();data.tables.guard_history=Array.from({length:4},(_,i)=>({id:i,text:String.fromCharCode(65+i).repeat(140000)}));
+  const before=await connected(data),originalFetch=fetch;let changed=false;
+  globalThis.fetch=async(url,options)=>{const query=new URL(url).searchParams,reply=await originalFetch(url,options);if(!changed&&query.get('entity_id')?.startsWith('in.(')){
+   changed=true;if(failure==='manifest')server.records.get('archive:reconstruction').version++;else await store.signOut();
+  }return reply;};
+  await assert.rejects(store.pullFromCloud(),/manifest changed|account or colony changed/);
+  if(failure==='manifest'){assert.deepEqual(idbData.get('current'),before);assert.equal(store.getCloudStatus().readyForEdits,false);}else{assert.equal(idbData.get('current'),undefined);assert.equal(store.getCloudStatus().signedIn,false);}
+ }
+});
+
+test('temporary refresh failures preserve the session without authorizing reads or writes; reconnect recovers',async()=>{
+ for(const failure of ['network','unavailable','rate-limit','unreadable']){
+  const before=await connected(),key='mouse-colony.session.v1',oldSession=JSON.parse(sessionStorage.getItem(key));oldSession.expires_at=1;sessionStorage.setItem(key,JSON.stringify(oldSession));
+  const savedSession=sessionStorage.getItem(key),originalFetch=fetch;let refreshCalls=0,recordCalls=0;
+  globalThis.fetch=async(url,options)=>{const parsed=new URL(url);if(parsed.pathname.endsWith('/token')&&parsed.searchParams.get('grant_type')==='refresh_token'){
+   refreshCalls++;if(failure==='network')throw new TypeError('Network unavailable');
+   if(failure==='unreadable')return new Response('upstream unavailable',{status:502});
+   return response({message:failure==='rate-limit'?'Rate limited':'Cloud temporarily unavailable'},failure==='rate-limit'?429:503);
+  }if(parsed.pathname.endsWith('/entity_records'))recordCalls++;return originalFetch(url,options);};
+  await assert.rejects(store.pullFromCloud(),/Network|temporarily|Rate limited|unreadable/);
+  assert.equal(refreshCalls,1);assert.equal(recordCalls,0);assert.equal(sessionStorage.getItem(key),savedSession);assert.equal(store.getCloudStatus().readyForEdits,false);
+  assert.deepEqual(idbData.get('current'),before);await assert.rejects(store.saveDataset(before),/Pull the latest/);
+  globalThis.fetch=originalFetch;assert.deepEqual(await store.pullFromCloud(),before);assert.equal(store.getCloudStatus().readyForEdits,true);
+ }
+});
+
+test('explicit refresh rejection still clears the session and prevents shared access',async()=>{
+ for(const status of [400,401,403]){
+  const before=await connected(),key='mouse-colony.session.v1',oldSession=JSON.parse(sessionStorage.getItem(key));oldSession.expires_at=1;sessionStorage.setItem(key,JSON.stringify(oldSession));
+  const originalFetch=fetch;let recordCalls=0;
+  globalThis.fetch=async(url,options)=>{const parsed=new URL(url);if(parsed.pathname.endsWith('/token'))return response({message:'Invalid refresh token'},status);if(parsed.pathname.endsWith('/entity_records'))recordCalls++;return originalFetch(url,options);};
+  await assert.rejects(store.pullFromCloud(),/Invalid refresh|expired|permission/);assert.equal(sessionStorage.getItem(key),null);assert.equal(store.getCloudStatus().signedIn,false);assert.equal(recordCalls,0);assert.deepEqual(idbData.get('current'),before);
+ }
+});
+
+test('a stalled archive header or body returns a bounded retry error without caching partial history or replaying reads',async()=>{
+ for(const stage of ['headers','body']){
+  const before=await connected(),oldMark=localStorage.getItem('mouse-colony.cloud-cache-context.v1'),originalFetch=fetch,originalTimeout=setTimeout;let archiveCalls=0,signal;
+  globalThis.setTimeout=(callback,delay,...args)=>originalTimeout(callback,delay===30000?5:delay,...args);
+  globalThis.fetch=async(url,options)=>{const parsed=new URL(url);if(parsed.pathname.endsWith('/entity_records')&&parsed.searchParams.get('entity_type')==='eq.archive'){
+   archiveCalls++;signal=options.signal;if(stage==='headers')return new Promise(()=>{});
+   return {ok:true,status:200,text:()=>new Promise(()=>{})};
+  }return originalFetch(url,options);};
+  try{
+   await assert.rejects(store.pullFromCloud(),/Cloud connection timed out/);
+   assert.equal(archiveCalls,1);assert.equal(signal.aborted,true);assert.deepEqual(idbData.get('current'),before);assert.equal(localStorage.getItem('mouse-colony.cloud-cache-context.v1'),oldMark);assert.equal(store.getCloudStatus().readyForEdits,false);
+  }finally{globalThis.setTimeout=originalTimeout;globalThis.fetch=originalFetch;}
+  assert.deepEqual(await store.pullFromCloud(),before);
+ }
+});
+
+test('a stalled refresh retains its expired session but grants no data until a successful live retry',async()=>{
+ const before=await connected(),key='mouse-colony.session.v1',session=JSON.parse(sessionStorage.getItem(key));session.expires_at=1;sessionStorage.setItem(key,JSON.stringify(session));
+ const expected=sessionStorage.getItem(key),originalFetch=fetch,originalTimeout=setTimeout;let refreshCalls=0;
+ globalThis.setTimeout=(callback,delay,...args)=>originalTimeout(callback,delay===30000?5:delay,...args);
+ globalThis.fetch=async(url,options)=>{if(new URL(url).pathname.endsWith('/token')){refreshCalls++;return new Promise(()=>{});}return originalFetch(url,options);};
+ try{await assert.rejects(store.pullFromCloud(),/Cloud connection timed out/);assert.equal(refreshCalls,1);assert.equal(sessionStorage.getItem(key),expected);assert.equal(store.getCloudStatus().readyForEdits,false);assert.deepEqual(idbData.get('current'),before);}
+ finally{globalThis.fetch=originalFetch;globalThis.setTimeout=originalTimeout;}
+ assert.deepEqual(await store.pullFromCloud(),before);
+});
+
+test('a stalled first password sign-in returns without persisting unverified credentials',async()=>{
+ await fresh();const originalFetch=fetch,originalTimeout=setTimeout;
+ globalThis.setTimeout=(callback,delay,...args)=>originalTimeout(callback,delay===30000?5:delay,...args);
+ globalThis.fetch=async()=>new Promise(()=>{});
+ try{await assert.rejects(store.signIn('demo@example.test','test-password'),/Cloud connection timed out/);assert.equal(store.getCloudStatus().signedIn,false);assert.equal(sessionStorage.getItem('mouse-colony.session.v1'),null);assert.equal(idbData.get('current'),undefined);}
+ finally{globalThis.fetch=originalFetch;globalThis.setTimeout=originalTimeout;}
+ await store.signIn('demo@example.test','test-password');assert.equal(store.getCloudStatus().signedIn,true);
 });

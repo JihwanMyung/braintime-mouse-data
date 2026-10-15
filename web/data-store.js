@@ -3,7 +3,7 @@ import { projectLocoboxExport } from './locobox-export.js?v=24';
 import { PUBLIC_CONFIG } from './config.js';
 import { validateManagerPermissions } from './permissions.js';
 import { normalizeDataset, ID_FIELDS } from './model.js?v=48';
-import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size} from './archive-format.js?v=48';
+import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size,ARCHIVE_MANIFEST_FORMAT} from './archive-format.js?v=48';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
 const CLOUD_CACHE_KEY='mouse-colony.cloud-cache-context.v1';
@@ -122,6 +122,20 @@ export function getCloudStatus(){
   return {configured:Boolean(c),signedIn:Boolean(s?.access_token),passwordRecovery:s?.passwordRecovery===true,passwordRecoveryUpdated:s?.passwordRecovery===true&&s?.passwordRecoveryUpdated===true,email:s?.user?.email??null,name:typeof s?.user?.user_metadata?.full_name==='string'?s.user.user_metadata.full_name:null,pendingEmail,message:statusMessage||(mode()==='cloud'&&!synced?'Pull cloud data before editing.':mode()==='cloud'?'Cloud connected.':'Changes are saved on this device.'),mode:mode(),readyForEdits:s?.passwordRecovery!==true&&(mode()==='local'||synced),colonyId:c?.colonyId??null,role:s?.role??null,permissions:s?.permissions??{},username:s?.username??null,setupRequired:s?.setupRequired===true,exportLevel:s?.role==='owner'?'max':s?.exportLevel??null,url:c?.url??'',anonKey:c?.anonKey??'',historyPath:c?.historyPath??null};
 }
 async function responseJSON(response){const text=await response.text();if(!text)return null;try{return JSON.parse(text);}catch{throw new Error('The cloud server returned an unreadable response.');}}
+// Bound both headers and body reads. A stalled connection must return control
+// to the sign-in/retry screen; it must never silently replay a write.
+async function cloudJSON(url,options={}){
+  const controller=new AbortController();let timer;
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>{
+    const error=new Error('Cloud connection timed out. Retry when the connection is available.');
+    error.connectionUnavailable=true;reject(error);controller.abort();
+  },30000);});
+  try{return await Promise.race([(async()=>{
+    const response=await fetch(url,{...options,signal:controller.signal});
+    return {response,result:await responseJSON(response)};
+  })(),deadline]);}
+  finally{clearTimeout(timer);}
+}
 function apiError(response,body){
   const message=body?.message||body?.error_description||body?.msg||body?.error||`Cloud request failed (${response.status}).`;
   if(response.status===409||body?.code==='40001')return new Error('This record changed in another session. Pull the latest cloud data and review your edit before trying again.');
@@ -135,12 +149,13 @@ function apiError(response,body){
 }
 async function authRequest(route,body,token){
   const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
-  const response=await fetch(`${c.url}/auth/v1/${route}`,{method:'POST',headers:{apikey:c.anonKey,'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body?JSON.stringify(body):undefined});
-  const result=await responseJSON(response);
+  const {response,result}=await cloudJSON(`${c.url}/auth/v1/${route}`,{method:'POST',headers:{apikey:c.anonKey,'Content-Type':'application/json',...(token?{Authorization:`Bearer ${token}`}:{})},body:body?JSON.stringify(body):undefined});
   if(!response.ok){
     const message=result?.message||result?.error_description||result?.msg;
     if(route==='verify'&&message)throw new Error(String(message));
-    throw apiError(response,result);
+    const error=apiError(response,result);
+    if(route==='token?grant_type=refresh_token'&&[400,401,403].includes(response.status))error.sessionRejected=true;
+    throw error;
   }
   return result;
 }
@@ -149,7 +164,7 @@ async function accessToken(){
   let s=session();if(!s?.access_token)throw new Error('Sign in before using cloud data.');
   if(s.expires_at<=Date.now()/1000+60){
     const generation=authGeneration,config=stable(configuration());const current=()=>generation===authGeneration&&config===stable(configuration())&&session()?.user?.id===s.user?.id;
-    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{if(!current())throw new Error('The account changed during session refresh.');const next={...normalizeSession(result),passwordRecovery:s.passwordRecovery===true,passwordRecoveryUpdated:s.passwordRecoveryUpdated===true,role:s.role,permissions:s.permissions,username:s.username,setupRequired:s.setupRequired,exportLevel:s.exportLevel};saveSession(next);return next;}).catch(e=>{if(current()){saveSession(null);invalidate();}throw e;}).finally(()=>{refreshPromise=null;});
+    if(!refreshPromise)refreshPromise=authRequest('token?grant_type=refresh_token',{refresh_token:s.refresh_token}).then(result=>{if(!current())throw new Error('The account changed during session refresh.');const next={...normalizeSession(result),passwordRecovery:s.passwordRecovery===true,passwordRecoveryUpdated:s.passwordRecoveryUpdated===true,role:s.role,permissions:s.permissions,username:s.username,setupRequired:s.setupRequired,exportLevel:s.exportLevel};saveSession(next);return next;}).catch(e=>{if(current()){invalidate();if(e.sessionRejected===true)saveSession(null);else statusMessage='Cloud connection unavailable. Reconnect before editing.';}throw e;}).finally(()=>{refreshPromise=null;});
     s=await refreshPromise;
   }
   return s.access_token;
@@ -158,8 +173,8 @@ async function request(route,{method='GET',body}={}){
   if(session()?.passwordRecovery)throw new Error('Finish resetting your password before opening colony data.');
   const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
   const token=await accessToken();
-  const response=await fetch(`${c.url}/rest/v1/${route}`,{method,cache:'no-store',redirect:'error',headers:{apikey:c.anonKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json',...(method==='POST'?{Prefer:'return=representation'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
-  const result=await responseJSON(response);if(!response.ok)throw apiError(response,result);return result;
+  const {response,result}=await cloudJSON(`${c.url}/rest/v1/${route}`,{method,cache:'no-store',redirect:'error',headers:{apikey:c.anonKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json',...(method==='POST'?{Prefer:'return=representation'}:{})},body:body===undefined?undefined:JSON.stringify(body)});
+  if(!response.ok)throw apiError(response,result);return result;
 }
 async function membership(action){
   const c=configuration(),s=session();
@@ -178,8 +193,8 @@ export async function verifyCloudMembership(){
   if(initial.passwordRecovery)throw new Error('Finish resetting your password before opening lab tools.');
   if(initial.setupRequired||initial.role==='pending')throw new Error('Finish your account setup before opening lab tools.');
   const action=beginAuthAction(),token=await accessToken();action.check();
-  const response=await fetch(`${c.url}/auth/v1/user`,{headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`},cache:'no-store',redirect:'error'});
-  const user=await responseJSON(response);action.check();
+  const {response,result:user}=await cloudJSON(`${c.url}/auth/v1/user`,{headers:{apikey:publicKey(c.anonKey),Authorization:`Bearer ${token}`},cache:'no-store',redirect:'error'});
+  action.check();
   if(!response.ok||user?.id!==initial.user.id||user.is_anonymous||!user.email_confirmed_at)throw new Error('Your sign-in could not be verified. Sign in again.');
   await membership(action);action.check();
   return getCloudStatus();
@@ -215,8 +230,8 @@ export async function signIn(email,password){
     const defaultGateway=c.url===PUBLIC_CONFIG.url&&c.colonyId===PUBLIC_CONFIG.colonyId?PUBLIC_CONFIG.usernameAnonKey:null;
     const anonKey=publicKey(c.anonKey.startsWith('sb_publishable_')&&defaultGateway?defaultGateway:c.anonKey);
     if(anonKey.startsWith('sb_publishable_'))throw new Error('Username sign-in requires the project’s public legacy anon key. Use your email to sign in, or ask the owner to update the app configuration.');
-    const response=await fetch(`${c.url}/functions/v1/username-sign-in`,{method:'POST',cache:'no-store',redirect:'error',headers:{apikey:anonKey,Authorization:`Bearer ${anonKey}`,'Content-Type':'application/json'},body:JSON.stringify({username:email.trim(),password})});
-    result=await responseJSON(response);if(!response.ok)throw new Error(result?.message||'Username sign-in was rejected.');
+    const {response,result:reply}=await cloudJSON(`${c.url}/functions/v1/username-sign-in`,{method:'POST',cache:'no-store',redirect:'error',headers:{apikey:anonKey,Authorization:`Bearer ${anonKey}`,'Content-Type':'application/json'},body:JSON.stringify({username:email.trim(),password})});
+    result=reply;if(!response.ok)throw new Error(result?.message||'Username sign-in was rejected.');
   }
   action.check();saveSession(normalizeSession(result));invalidate();
   try{await establishMembershipOrSetup(action);action.check();statusMessage='Signed in.';}catch(e){if(action.current()){saveSession(null);statusMessage=e.message;}throw e;}
@@ -261,17 +276,17 @@ export async function consumeAuthCallback(){
     try{claims=JSON.parse(atob(access.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));}catch{throw new Error('The sign-in token is invalid. Request a new link.');}
     if(claims.iss!==`${c.url}/auth/v1`||claims.role!=='authenticated'||!(Array.isArray(claims.aud)?claims.aud:[claims.aud]).includes('authenticated')||typeof claims.sub!=='string'||!Number.isFinite(claims.exp)||claims.exp<=Date.now()/1000)throw new Error('This sign-in link is expired or belongs to a different cloud project.');
     const headers={apikey:c.anonKey,Authorization:`Bearer ${access}`};
-    const verified=await fetch(`${c.url}/auth/v1/user`,{headers,cache:'no-store'});
+    const {response:verified,result:user}=await cloudJSON(`${c.url}/auth/v1/user`,{headers,cache:'no-store'});
     action.check();if(!verified.ok)throw new Error('The cloud project rejected this sign-in link. Request a new link.');
-    const user=await responseJSON(verified);action.check();
+    action.check();
     if(user?.id!==claims.sub||user.is_anonymous)throw new Error('The cloud project could not verify this account.');
-    const membershipResponse=await fetch(`${c.url}/rest/v1/memberships?select=role,active,export_level,permissions&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
+    const {response:membershipResponse,result:rows}=await cloudJSON(`${c.url}/rest/v1/memberships?select=role,active,export_level,permissions&user_id=eq.${encodeURIComponent(user.id)}&colony_id=eq.${encodeURIComponent(c.colonyId)}`,{headers,cache:'no-store'});
     action.check();if(!membershipResponse.ok)throw new Error('Unable to verify colony membership. Sign in again or contact the colony owner.');
-    const rows=await responseJSON(membershipResponse);action.check();
+    action.check();
     let pendingSetup=false;
     if(Array.isArray(rows)&&rows.length===0){
-      const profileResponse=await fetch(`${c.url}/rest/v1/rpc/get_my_lab_member`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({p_colony_id:c.colonyId})});
-      const profile=await responseJSON(profileResponse);action.check();pendingSetup=profileResponse.ok&&profile?.eligible===true&&profile.setup_required===true&&!!profile.member;
+      const {response:profileResponse,result:profile}=await cloudJSON(`${c.url}/rest/v1/rpc/get_my_lab_member`,{method:'POST',headers:{...headers,'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({p_colony_id:c.colonyId})});
+      action.check();pendingSetup=profileResponse.ok&&profile?.eligible===true&&profile.setup_required===true&&!!profile.member;
     }
     if(!pendingSetup&&(!Array.isArray(rows)||rows.length!==1||rows[0].active!==true||!['owner','manager','editor','viewer'].includes(rows[0].role)))throw new Error('This account is not an active member of the configured colony.');
     const member=rows[0]||{role:'pending',permissions:{},export_level:null};
@@ -404,7 +419,61 @@ async function readCloudPage(read,limit,check){
     }
   }
 }
-async function allRecords(onProgress=null){
+// Only the manifest-selected chunks are needed to reconstruct a workspace.
+// Keep a small version index for old immutable chunks so a later archive edit
+// can safely reuse a previously staged chunk without blindly recreating it.
+async function selectedArchive(c,check,onLoaded){
+  const fields='colony_id,entity_type,entity_id,payload,version,archived';
+  const query=(select,limit,filter)=>new URLSearchParams({select,colony_id:`eq.${c.colonyId}`,entity_type:'eq.archive',order:'entity_id.asc',limit:String(limit),...(filter?{entity_id:filter}:{})});
+  const valid=(row,payload=false)=>{
+    if(!row||typeof row.colony_id!=='string'||row.colony_id.toLowerCase()!==c.colonyId.toLowerCase()||row.entity_type!=='archive'||typeof row.entity_id!=='string'||!(row.entity_id==='reconstruction'||/^chunk:[a-f0-9]{64}$/.test(row.entity_id))||!Number.isSafeInteger(row.version)||row.version<1||typeof row.archived!=='boolean'||payload&&(!row.payload||typeof row.payload!=='object'||Array.isArray(row.payload)))throw new Error('Cloud page contains an invalid or unrelated archive record.');
+    return row;
+  };
+  const headPage=(await readCloudPage(size=>request(`entity_records?${query(fields,size,'eq.reconstruction')}`),1,check)).page;
+  if(!Array.isArray(headPage)||headPage.length!==1)throw new Error('Cloud import is incomplete: its reconstruction manifest is missing or duplicated. Finish or retry the initial upload before pulling.');
+  const head=valid(headPage[0],true);if(head.entity_id!=='reconstruction'||head.archived)throw new Error('The reconstruction manifest is invalid or archived.');
+  const metadata=head.payload,ids=new Set();
+  if(metadata.archive_format&&metadata.archive_format!==ARCHIVE_MANIFEST_FORMAT)throw new Error('This reconstruction archive format is not supported.');
+  if(metadata.archive_format===ARCHIVE_MANIFEST_FORMAT){
+    if(!metadata.archive_tables||typeof metadata.archive_tables!=='object'||Array.isArray(metadata.archive_tables))throw new Error('The reconstruction chunk manifest is invalid.');
+    for(const [table,descriptor] of Object.entries(metadata.archive_tables)){
+      if(Object.hasOwn(ID_FIELDS,table)||!descriptor||!Number.isSafeInteger(descriptor.row_count)||descriptor.row_count<0||!Array.isArray(descriptor.chunk_ids))throw new Error(`Invalid archive descriptor for ${table}.`);
+      for(const id of descriptor.chunk_ids){if(typeof id!=='string'||!/^chunk:[a-f0-9]{64}$/.test(id))throw new Error(`Invalid archive chunk reference for ${table}.`);ids.add(id);}
+    }
+  }
+  onLoaded(1);
+  const indexed=new Map();let cursor=null,limit=1000;
+  while(true){
+    const loaded=await readCloudPage(size=>request(`entity_records?${query('colony_id,entity_type,entity_id,version,archived',size,cursor===null?null:`gt.${cursor}`)}`),limit,check);const page=loaded.page;limit=loaded.limit;
+    if(!Array.isArray(page)||page.length>limit)throw new Error('The archive version index is invalid.');
+    for(const row of page){valid(row);if(indexed.has(row.entity_id))throw new Error('The archive version cursor did not advance.');indexed.set(row.entity_id,row);}
+    if(page.length<limit)break;cursor=page.at(-1).entity_id;
+  }
+  if(indexed.get('reconstruction')?.version!==head.version)throw new Error('The reconstruction manifest changed during loading. Pull again.');
+  for(const id of ids)if(!indexed.has(id)||indexed.get(id).archived)throw new Error(`Missing or invalid archive chunk ${id}; pull was not saved.`);
+  const ordered=[...ids].sort(),batches=[];for(let i=0;i<ordered.length;i+=3)batches.push(ordered.slice(i,i+3));
+  const chunks=new Map();let nextBatch=0,failure=null;
+  const active=()=>{check();if(failure)throw failure;};
+  async function worker(){
+    try{while(true){active();const batch=batches[nextBatch++];if(!batch)return;let offset=0,size=batch.length;
+      while(offset<batch.length){
+        const loaded=await readCloudPage(n=>request(`entity_records?${query(fields,n,`in.(${batch.slice(offset,offset+n).join(',')})`)}`),Math.min(size,batch.length-offset),active);size=loaded.limit;
+        const wanted=batch.slice(offset,offset+size),page=loaded.page,seen=new Set();
+        if(!Array.isArray(page)||page.length!==wanted.length)throw new Error('A referenced archive chunk is missing; pull was not saved.');
+        for(const row of page){valid(row,true);if(!wanted.includes(row.entity_id)||seen.has(row.entity_id)||row.archived||row.version!==indexed.get(row.entity_id)?.version)throw new Error('A referenced archive chunk is invalid or changed; pull was not saved.');seen.add(row.entity_id);chunks.set(row.entity_id,row);}
+        active();onLoaded(page.length);offset+=size;
+      }
+    }}catch(error){failure??=error;throw error;}
+  }
+  // Three small requests at a time bound load and memory while avoiding one
+  // serial network round trip for every three archive blocks.
+  await Promise.all(Array.from({length:Math.min(3,batches.length)},()=>worker()));check();
+  const finalPage=(await readCloudPage(size=>request(`entity_records?${query('colony_id,entity_type,entity_id,version,archived',size,'eq.reconstruction')}`),1,check)).page;
+  if(!Array.isArray(finalPage)||finalPage.length!==1)throw new Error('The reconstruction manifest changed during loading. Pull again.');
+  const finalHead=valid(finalPage[0]);if(finalHead.entity_id!=='reconstruction'||finalHead.archived||finalHead.version!==head.version)throw new Error('The reconstruction manifest changed during loading. Pull again.');
+  const result=[head,...ordered.map(id=>chunks.get(id))];result.archive_versions=[...indexed.values()].map(row=>[`archive:${row.entity_id}`,row.version]);return result;
+}
+async function allRecords(onProgress=null,{referencedArchive=false}={}){
   const generation=authGeneration,context=exportContext(),c=configuration(),policy=await refreshFeeVisibility({notify:false});const result=[];
   const check=()=>{if(generation!==authGeneration)throw new Error('The account or colony changed during loading. Open the shared colony again.');checkExportContext(context);};
   let recordsLoaded=0,archiveBlocksLoaded=0;
@@ -414,7 +483,7 @@ async function allRecords(onProgress=null){
   // Archive chunks are larger, so their initial page remains much smaller.
   // Bound every page with the primary key before RLS evaluates its payload.
   // OFFSET repeatedly scans all preceding rows and can time out even at LIMIT 1.
-  for(const type of [...MANAGED,...(policy.source_archive_allowed?['archive']:[])]){
+  for(const type of [...MANAGED,...(policy.source_archive_allowed&&!referencedArchive?['archive']:[])]){
     let cursor=null,limit=type==='archive'?3:1000;const seen=new Set();
     progress(type==='archive'?'archive':'records');
     while(true){
@@ -438,6 +507,10 @@ async function allRecords(onProgress=null){
       result.push(...(policy.source_archive_allowed?page:page.filter(r=>r.entity_type!=='locations'&&!feeRecord(r))));if(page.length<limit)break;
       cursor=page.at(-1).entity_id;
     }
+  }
+  if(policy.source_archive_allowed&&referencedArchive){
+    progress('archive');const archive=await selectedArchive(c,check,count=>{archiveBlocksLoaded+=count;progress('archive');});
+    result.push(...archive);result.archive_versions=archive.archive_versions;
   }
   if(!policy.source_archive_allowed){
    let offset=0,limit=250;while(true){const loaded=await readCloudPage(size=>request('rpc/get_lac_fee_records',{method:'POST',body:{p_colony_id:c.colonyId,p_offset:offset,p_limit:size}}),limit,check);const page=loaded.page;limit=loaded.limit;
@@ -490,14 +563,15 @@ async function assemble(rows){
   if(partial)data.fee_visibility=rows.fee_visibility;return normalizeDataset(data);
 }
 function rememberCloudCache(writeId){const c=configuration();setStorage('localStorage',CLOUD_CACHE_KEY,JSON.stringify({url:c.url,colony:c.colonyId,user:session()?.user?.id,estimate:feeVisibility?.estimate,actual:feeVisibility?.actual,source_projection_version:SOURCE_PROJECTION_VERSION,...(writeId?{write_id:writeId}:{})}));}
-function remember(rows){versions=new Map(rows.map(r=>[recordKey(r),r.version]));baseline=new Map(rows.map(r=>[recordKey(r),r]));synced=true;}
+function remember(rows){versions=new Map([...(rows.archive_versions||[]),...rows.map(r=>[recordKey(r),r.version])]);baseline=new Map(rows.map(r=>[recordKey(r),r]));synced=true;}
 export async function pullFromCloud({onProgress}={}){
+  invalidate();
   const generation=authGeneration,context=exportContext(),config=stable(configuration());
   const check=()=>{if(generation!==authGeneration||config!==stable(configuration())||context!==exportContext())throw new Error('The account or colony changed during loading. Open the shared colony again.');};
   const progress=value=>{check();if(typeof onProgress==='function'){try{onProgress(Object.freeze({...value}));}catch{/* Presentation cannot interrupt a verified read. */}}};
   progress({phase:'access',recordsLoaded:0,archiveBlocksLoaded:0});
   await membership({check});check();
-  const rows=await allRecords(progress);check();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
+  const rows=await allRecords(progress,{referencedArchive:true});check();if(!rows.length)throw new Error('The cloud colony is empty. Import and upload a dataset first.');
   const data=await assemble(rows);check();
   const c=configuration(),cacheWrite={id:crypto.randomUUID(),url:c.url,colony:c.colonyId,user:session().user.id};
   try{
