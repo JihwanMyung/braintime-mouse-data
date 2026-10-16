@@ -245,3 +245,7 @@ supabase/cage-observations.sql
 supabase/tests/cage-observations.test.mjs
 scripts/prepare-cage-observations.mjs
 tests/member-invitation-contract.test.mjs
+supabase/LOCAL_BACKUP.md
+supabase/local-backup.sql
+supabase/tests/local-backup.test.mjs
+tests/backup-link.test.mjs
