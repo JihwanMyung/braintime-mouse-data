@@ -14,8 +14,8 @@ import { renderHousing, scheduleApplies, lightClock } from './husbandry.js?v=63'
 import * as history from './history-index.js';
 import { renderUserManagement } from './user-management.js';
 import { renderLabMembers, clearLabMembers } from './lab-members.js?v=61';
-import { renderAccessLogs } from './access-logs.js?v=41';
-import { createAccessActivity } from './access-activity.js?v=28';
+import { renderAccessLogs } from './access-logs.js?v=69';
+import { createAccessActivity } from './access-activity.js?v=69';
 import { projectCageHistory, getCageHistoryDates } from './cage-history.js?v=24';
 import { projectAnimalSheet } from './animal-sheet-export.js?v=48';
 import { sortRooms, compareRooms } from './room-order.js?v=24';

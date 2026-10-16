@@ -7,7 +7,7 @@ import {PGlite} from '@electric-sql/pglite';
 const db=new PGlite(),colony='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',other='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ids=Object.fromEntries(['owner','editor','viewer','manager','disabled','pending','unverified','ownerB','revoked','limited','daily'].map((name,i)=>[name,`${String(i+1).padStart(8,'0')}-1111-4111-8111-111111111111`]));
 await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create role braintime_snapshot_reader;
-create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,encrypted_password text,raw_user_meta_data jsonb default '{}');
+create schema auth;create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz,last_sign_in_at timestamptz,encrypted_password text,raw_user_meta_data jsonb default '{}');
 create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
 grant usage on schema auth to anon,authenticated,service_role;grant execute on function auth.uid() to anon,authenticated,service_role;`);
 for(const name of Object.keys(ids))await db.query('insert into auth.users(id,email,email_confirmed_at,encrypted_password) values($1,$2,$3,$4)',[ids[name],name+'@example.org',name==='unverified'?null:'2026-01-01T00:00:00Z','synthetic']);
@@ -101,5 +101,64 @@ await test('append-only guards retain history, while public exports and shared a
  await as('manager',()=>denied(()=>rpc('export_records',[colony,'history',null,null,['app_access_log']]),'22023'));
  const names=(await db.query("select table_schema,table_name from information_schema.tables where table_name like 'app_access_%'")).rows;
  assert(names.every(row=>row.table_schema==='colony_private'));
+});
+await test('owner directory includes every colony account independently of event pages and filters',async()=>{
+ const signedIn='2026-10-16T02:03:04Z';
+ await db.query('update auth.users set last_sign_in_at=$1 where id=$2',[signedIn,ids.disabled]);
+ const result=await as('owner',()=>list({app:'reagents',user:ids.pending,event:'sign_out',from:'2099-01-01T00:00:00Z',limit:1}));
+ assert.deepEqual(result.events,[]);
+ const expected=(await db.query('select user_id from public.memberships where colony_id=$1 order by user_id',[colony])).rows.map(r=>r.user_id);
+ assert.deepEqual(result.users.map(u=>u.user_id).sort(),expected);
+ assert(!result.users.some(u=>u.user_id===ids.ownerB||u.user_id===ids.pending));
+ const editor=result.users.find(u=>u.user_id===ids.editor),owner=result.users.find(u=>u.user_id===ids.owner),disabled=result.users.find(u=>u.user_id===ids.disabled);
+ assert.equal(editor.name,'Verified Scientist');assert.equal(editor.acronym,'VS');assert.equal(editor.email,'editor@example.org');assert.equal(editor.active,true);assert.equal(editor.last_sign_in_at,null);
+ assert.equal(owner.name,'Owner Name');assert.equal(owner.acronym,'ON');
+ assert.equal(disabled.active,false);assert.equal(Date.parse(disabled.last_sign_in_at),Date.parse(signedIn));
+ const first=await as('owner',()=>list({limit:1})),second=await as('owner',()=>list({limit:1,before:first.next_before}));
+ assert.deepEqual(second.users,first.users);
+ assert.deepEqual(Object.keys(editor).sort(),['user_id','name','email','acronym','last_sign_in_at','active'].sort());
+});
+await test('directory uses linked canonical names before unlinked email matches and never another account or colony roster',async()=>{
+ const linked=randomUUID(),fallback=randomUUID(),conflict=randomUUID(),otherPerson=randomUUID();
+ for(const [id,email,name] of [[linked,'linked@example.org','Linked auth name'],[fallback,'  EMAIL-FALLBACK@EXAMPLE.ORG  ','Fallback auth name'],[conflict,'conflict@example.org','Correct auth fallback'],[otherPerson,'otherperson@example.org','Other account']]) {
+  await db.query('insert into auth.users(id,email,raw_user_meta_data) values($1,$2,$3)',[id,email,JSON.stringify({full_name:name})]);
+  await db.query("insert into public.memberships(colony_id,user_id,role,active,updated_by) values($1,$2,'editor',true,$3)",[colony,id,ids.owner]);
+ }
+ await db.query(`insert into public.lab_members(colony_id,name,email,acronym,status,linked_user_id,username,created_by,updated_by) values
+   ($1,'Canonical Linked','old-linked@example.org','CL','current',$2,'canonical',$5,$5),
+   ($1,'Unlinked Name Must Lose','linked@example.org','UL','review',null,null,$5,$5),
+   ($1,'Canonical Email','email-fallback@example.org','CE','current',null,null,$5,$5),
+   ($1,'Belongs To Another Account','conflict@example.org','OA','current',$3,'otheraccount',$5,$5),
+   ($4,'Foreign Colony Name','conflict@example.org','FC','current',null,null,$5,$5)`,[colony,linked,otherPerson,other,ids.owner]);
+ const result=await as('owner',()=>list()),byId=new Map(result.users.map(u=>[u.user_id,u]));
+ assert.equal(byId.get(linked).name,'Canonical Linked');assert.equal(byId.get(linked).acronym,'CL');
+ assert.equal(byId.get(fallback).name,'Canonical Email');assert.equal(byId.get(fallback).acronym,'CE');
+ assert.equal(byId.get(conflict).name,'Correct auth fallback');assert.equal(byId.get(conflict).acronym,null);
+ assert.equal(byId.get(otherPerson).name,'Belongs To Another Account');
+});
+await test('past log-only identities remain selectable without fabricating sign-ins or changing events',async()=>{
+ const former=randomUUID(),deleted=randomUUID(),foreign=randomUUID();
+ await db.query("insert into auth.users(id,email,last_sign_in_at) values($1,'former-current@example.org','2026-10-16T03:00:00Z')",[former]);
+ for(const [id,target,email,name] of [[former,colony,'former-old@example.org','Former Scientist'],[deleted,colony,'deleted@example.org','Deleted Scientist'],[foreign,other,'foreign@example.org','Foreign Scientist']])await db.query(`insert into colony_private.app_access_log(colony_id,user_id,email,name,acronym,role,app,event,page,session_id,event_id,occurred_at) values($1,$2,$3,$4,'FORMER','editor','mouse','page_view','mice',$5,$6,'2020-01-01T00:00:00Z')`,[target,id,email,name,randomUUID(),randomUUID()]);
+ const result=await as('owner',()=>list({app:'reagents',limit:1})),formerUser=result.users.find(u=>u.user_id===former),deletedUser=result.users.find(u=>u.user_id===deleted);
+ assert.equal(formerUser.name,'Former Scientist');assert.equal(formerUser.email,'former-old@example.org');assert.equal(formerUser.last_sign_in_at,null);assert.equal(formerUser.active,false);
+ assert.equal(deletedUser.name,'Deleted Scientist');assert.equal(deletedUser.email,'deleted@example.org');assert.equal(deletedUser.last_sign_in_at,null);assert.equal(deletedUser.active,false);
+ assert(!result.users.some(u=>u.user_id===foreign));
+ const event=(await as('owner',()=>list({user:former}))).events[0];
+ assert.equal(event.email,'former-old@example.org');assert.equal(event.name,'Former Scientist');assert.equal(event.source,'app_reported');assert.equal(Date.parse(event.occurred_at),Date.parse('2020-01-01T00:00:00Z'));
+});
+await test('standalone directory migration replaces only the list RPC and preserves privileges, activation and immutable events',async()=>{
+ const directoryMigration=await readFile(new URL('../app-access-directory.sql',import.meta.url),'utf8');
+ assert.equal((directoryMigration.match(/create or replace function/g)||[]).length,1);
+ assert(directoryMigration.includes(migration.slice(migration.indexOf('create or replace function public.list_app_access('),migration.indexOf('revoke all on function public.list_app_access('))));
+ const before=(await db.query('select * from colony_private.app_access_log order by access_id')).rows;
+ const grants=(await db.query("select proacl::text from pg_proc where oid='public.list_app_access(uuid,text,uuid,text,timestamptz,timestamptz,bigint,integer)'::regprocedure")).rows;
+ await db.exec(directoryMigration);await db.exec(directoryMigration);
+ assert.deepEqual((await db.query('select * from colony_private.app_access_log order by access_id')).rows,before);
+ assert.deepEqual((await db.query("select proacl::text from pg_proc where oid='public.list_app_access(uuid,text,uuid,text,timestamptz,timestamptz,bigint,integer)'::regprocedure")).rows,grants);
+ assert.equal((await db.query('select started_at::text from colony_private.app_access_activation')).rows[0].started_at,activation);
+ for(const name of ['manager','editor','viewer','disabled','pending','ownerB'])await as(name,()=>denied(()=>list()));
+ await as('owner',()=>denied(()=>list({colony:other})));await as(null,()=>denied(()=>list()),'anon');await as(null,()=>denied(()=>list()),'service_role');
+ assert((await as('owner',()=>list())).users.some(u=>u.user_id===ids.editor));
 });
 await db.close();

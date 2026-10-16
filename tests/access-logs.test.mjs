@@ -29,3 +29,31 @@ test('every owner panel handler clears loaded private data when current authoriz
 test('edited filters cannot paginate an older result set before Apply resets the cursor',async()=>{
  const calls=[];const f=fixture({listLogs:async filters=>{calls.push(filters);return result([row('10',{page:'matings'})],{has_more:true,next_before:'10'});}});await f.click('open');assert.match(f.container.innerHTML,/>Breeding<\/td>/);f.field('app','reagents');assert.match(f.container.innerHTML,/data-access-action="more" disabled/);await f.click('more');assert.equal(calls.length,1);await f.submit();assert.equal(calls.length,2);assert.equal(calls[1].before,null);assert.equal(calls[1].app,'reagents');f.dispose();
 });
+
+test('account sign-ins and the complete user filter do not depend on the latest 50 app events',async()=>{
+ const colleague='22222222-2222-4222-8222-222222222222',calls=[];
+ const users=[{user_id:user,name:'Owner',email:'owner@example.invalid',last_sign_in_at:'2026-10-16T01:00:00Z'},
+  {user_id:colleague,name:'Other Scientist',email:'other@example.invalid',last_sign_in_at:'2026-10-16T02:00:00Z'}];
+ const f=fixture({initialApp:'reagents',listLogs:async filters=>{calls.push(filters);return result(filters.userId?[]:Array.from({length:50},(_,i)=>row(String(100-i),{app:'reagents'})),{users});}});
+ await f.click('open');
+ assert.match(f.container.innerHTML,/Latest account sign-ins/);
+ assert.match(f.container.innerHTML,/Shared across lab tools/);
+ assert.match(f.container.innerHTML,new RegExp(`<option value="${colleague}">Other Scientist</option>`));
+ assert.match(f.container.innerHTML,/16 Oct 2026, 10:00:00/);
+ f.field('userId',colleague);await f.submit();
+ assert.equal(calls.at(-1).userId,colleague);assert.equal(calls.at(-1).app,'reagents');
+ assert.match(f.container.innerHTML,/Other Scientist/);
+ assert.match(f.container.innerHTML,/No recorded activity matches/,'an account sign-in is not fabricated as an app visit');
+ await f.click('close');assert.doesNotMatch(f.container.innerHTML,/Other Scientist|other@example.invalid/);
+});
+
+test('invalid account directory, failed refresh, and role loss never retain private sign-ins',async()=>{
+ const users=[{user_id:user,name:'Private Account',email:'private@example.invalid',last_sign_in_at:null}];
+ for(const malformed of [{...users[0],user_id:'invalid'},{...users[0],last_sign_in_at:'invalid'}]){
+  const f=fixture({listLogs:async()=>result([],{users:[malformed]})});await f.click('open');assert.match(f.container.innerHTML,/could not be verified/);assert.doesNotMatch(f.container.innerHTML,/Private Account/);
+ }
+ let fail=false;
+ const f=fixture({listLogs:async()=>{if(fail)throw Error('Read failed');return result([],{users});}});await f.click('open');assert.match(f.container.innerHTML,/Private Account/);assert.doesNotMatch(f.container.innerHTML,/1970/);
+ fail=true;await f.click('refresh');assert.doesNotMatch(f.container.innerHTML,/Private Account|private@example.invalid/);
+ fail=false;await f.click('refresh');f.setRole('manager');f.field('app','mouse');assert.equal(f.container.innerHTML,'');
+});
