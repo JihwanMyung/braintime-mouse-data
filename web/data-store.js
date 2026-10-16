@@ -1205,6 +1205,24 @@ export async function saveLabMember(person){
  if(await membership()!=='owner')throw new Error('Only the owner can edit lab-member records.');
  return request('rpc/save_lab_member',{method:'POST',body:{p_colony_id:configuration().colonyId,p_person:person}});
 }
+export async function approveLabMemberEmail(payload){
+ const keys=['request_person_id','request_version','target_person_id','target_version'];
+ if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).length!==keys.length||Object.keys(payload).some(key=>!keys.includes(key)))throw new Error('Select the registered email and existing member before approving.');
+ const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+ if(typeof payload.request_person_id!=='string'||typeof payload.target_person_id!=='string'||!uuid.test(payload.request_person_id)||!uuid.test(payload.target_person_id)||payload.request_person_id===payload.target_person_id||!Number.isSafeInteger(payload.request_version)||payload.request_version<1||!Number.isSafeInteger(payload.target_version)||payload.target_version<1)throw new Error('Refresh Members and select the current records.');
+ const c=configuration(),actor=session()?.user?.id,generation=authGeneration;
+ const check=()=>{if(generation!==authGeneration||configuration()?.url!==c?.url||configuration()?.colonyId!==c?.colonyId||session()?.user?.id!==actor)throw new Error('The account or colony changed. Refresh Members before continuing.');};
+ if(!c||!actor)throw new Error('Sign in as the owner before approving an email.');
+ if(await membership({check})!=='owner')throw Object.assign(new Error('Only the owner can approve a member email.'),{status:403});
+ check();
+ let result;
+ try{result=await request('rpc/approve_lab_member_email',{method:'POST',body:{p_colony_id:c.colonyId,p_request_person_id:payload.request_person_id,p_request_version:payload.request_version,p_target_person_id:payload.target_person_id,p_target_version:payload.target_version}});}
+ catch(error){check();if(error.status===409)error.code='40001';throw error;}
+ check();
+ const member=result?.member,merged=result?.merged_request;
+ if(member?.person_id!==payload.target_person_id||member.status!=='current'||member.archived!==false||member.linked_user_id||!Number.isSafeInteger(member.version)||member.version<=payload.target_version||!Array.isArray(member.secondary_emails)||merged?.person_id!==payload.request_person_id||merged.archived!==true||!Number.isSafeInteger(merged.version)||merged.version<=payload.request_version||result.setup_required!==true)throw new Error('The email approval result could not be confirmed. Refresh Members before trying again.');
+ return result;
+}
 function applyMyLabProfile(result){
  const active=session();if(active)saveSession({...active,username:result?.member?.username||null,setupRequired:setupProfileAllowed(result)});
 }

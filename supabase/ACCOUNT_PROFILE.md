@@ -6,7 +6,7 @@ The caller must already have a verified, enabled Supabase Auth session. These RP
 
 An existing active membership is already approved access. This covers the direct owner invitation flow, which grants membership before the recipient has a roster profile. Such a recipient can provide their name and other details, then choose a username and password without another approval. A previous self-request can also proceed when the owner subsequently grants that exact Auth account an active membership. Owner-created Review rows remain pending. An owner edit that returns or keeps a self-request in Review also requires explicit approval to Current, checked against immutable roster audit history. Later personal-profile edits cannot erase that decision. Different email addresses and similar names never establish a connection to an invitation.
 
-Historical, archived, disabled, anonymous, unverified, banned, deleted and conflicting identities cannot request registration or complete setup. Changing an Auth email does not create a second profile around an existing linked identity. Review users can read and edit only their own safe profile fields, not the roster, application data or intended privileges.
+Historical, archived, disabled, anonymous, unverified, banned, deleted and conflicting identities cannot request registration or complete setup. Changing an Auth email does not create a second profile around an existing linked identity or a pending identity established by immutable owner email-approval audit. Review users can read and edit only their own safe profile fields, not the roster, application data or intended privileges.
 
 ## Client contract
 

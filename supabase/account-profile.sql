@@ -30,6 +30,18 @@ begin
   if member.user_id is not null and not member.active then
     return jsonb_build_object('member',null,'eligible',false,'setup_required',false,'registration_allowed',false,'reason','access_disabled');
   end if;
+  -- Pending approved identity is stable before a username is chosen. An Auth
+  -- email change must not turn it into a second Current profile.
+  if exists(select 1 from public.lab_members pending
+    where pending.colony_id=p_colony_id and pending.linked_user_id is null and pending.email is distinct from account_email
+    and exists(select 1 from public.lab_member_audit approved
+      where approved.colony_id=p_colony_id and approved.person_id=pending.person_id and approved.operation='UPDATE'
+      and approved.actor_id::text=approved.after_record#>>'{provenance,email_approval,approved_by}'
+      and approved.after_record#>>'{provenance,email_approval,registered_user_id}'=actor::text
+      and approved.before_record#>>'{provenance,email_approval,registered_user_id}' is distinct from approved.after_record#>>'{provenance,email_approval,registered_user_id}'
+      and approved.after_record->>'email'=pending.email and approved.after_record#>>'{provenance,email_approval,approved_email}'=pending.email)) then
+    return jsonb_build_object('member',null,'eligible',false,'setup_required',false,'registration_allowed',false,'reason','account_conflict');
+  end if;
   membership_approved:=member.user_id is not null and member.active;
   select count(*) into matches from public.lab_members where colony_id=p_colony_id and (email=account_email or linked_user_id=actor);
   if matches>1 then return jsonb_build_object('member',null,'eligible',false,'setup_required',false,'registration_allowed',false,'reason','account_conflict');end if;

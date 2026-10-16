@@ -103,3 +103,21 @@ test('access refresh denial clears the pending private profile',async()=>{
  const ui=view();let reads=0;await renderAccountSetup(ui.container,hooksFor(pendingProfile(),{getProfile:async()=>{if(++reads>1)throw Object.assign(Error('Expired'),{status:401});return pendingProfile();}}));
  await checkAccess(ui);assert.match(ui.container.innerHTML,/Sign in again/);assert.doesNotMatch(ui.container.innerHTML,/Submitted Member|0123456|person@example/);assert.equal(ui.container.onclick,null);
 });
+
+test('registration and invited setup prefill a labeled read-only verified email with the small approval note',async()=>{
+ for(const before of [profile(),{...profile(),eligible:false,setup_required:false,reason:'profile_required',member:{...profile().member,person_id:null,version:0}}]){
+  const ui=view();await renderAccountSetup(ui.container,hooksFor({...before,invitation_email:'unverified-hint@example.invalid'}));
+  assert.equal(ui.form.fields.email.value,'person@example.org');assert.match(ui.container.innerHTML,/<label for="setup-email">Email<\/label>/);assert.match(ui.container.innerHTML,/<input id="setup-email"[^>]* type="email"[^>]* readonly[^>]* aria-describedby="setup-email-note"/);assert.match(ui.container.innerHTML,/<small id="setup-email-note" class="muted">Using a different email from the invitation requires approval from the server manager\.<\/small>/);assert.doesNotMatch(ui.container.innerHTML,/unverified-hint/);
+ }
+});
+test('client changes to the prefilled email are never submitted as profile or credential identity',async()=>{
+ for(const pending of [false,true]){
+  const before={...profile(),eligible:!pending,setup_required:!pending,reason:pending?'profile_required':'username_required'},ui=view(),calls=[];
+  await renderAccountSetup(ui.container,hooksFor(before,{saveProfile:async(fields,version)=>{calls.push(['profile',fields,version]);return nextProfile(before,fields);},complete:async(username,password)=>{calls.push(['complete',username,password]);return {...before,setup_required:false,member:{...before.member,username}};}}));
+  ui.form.fields.email.value='other@example.invalid';if(!pending)ui.fillCredentials();await ui.submit();assert.deepEqual(calls[0],['profile',{name:'<Name>',phone:'0123456',category:'phd',acronym:'NP'},3]);assert.equal(JSON.stringify(calls).includes('other@example.invalid'),false);assert.equal(calls.length,pending?1:2);
+ }
+});
+test('missing verified email is not inferred from invitation hints and email display escapes server text',async()=>{
+ const ui=view();await renderAccountSetup(ui.container,hooksFor({...profile(),invitation_email:'suggested@example.invalid',member:{...profile().member,email:null}}));assert.equal(ui.form.fields.email.value,'');assert.doesNotMatch(ui.container.innerHTML,/suggested@example.invalid/);
+ await renderAccountSetup(ui.container,hooksFor({...profile(),member:{...profile().member,email:'a" autofocus="true@example.invalid'}}));assert.match(ui.container.innerHTML,/value="a&quot; autofocus=&quot;true@example.invalid"/);assert.doesNotMatch(ui.container.innerHTML,/ autofocus="true/);
+});

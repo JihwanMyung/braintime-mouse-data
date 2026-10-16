@@ -112,11 +112,28 @@ begin
     if merged->k is not null and jsonb_typeof(merged->k) not in ('string','null') then raise exception using errcode='22023',message='Roster text fields must be strings or null';end if;
   end loop;
   if jsonb_typeof(merged->'archived') is distinct from 'boolean' or jsonb_typeof(merged->'provenance') is distinct from 'object' then raise exception using errcode='22023',message='Archived must be boolean and provenance must be an object';end if;
-  if previous.linked_user_id is not null and lower(nullif(btrim(merged->>'email'),'')) is distinct from previous.email then raise exception using errcode='22023',message='A claimed account email cannot be reassigned through the roster';end if;
+  -- Only approve_lab_member_email writes this binding. Ordinary owner editing
+  -- must not manufacture a matching immutable audit for a different account.
+  if (is_new and merged->'provenance' ? 'email_approval') or
+    (not is_new and merged->'provenance'->'email_approval' is distinct from previous.provenance->'email_approval') then
+    raise exception using errcode='22023',message='Email approval history is managed by the email approval action';
+  end if;
   if previous.linked_user_id is not null then select * into previous_member from public.memberships where colony_id=p_colony_id and user_id=previous.linked_user_id for update;end if;
   if not is_new and previous.linked_user_id is null then
-    select m.* into previous_member from public.memberships m where m.colony_id=p_colony_id and m.role='owner' and exists(select 1 from auth.users u where u.id=m.user_id and u.email_confirmed_at is not null and lower(u.email)=previous.email) order by m.user_id limit 1 for update of m;
+    -- An approved account may already have access before choosing its username.
+    -- Keep it attached for revocation, including after an Auth email change.
+    -- The fallback uses an immutable owner approval, never editable provenance.
+    select m.* into previous_member from public.memberships m where m.colony_id=p_colony_id and (
+      (m.role='owner' and exists(select 1 from auth.users u where u.id=m.user_id and u.email_confirmed_at is not null and lower(btrim(u.email))=previous.email))
+      or exists(select 1 from public.lab_member_audit approved
+        where approved.colony_id=p_colony_id and approved.person_id=previous.person_id and approved.operation='UPDATE'
+        and approved.actor_id::text=approved.after_record#>>'{provenance,email_approval,approved_by}'
+        and approved.after_record#>>'{provenance,email_approval,registered_user_id}'=m.user_id::text
+        and approved.before_record#>>'{provenance,email_approval,registered_user_id}' is distinct from approved.after_record#>>'{provenance,email_approval,registered_user_id}'
+        and approved.after_record->>'email'=previous.email and approved.after_record#>>'{provenance,email_approval,approved_email}'=previous.email)
+    ) order by m.user_id limit 1 for update of m;
   end if;
+  if (previous.linked_user_id is not null or previous_member.user_id is not null) and lower(nullif(btrim(merged->>'email'),'')) is distinct from previous.email then raise exception using errcode='22023',message='An approved account email cannot be reassigned through the roster';end if;
   if previous_member.role='owner' and ((merged->>'archived')::boolean or merged->>'status' is distinct from 'current') then raise exception using errcode='42501',message='The owner roster record must remain current and active';end if;
   begin
     if is_new then
@@ -128,8 +145,8 @@ begin
   exception when check_violation or not_null_violation or string_data_right_truncation then raise exception using errcode='22023',message='Invalid roster value, category, status, access level, or field length';end;
   if previous_member.user_id is not null and previous_member.role<>'owner' then
     -- Restoring roster status alone never undoes an explicit account deactivation.
-    update public.memberships set role=saved.intended_role,export_level=saved.export_level,active=previous_member.active and saved.status='current' and not saved.archived,updated_at=clock_timestamp(),updated_by=actor where colony_id=p_colony_id and user_id=saved.linked_user_id and (role,export_level,active) is distinct from (saved.intended_role,saved.export_level,previous_member.active and saved.status='current' and not saved.archived) returning * into saved_member;
-    if found then insert into public.audit_log(colony_id,entity_type,entity_id,operation,actor_id,before_record,after_record) values(p_colony_id,'membership',saved.linked_user_id::text,'UPDATE',actor,to_jsonb(previous_member),to_jsonb(saved_member));end if;
+    update public.memberships set role=saved.intended_role,export_level=saved.export_level,active=previous_member.active and saved.status='current' and not saved.archived,updated_at=clock_timestamp(),updated_by=actor where colony_id=p_colony_id and user_id=previous_member.user_id and (role,export_level,active) is distinct from (saved.intended_role,saved.export_level,previous_member.active and saved.status='current' and not saved.archived) returning * into saved_member;
+    if found then insert into public.audit_log(colony_id,entity_type,entity_id,operation,actor_id,before_record,after_record) values(p_colony_id,'membership',previous_member.user_id::text,'UPDATE',actor,to_jsonb(previous_member),to_jsonb(saved_member));end if;
   end if;
   return jsonb_build_object('member',colony_private.lab_member_payload(saved));
 end $$;
