@@ -43,8 +43,8 @@ async function readBody(request) {
 }
 
 function validate(body, config) {
-  const fields = {list: [], invite: ['email', 'role', 'export_level', 'permissions'], invite_preregistered: ['person_id', 'version'], update_access: ['user_id', 'role', 'active', 'export_level', 'permissions']};
-  if (!Object.hasOwn(fields, body.action)) fail(400, 'invalid_action', 'Choose list, invite, invite_preregistered, or update_access.');
+  const fields = {list: [], invite: ['email', 'role', 'export_level', 'permissions'], invite_preregistered: ['person_id', 'version'], create_preregistered_link: ['person_id', 'version'], update_access: ['user_id', 'role', 'active', 'export_level', 'permissions']};
+  if (!Object.hasOwn(fields, body.action)) fail(400, 'invalid_action', 'Choose a supported user-management action.');
   const allowed = new Set(['action', 'colony_id', ...fields[body.action]]);
   if (Object.keys(body).some(key => !allowed.has(key))) fail(400, 'invalid_request', 'The request contains unsupported fields.');
   if (body.colony_id !== config.colonyId) fail(403, 'wrong_colony', 'This endpoint manages only its configured colony.');
@@ -57,7 +57,7 @@ function validate(body, config) {
     if (body.email === config.ownerEmail) fail(403, 'owner_protected', 'The original owner account is protected.');
   }
   if (body.action === 'update_access' && (!UUID.test(body.user_id || '') || typeof body.active !== 'boolean')) fail(400, 'invalid_request', 'A user ID, access role, and active flag are required.');
-  if (body.action === 'invite_preregistered' && (!UUID.test(body.person_id || '') || !Number.isInteger(body.version) || body.version < 1 || body.version > 2147483647)) fail(400, 'invalid_request', 'A preregistered person ID and current record version are required.');
+  if (['invite_preregistered', 'create_preregistered_link'].includes(body.action) && (!UUID.test(body.person_id || '') || !Number.isInteger(body.version) || body.version < 1 || body.version > 2147483647)) fail(400, 'invalid_request', 'A preregistered person ID and current record version are required.');
 }
 
 export function createHandler({env, fetchImpl = fetch}) {
@@ -132,19 +132,19 @@ export function createHandler({env, fetchImpl = fetch}) {
         let result; const exportLevel = body.export_level ?? (action === 'add' ? 'low' : null);
         try { result = await call('/rest/v1/rpc/manage_colony_member', {method: 'POST', payload: {p_colony_id: config.colonyId, p_user_id: user.id, p_role: role, p_active: active, p_action: action, p_export_level: exportLevel, p_permissions: body.permissions ?? null}}); }
         catch (error) {
-          if (emailSent) fail(502, 'membership_outcome_unknown', 'The invitation was sent, but access could not be confirmed. Reload the user list before trying again.', {invitation_sent: true});
+          if (emailSent) fail(502, 'membership_outcome_unknown', 'The email request was accepted, but access could not be confirmed. Reload the user list before trying again.', {invitation_sent: true, delivery_status: 'accepted', delivery_confirmed: false});
           throw error;
         }
         if (!result.ok) {
           const code = result.data?.code;
           const status = code === '42501' ? 403 : ['23505', 'P0002'].includes(code) ? 409 : 503;
           fail(status, emailSent ? 'invitation_sent_access_failed' : 'access_update_failed', emailSent ?
-            'The invitation was sent, but colony access was not granted. Reload the user list, then retry adding this email if it is absent.' :
-            'Access could not be updated. Reload the user list and verify that the account is not an owner.', {invitation_sent: emailSent});
+            'The email request was accepted, but colony access was not granted. Reload the user list, then retry adding this email if it is absent.' :
+            'Access could not be updated. Reload the user list and verify that the account is not an owner.', {invitation_sent: emailSent, delivery_status: emailSent ? 'accepted' : 'not_sent', delivery_confirmed: false});
         }
         const row = result.data?.[0];
-        if (!Array.isArray(result.data) || result.data.length !== 1 || row?.colony_id !== config.colonyId || row?.user_id !== user.id || row?.role !== role || row?.active !== active || !EXPORT_LEVELS.includes(row?.export_level) || exportLevel !== null && row.export_level !== exportLevel) fail(502, 'membership_outcome_unknown', 'Access could not be confirmed. Reload the user list before trying again.', {invitation_sent: emailSent});
-        if (role === 'manager' && (!validPermissions(row.permissions) || PERMISSIONS.some(key => !Object.hasOwn(row.permissions, key))) || body.permissions !== undefined && PERMISSIONS.some(key => row.permissions?.[key] !== normalizedPermissions(body.permissions)[key])) fail(502, 'membership_outcome_unknown', 'Manager permissions could not be confirmed. Reload the user list before trying again.', {invitation_sent: emailSent});
+        if (!Array.isArray(result.data) || result.data.length !== 1 || row?.colony_id !== config.colonyId || row?.user_id !== user.id || row?.role !== role || row?.active !== active || !EXPORT_LEVELS.includes(row?.export_level) || exportLevel !== null && row.export_level !== exportLevel) fail(502, 'membership_outcome_unknown', 'Access could not be confirmed. Reload the user list before trying again.', {invitation_sent: emailSent, delivery_status: emailSent ? 'accepted' : 'not_sent', delivery_confirmed: false});
+        if (role === 'manager' && (!validPermissions(row.permissions) || PERMISSIONS.some(key => !Object.hasOwn(row.permissions, key))) || body.permissions !== undefined && PERMISSIONS.some(key => row.permissions?.[key] !== normalizedPermissions(body.permissions)[key])) fail(502, 'membership_outcome_unknown', 'Manager permissions could not be confirmed. Reload the user list before trying again.', {invitation_sent: emailSent, delivery_status: emailSent ? 'accepted' : 'not_sent', delivery_confirmed: false});
         return publicUser(row, user);
       };
 
@@ -169,10 +169,12 @@ export function createHandler({env, fetchImpl = fetch}) {
         return reply({user: saved, message: body.active ? 'Colony access updated.' : 'Colony access disabled. The authentication account has been retained.'});
       }
 
-      if (body.action === 'invite_preregistered') {
+      if (['invite_preregistered', 'create_preregistered_link'].includes(body.action)) {
+        const manualLink = body.action === 'create_preregistered_link';
         const preregistration = async () => {
           // The owner JWT and roster RPC are authoritative. The browser supplies no recipient or privileges.
           const result = await call('/rest/v1/rpc/list_lab_members', {method: 'POST', payload: {p_colony_id: config.colonyId}});
+          if ([401, 403].includes(result.status)) fail(result.status, 'roster_access_denied', 'Member access could not be verified. Sign in again.');
           if (!result.ok || !Array.isArray(result.data?.members)) fail(503, 'roster_read_failed', 'Preregistered members could not be verified. Reload Members before sending an invitation.');
           const rows = result.data.members.filter(row => row.person_id === body.person_id && row.colony_id === config.colonyId);
           if (rows.length !== 1) fail(404, 'preregistration_not_found', 'This preregistered member was not found. Reload Members.');
@@ -196,12 +198,57 @@ export function createHandler({env, fetchImpl = fetch}) {
           if (account.banned_until && Date.parse(account.banned_until) > Date.now()) fail(409, 'account_disabled', 'This authentication account is disabled. An invitation cannot enable it.');
           const lastSent = Math.max(...['invited_at', 'confirmation_sent_at', 'recovery_sent_at'].map(key => Date.parse(account[key]) || 0));
           const seconds = Math.ceil((lastSent + 60000 - Date.now()) / 1000);
-          if (seconds > 0) fail(429, 'email_rate_limit', 'An account email was recently requested. Wait before sending another invitation.', {retry_after_seconds: Math.min(seconds, 60)});
+          if (!manualLink && seconds > 0) fail(429, 'email_rate_limit', 'An account email was recently requested. Wait before sending another invitation.', {retry_after_seconds: Math.min(seconds, 60)});
         }
         await assertOwner();
         const current = await preregistration();
         if (current.email !== person.email) fail(409, 'preregistration_changed', 'This member record changed. Reload Members and review it before sending.');
         const existingConfirmed = !!account?.email_confirmed_at;
+        if (manualLink) {
+          // A copied magic link for a confirmed account would let an owner
+          // impersonate that existing account. Keep those links email-only.
+          if (existingConfirmed || account?.is_sso_user) fail(409, 'manual_link_unavailable', 'This email already has a verified account. Use password sign-in or email recovery.', {email_sent: false, delivery_status: 'not_sent'});
+          const noMembershipAnywhere = async id => {
+            const result = await call('/rest/v1/memberships?select=user_id&user_id=eq.' + id + '&limit=1', {admin: true});
+            if (!result.ok || !Array.isArray(result.data) || result.data.some(row => row.user_id !== id)) fail(503, 'membership_check_failed', 'The account could not be checked for manual setup. No link is shown.');
+            if (result.data.length) fail(409, 'manual_link_unavailable', 'This account already has access settings. Use password sign-in or email recovery.');
+          };
+          if (account) await noMembershipAnywhere(account.id);
+          const type = 'invite';
+          let generated;
+          try { generated = await call('/auth/v1/admin/generate_link?redirect_to=' + encodeURIComponent(config.appUrl), {
+            admin: true, method: 'POST', payload: {type, email: person.email, redirect_to: config.appUrl}
+          }); }
+          catch { fail(502, 'link_outcome_unknown', 'Link creation was not confirmed. No email was requested. Refresh Members before creating another link.', {email_sent: false, delivery_status: 'not_sent', delivery_confirmed: false}); }
+          if (!generated.ok) {
+            const code = generated.data?.code || generated.data?.error_code;
+            if (['email_exists', 'user_already_exists', 'user_not_found'].includes(code)) fail(409, 'account_changed', 'The account changed while preparing the link. Refresh Members.', {email_sent: false, delivery_status: 'not_sent'});
+            fail(generated.status === 429 ? 429 : 502, 'link_creation_failed', 'The setup link could not be created. No email was requested.', {email_sent: false, delivery_status: 'not_sent', delivery_confirmed: false});
+          }
+          // The direct Auth response is a flattened user plus link properties.
+          // Never return its OTP, private metadata, or provider error text.
+          const result = generated.data;
+          const invalidLink = () => fail(502, 'link_verification_failed', 'The setup link could not be verified. No email was requested.', {email_sent: false, delivery_status: 'not_sent', delivery_confirmed: false});
+          if (!UUID.test(result?.id || '') || emailValue(result?.email) !== person.email || result?.is_anonymous || account && result.id !== account.id || result?.verification_type !== type || result?.redirect_to !== config.appUrl || typeof result?.action_link !== 'string' || result.action_link.length > 4096 || !result.action_link.startsWith(config.base + '/auth/v1/verify?') || /[\s\\]/.test(result.action_link)) invalidLink();
+          let link; try { link = new URL(result.action_link); } catch { invalidLink(); }
+          const keys = [...link.searchParams.keys()], bearer = link.searchParams.get('token');
+          if (link.origin !== config.base || link.pathname !== '/auth/v1/verify' || link.username || link.password || link.hash || keys.length !== 3 || new Set(keys).size !== 3 || keys.some(key => !['token', 'type', 'redirect_to'].includes(key)) || link.searchParams.get('type') !== type || link.searchParams.get('redirect_to') !== config.appUrl || !/^[A-Za-z0-9_-]{20,512}$/.test(bearer || '') || result.hashed_token !== bearer) invalidLink();
+          // Unlike email acceptance, releasing this bearer capability must fail
+          // closed if any owner, roster, account, or membership check changes.
+          const freshIdentity = await call('/auth/v1/user');
+          if (!freshIdentity.ok || freshIdentity.data?.id !== actor.id || freshIdentity.data?.is_anonymous || !freshIdentity.data?.email_confirmed_at || emailValue(freshIdentity.data?.email) !== config.ownerEmail) fail(403, 'owner_required', 'Only the configured owner can create setup links.');
+          await assertOwner();
+          const after = await preregistration();
+          if (after.email !== person.email) fail(409, 'preregistration_changed', 'This member record changed. Refresh Members.');
+          const verifiedAccount = await profile(result.id), row = await member(result.id);
+          await noMembershipAnywhere(result.id);
+          protect(result.id, row);
+          if (!verifiedAccount || emailValue(verifiedAccount.email) !== person.email || verifiedAccount.is_anonymous || verifiedAccount.is_sso_user || Boolean(verifiedAccount.email_confirmed_at) !== existingConfirmed) fail(409, 'account_changed', 'The account changed while preparing the link. Refresh Members.');
+          if (row) fail(409, 'already_member', 'This account already has colony access settings. Use its existing sign-in or Forgot password.');
+          if (verifiedAccount.banned_until && Date.parse(verifiedAccount.banned_until) > Date.now()) fail(409, 'account_disabled', 'This authentication account is disabled. A setup link cannot enable it.');
+          return reply({person_id: person.person_id, invitation_link: result.action_link, link_kind: 'invitation', expires_at: null,
+            email_sent: false, delivery_status: 'not_sent', delivery_confirmed: false, message: 'Setup link created. No email was sent. Share it only with this member.'});
+        }
         let invitation;
         try {
           invitation = await call('/auth/v1/' + (existingConfirmed ? 'otp' : 'invite') + '?redirect_to=' + encodeURIComponent(config.appUrl), {
@@ -217,10 +264,16 @@ export function createHandler({env, fetchImpl = fetch}) {
           fail(502, 'invitation_failed', 'The registration email could not be sent. Check the server email configuration before retrying.');
         }
         if (!existingConfirmed && (!UUID.test(invitation.data?.id || '') || emailValue(invitation.data?.email) !== person.email || account && invitation.data.id !== account.id)) fail(502, 'invitation_outcome_unknown', 'The invitation returned an unexpected account. An email may have been sent. Reload Members before retrying.');
-        try { await preregistration(); }
-        catch { fail(409, 'invitation_sent_registration_unconfirmed', 'The email service accepted the invitation, but the member registration could not be reconfirmed. Reload Members. Access still requires a current preregistration and completed account setup.', {invitation_sent: true}); }
+        let registrationStatus = 'verified', warning, accessRevoked = false;
+        try { const after = await preregistration(); if (after.email !== person.email) fail(409, 'preregistration_changed', 'The member email changed.'); }
+        catch (error) {
+          accessRevoked = error instanceof Failure && error.code === 'roster_access_denied';
+          registrationStatus = !accessRevoked && error instanceof Failure && [403, 404, 409].includes(error.status) ? 'changed' : 'unverified';
+          warning = accessRevoked ? 'Member access changed. Sign in again.' : registrationStatus === 'changed' ? 'The member record changed. Refresh Members before taking another action.' : 'Registration status could not be rechecked. Refresh Members before taking another action.';
+        }
         return reply({person_id: person.person_id, email_sent: true, email_kind: existingConfirmed ? 'sign_in_link' : 'invitation',
-          message: 'Registration email accepted by the email service. The member can open the link and choose their own ID and password. Their saved access level applies after setup.'});
+          delivery_status: 'accepted', delivery_confirmed: false, registration_status: registrationStatus, ...(accessRevoked ? {access_revoked: true} : {}), ...(warning ? {warning} : {}),
+          message: 'Email request accepted. Inbox delivery is not confirmed.'});
       }
 
       let user = await findAccount(body.email);
@@ -229,7 +282,7 @@ export function createHandler({env, fetchImpl = fetch}) {
         const row = await member(user.id); protect(user.id, row);
         if (row) fail(409, 'already_member', 'This account already belongs to the colony. Change its access in the user list.');
         const saved = await save(user, 'add', body.role, true);
-        return reply({user: saved, email_sent: false, message: 'Existing account added to the colony. No new invitation email was sent; the user can sign in through the app.'});
+        return reply({user: saved, email_sent: false, delivery_status: 'not_sent', delivery_confirmed: false, message: 'Existing account added to the colony. No new invitation email was sent; the user can sign in through the app.'});
       }
       await assertOwner(); // Recheck immediately before the external email side effect.
       let invitation;
@@ -247,9 +300,9 @@ export function createHandler({env, fetchImpl = fetch}) {
       if (!UUID.test(user?.id || '') || emailValue(user.email) !== body.email) fail(502, 'invitation_outcome_unknown', 'The invitation returned an unexpected account. Check the user list before retrying.');
       protect(user.id, null);
       const saved = await save(user, 'add', body.role, true, true);
-      return reply({user: saved, email_sent: true, message: 'Invitation email sent and colony access granted.'});
+      return reply({user: saved, email_sent: true, delivery_status: 'accepted', delivery_confirmed: false, message: 'Email request accepted and colony access granted. Inbox delivery is not confirmed.'});
     } catch (error) {
-      if (error instanceof Failure) return reply({code: error.code, message: error.message, ...error.extra}, error.status);
+      if (error instanceof Failure) return reply({code: error.code, message: error.message, ...(error.code === 'invitation_outcome_unknown' ? {delivery_status: 'unknown', delivery_confirmed: false} : {}), ...error.extra}, error.status);
       return reply({code: 'management_failed', message: 'User management could not complete. Reload the user list before trying again.'}, 500);
     }
   };

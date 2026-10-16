@@ -26,7 +26,7 @@ Supabase's default SMTP service delivers only to project-team email addresses an
 
 The legacy `invite` action adds an existing Auth account to the colony without another invitation email; `email_sent:false` reports that outcome. This is separate from the Members preregistration action below. Neither action automatically retries a send.
 
-Auth invitation and database membership cannot be one transaction. If the email was sent but the membership write fails, the error contains `invitation_sent:true` and instructions to reload the user list. Retrying an absent email finds the existing Auth account and adds membership without another invite. A network timeout is treated as an uncertain outcome, never automatically retried. No account is deleted as rollback.
+Auth invitation and database membership cannot be one transaction. If Auth accepted the email request but the legacy membership write fails, the error contains `invitation_sent:true`, `delivery_status:'accepted'`, and `delivery_confirmed:false`, with instructions to reload the user list. These compatibility flags do not prove inbox delivery. Retrying an absent email finds the existing Auth account and adds membership without another invite. A network timeout is reported as `delivery_status:'unknown'`, never automatically retried. No account is deleted as rollback.
 
 ### Preregistered member invitations
 
@@ -34,9 +34,19 @@ Auth invitation and database membership cannot be one transaction. If the email 
 
 New Auth accounts and unconfirmed, unclaimed accounts use Supabase's admin invitation endpoint. Calling that endpoint again resends an invitation to an unconfirmed account. A confirmed account that has not claimed its preregistration receives an existing-account-only sign-in link (`create_user:false`), which opens the same first-time account setup. Both paths use the fixed configured application redirect. A known invitation/confirmation/recovery email within the last 60 seconds blocks another request, and Supabase's own rate limits still apply. Owner authorization and the roster version are checked again immediately before sending.
 
-This action **never writes membership, links the roster, changes a password, or changes privileges**. After the member verifies their email, the existing onboarding screen requires their chosen ID and password. `complete_lab_member_setup` then checks the current roster and disabled-account state again before assigning its saved role/export level. Moving the preregistration to historical or archiving it prevents setup even if an earlier invitation link exists. Roster checks before and after an external email send cannot make the send transactional; a post-send change or failed recheck returns `invitation_sent:true`, with instructions to reload rather than automatically resend. No new SQL migration is required for this action.
+This action **never writes membership, links the roster, changes a password, or changes privileges**. After the member verifies their email, the existing onboarding screen requires their chosen ID and password. `complete_lab_member_setup` then checks the current roster and disabled-account state again before assigning its saved role/export level. Moving the preregistration to historical or archiving it prevents setup even if an earlier invitation link exists. No new SQL migration is required for this action.
 
-Success means the email service accepted the request, not confirmed inbox delivery. Mail acceptance and invitation activity remain in Supabase Auth/provider logs; this action does not invent a persistent delivery status on the roster.
+Success means Auth accepted the email request, not confirmed inbox delivery. The response reports `delivery_status:'accepted'` and `delivery_confirmed:false`. The compatibility `email_sent:true` field has the same acceptance meaning. A subsequent roster recheck cannot undo the email request: a changed or unavailable roster therefore returns HTTP 200 with `registration_status:'changed'` or `'unverified'` and a short warning to refresh Members. An explicit 401/403 authorization denial also sets `access_revoked:true`: the client must clear private roster state and require sign-in while still acknowledging that the email request was accepted. Ordinary record changes and transient failures do not set that flag. This avoids an error toast that incorrectly suggests the accepted email request failed. When the check succeeds, `registration_status:'verified'` means the preregistration was rechecked, not that the recipient has completed registration. Mail acceptance and invitation activity remain in Supabase Auth/provider logs; this action does not invent a persistent delivery status on the roster.
+
+### Manual setup links
+
+`create_preregistered_link` accepts the same `person_id`, displayed `version`, and configured colony ID. It creates an invitation link without requesting email. It is owner-only and uses the same authoritative current, unarchived, unclaimed preregistration. The recipient and redirect cannot be supplied by the client.
+
+Only a new Auth account or an unconfirmed account with **no membership in any colony** is eligible. Confirmed accounts, SSO accounts, banned accounts, claimed preregistrations, owners, and accounts with existing access settings are denied. In particular, this endpoint never returns a magic link or password-recovery link for an existing verified account. For that case it returns `manual_link_unavailable` and directs the member to password sign-in or email recovery; it does not send an email as a fallback.
+
+The server calls Supabase's admin `generate_link` with `type:'invite'`, then validates the returned account, invite type, exact project verification URL, unique query parameters, token/hash agreement, and fixed application redirect. Before releasing the link, it rechecks the owner's verified identity and active membership, the roster version/email, the recipient Auth profile, and membership absence across colonies. Changed or unverifiable access withholds the link. This action can create an unconfirmed Auth account or replace its invitation token, but it does not write colony membership, roster links, roles, export limits, or passwords.
+
+The returned URL is a bearer credential. Keep it only in the owner's current UI memory, share it only with the named recipient, and never put it in logs, analytics, persistent browser storage, or audit records. The endpoint returns no OTP, separate token/hash, or private Auth metadata. Supabase controls expiry; `expires_at:null` means the configured expiry was not queried. Regeneration may invalidate an earlier link, so use the newest link. The email cooldown is not applied to this no-email action; provider limits still apply. A network failure is an unknown generation outcome, with no link returned and no automatic retry.
 
 ## API
 
@@ -46,6 +56,7 @@ Success means the email service accepted the request, not confirmed inbox delive
 {"action":"list","colony_id":"<configured UUID>"}
 {"action":"invite","colony_id":"<configured UUID>","email":"member@example.org","role":"viewer"}
 {"action":"invite_preregistered","colony_id":"<configured UUID>","person_id":"<roster person UUID>","version":4}
+{"action":"create_preregistered_link","colony_id":"<configured UUID>","person_id":"<roster person UUID>","version":4}
 {"action":"update_access","colony_id":"<configured UUID>","user_id":"<member UUID>","role":"editor","active":true}
 ```
 
@@ -57,13 +68,19 @@ Responses:
 // list
 {colony_id, users: [{user_id, email, name, role, active, export_level, permissions, status}]}
 // invite
-{user, email_sent, message}
+{user, email_sent, delivery_status, delivery_confirmed: false, message}
 // invite_preregistered (no membership or privilege mutation)
-{person_id, email_sent: true, email_kind: 'invitation' /* or 'sign_in_link' */, message}
+{person_id, email_sent: true, email_kind: 'invitation' /* or 'sign_in_link' */,
+ delivery_status: 'accepted', delivery_confirmed: false,
+ registration_status: 'verified' /* or 'changed' or 'unverified' */,
+ access_revoked: true /* only on authorization denial */, warning /* if relevant */, message}
+// create_preregistered_link (sensitive URL, no email requested)
+{person_id, invitation_link, link_kind: 'invitation', expires_at: null,
+ email_sent: false, delivery_status: 'not_sent', delivery_confirmed: false, message}
 // update_access
 {user, message}
 // error
-{code, message, invitation_sent /* only when relevant */}
+{code, message, invitation_sent /* only when relevant */, delivery_status /* if known */}
 ```
 
 `status` is `active`, `invited`, `disabled`, or `unavailable`. Profile metadata is restricted to a display name; tokens, private metadata and unrelated project accounts are never returned. Clients must render email/name/message as text, never HTML. Responses are `no-store` and the function logs no request bodies, tokens or upstream error bodies.
@@ -74,11 +91,13 @@ Responses:
 node --no-maglev --test supabase/tests/user-management.test.mjs supabase/tests/manager-permissions.test.mjs supabase/tests/lab-members.test.mjs supabase/tests/username-sign-in.test.mjs
 ```
 
-Tests use mocked HTTP and an isolated in-memory PostgreSQL database. They send no real emails. The SQL test covers anonymous/editor/foreign-owner denial, owner/self protection even after target promotion, membership uniqueness, inactive owner rejection, unchanged other-colony ownership, and audit identity. HTTP tests cover Auth verification, allowlisted origin/redirect, list/email pagination, custom SMTP errors, invitation uncertainty, and partial completion. Preregistration tests additionally cover tampered recipient/privileges, stale or ineligible roster records, unconfirmed resend versus existing-only sign-in links, absence of membership writes, disabled accounts, cooldowns, and owner/roster changes before and after sending.
+Tests use mocked HTTP and an isolated in-memory PostgreSQL database. They send no real emails and generate no real invitation links. The SQL test covers anonymous/editor/foreign-owner denial, owner/self protection even after target promotion, membership uniqueness, inactive owner rejection, unchanged other-colony ownership, and audit identity. HTTP tests cover Auth verification, allowlisted origin/redirect, list/email pagination, custom SMTP errors, invitation uncertainty, and partial completion. Preregistration tests additionally cover tampered recipient/privileges, stale or ineligible roster records, unconfirmed resend versus existing-only sign-in links, absence of membership writes, disabled accounts, cooldowns, and owner/roster changes before and after sending. Manual-link tests cover confirmed/SSO and cross-colony account exclusion, post-generation authorization changes, strict URL/type/token validation, no email or privilege mutation, minimal secret-free response fields apart from the intended bearer URL, and uncertain outcomes without retries.
 
 References: [verified Auth user lookup](https://supabase.com/docs/reference/javascript/auth-getuser), [server-only admin user listing](https://supabase.com/docs/reference/javascript/auth-admin-listusers), [standard invite email](https://supabase.com/docs/reference/javascript/auth-admin-inviteuserbyemail), and [Edge Function default secrets](https://supabase.com/docs/guides/functions/secrets).
 
 The resend behavior is implemented in Supabase's [invitation handler](https://github.com/supabase/auth/blob/master/internal/api/invite.go), which rejects confirmed accounts and sends another invitation to unconfirmed accounts. The confirmed-account setup path uses [email OTP/sign-in links](https://supabase.com/docs/reference/javascript/auth-signinwithotp) with account creation disabled, as implemented in the [OTP handler](https://github.com/supabase/auth/blob/master/internal/api/otp.go). The general `auth.resend` API is not used because its supported types do not include invitations.
+
+Manual generation uses [admin generateLink](https://supabase.com/docs/reference/javascript/auth-admin-generatelink). The direct Auth [generate-link implementation](https://github.com/supabase/auth/blob/master/internal/api/mail.go) returns flattened user/link properties and creates the invitation token without sending SMTP mail. The handler validates that direct response rather than assuming the JavaScript SDK's `{data:{user,properties}}` wrapper.
 
 ## Export permission migration
 

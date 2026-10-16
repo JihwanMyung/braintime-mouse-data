@@ -244,3 +244,4 @@ tests/cage-observations.test.mjs
 supabase/cage-observations.sql
 supabase/tests/cage-observations.test.mjs
 scripts/prepare-cage-observations.mjs
+tests/member-invitation-contract.test.mjs

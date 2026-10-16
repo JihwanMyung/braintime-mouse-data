@@ -27,12 +27,22 @@ function fixture(options = {}) {
     const overridden = await options.intercept?.({url, init, body, calls});
     if (overridden) return overridden;
     if (path === '/auth/v1/user') return options.identity || json(user(owner, 'owner@example.org'));
+    if (path === '/rest/v1/memberships' && url.searchParams.get('select') === 'user_id') {
+      assert.equal(init.headers.apikey, values.SUPABASE_SERVICE_ROLE_KEY);assert.equal(init.headers.Authorization, 'Bearer ' + values.SUPABASE_SERVICE_ROLE_KEY);
+      assert.equal(url.searchParams.get('limit'),'1');const id=url.searchParams.get('user_id')?.slice(3);return json(members.filter(row=>row.user_id===id).slice(0,1).map(row=>({user_id:row.user_id})));
+    }
+    if (path === '/auth/v1/admin/generate_link') {
+      assert.equal(init.headers.apikey, values.SUPABASE_SERVICE_ROLE_KEY);assert.equal(init.headers.Authorization, 'Bearer ' + values.SUPABASE_SERVICE_ROLE_KEY);
+      assert.deepEqual(body,{type:'invite',email:'new@example.org',redirect_to:values.USER_MANAGEMENT_APP_URL});assert.equal(url.searchParams.get('redirect_to'),values.USER_MANAGEMENT_APP_URL);
+      let account=accounts.find(row=>row.email===body.email);if(!account){account=user(other,body.email,{email_confirmed_at:null});accounts.push(account);}
+      return json({...account,action_link:values.SUPABASE_URL+'/auth/v1/verify?token='+('a'.repeat(64))+'&type=invite&redirect_to='+encodeURIComponent(values.USER_MANAGEMENT_APP_URL),hashed_token:'a'.repeat(64),email_otp:'123456',verification_type:'invite',redirect_to:values.USER_MANAGEMENT_APP_URL});
+    }
     if (path === '/rest/v1/memberships') {
       assert.equal(init.headers.apikey, values.SUPABASE_ANON_KEY);
       assert.equal(init.headers.Authorization, 'Bearer owner-token');
       assert.equal(url.searchParams.get('colony_id'), 'eq.' + colony);
       const id = url.searchParams.get('user_id')?.slice(3);
-      return json(id ? members.filter(row => row.user_id === id) : members.slice(Number(url.searchParams.get('offset')), Number(url.searchParams.get('offset')) + 500));
+      return json(id ? members.filter(row => row.user_id === id && row.colony_id === colony) : members.slice(Number(url.searchParams.get('offset')), Number(url.searchParams.get('offset')) + 500));
     }
     if (path === '/rest/v1/rpc/list_lab_members') {
       assert.equal(init.headers.apikey, values.SUPABASE_ANON_KEY);
@@ -209,11 +219,11 @@ test('only the verified configured active owner can send preregistration invitat
 test('current eligible preregistration sends one invite without granting membership or changing the roster', async () => {
   const f=fixture(); const {data,response}=await f.request(registrationRequest);
   assert.equal(response.status,200); assert.equal(data.person_id,personId); assert.equal(data.email_sent,true); assert.equal(data.email_kind,'invitation');
-  assert.match(data.message,/accepted by the email service/); assert.equal(emailCalls(f.calls).length,1);
+  assert.match(data.message,/Email request accepted/); assert.equal(emailCalls(f.calls).length,1);
   assert.equal(f.calls.filter(c=>c.url.pathname.endsWith('/list_lab_members')).length,3);
   assert.equal(f.calls.filter(c=>c.url.pathname==='/rest/v1/memberships'&&c.url.searchParams.get('user_id')==='eq.'+owner).length,2);
   assert(!f.calls.some(c=>/manage_colony_member|save_lab_member|complete_lab_member_setup/.test(c.url.pathname)));
-  assert.deepEqual(Object.keys(data).sort(),['email_kind','email_sent','message','person_id']);
+  assert.deepEqual(Object.keys(data).sort(),['delivery_confirmed','delivery_status','email_kind','email_sent','message','person_id','registration_status']);assert.equal(data.delivery_status,'accepted');assert.equal(data.delivery_confirmed,false);assert.equal(data.registration_status,'verified');
 });
 test('unclaimed unconfirmed accounts receive a repeat invite, while confirmed accounts receive an existing-only setup link', async () => {
   for(const confirmed of [false,true]) {
@@ -248,8 +258,8 @@ test('owner or roster change before send prevents sending; post-send roster fail
     let rosterChecks=0;
     const f=fixture({intercept:({url})=>url.pathname.endsWith('/list_lab_members')&&++rosterChecks===when?json({members:[preregistered({version:5,status:'historical'})]}):null});
     const {data}=await f.request(registrationRequest); assert.equal(emailCalls(f.calls).length,when===3?1:0);
-    assert.equal(data.code,when===3?'invitation_sent_registration_unconfirmed':'preregistration_changed');
-    assert.equal(data.invitation_sent,when===3?true:undefined); assert(!f.calls.some(c=>c.url.pathname.endsWith('/manage_colony_member')));
+    assert.equal(data.code,when===3?undefined:'preregistration_changed');
+    if(when===3){assert.equal(data.delivery_status,'accepted');assert.equal(data.delivery_confirmed,false);assert.equal(data.registration_status,'changed');assert.match(data.warning,/Refresh Members/);}else assert.equal(data.invitation_sent,undefined); assert(!f.calls.some(c=>c.url.pathname.endsWith('/manage_colony_member')));
   }
 });
 test('registration email errors, timeouts and malformed successes are truthful, sanitized and never retried', async () => {
@@ -309,4 +319,66 @@ test('SQL enforces role/colony/owner protections atomically and retains audit ac
     const acl = (await db.query("select prosecdef,proconfig from pg_proc where proname='manage_colony_member'")).rows[0];
     assert.equal(acl.prosecdef, true); assert.ok(acl.proconfig.some(value => value.startsWith('search_path=')));
   } finally { await db.close(); }
+});
+
+
+const manualRequest={action:'create_preregistered_link',person_id:personId,version:4};
+const generateCalls=calls=>calls.filter(call=>call.url.pathname==='/auth/v1/admin/generate_link');
+const validGenerated=(change={})=>({...user(other,'new@example.org',{email_confirmed_at:null}),action_link:values.SUPABASE_URL+'/auth/v1/verify?token='+('a'.repeat(64))+'&type=invite&redirect_to='+encodeURIComponent(values.USER_MANAGEMENT_APP_URL),hashed_token:'a'.repeat(64),email_otp:'123456',verification_type:'invite',redirect_to:values.USER_MANAGEMENT_APP_URL,...change});
+
+test('manual setup links generate invite only, send no email, change no privileges and return no unrelated secrets',async()=>{
+ for(const existing of [false,true]){
+  const f=fixture({accounts:[user(owner,'owner@example.org'),...(existing?[user(other,'new@example.org',{email_confirmed_at:null,invited_at:new Date().toISOString()})]:[])]});const {response,data}=await f.request(manualRequest);
+  assert.equal(response.status,200);assert.equal(data.person_id,personId);assert.equal(data.link_kind,'invitation');assert.equal(data.expires_at,null);assert.equal(data.email_sent,false);assert.equal(data.delivery_status,'not_sent');assert.equal(data.delivery_confirmed,false);assert.equal(new URL(data.invitation_link).searchParams.get('type'),'invite');assert.equal(new URL(data.invitation_link).searchParams.get('redirect_to'),values.USER_MANAGEMENT_APP_URL);assert.equal(response.headers.get('cache-control'),'no-store');
+  assert.equal(generateCalls(f.calls).length,1);assert.equal(emailCalls(f.calls).length,0);assert(!f.calls.some(c=>/manage_colony_member|save_lab_member|complete_lab_member_setup/.test(c.url.pathname)));assert(!JSON.stringify(data).includes('PRIVATE'));assert(!JSON.stringify(data).includes('123456'));assert(!JSON.stringify(data).includes('server-secret'));assert(!Object.hasOwn(data,'user'));assert(!Object.hasOwn(data,'hashed_token'));
+ }
+});
+
+test('manual link action rejects target/redirect/role tampering, nonowners and ineligible existing accounts before minting',async()=>{
+ for(const change of [{email:'other@example.org'},{redirect_to:'https://evil.example'},{role:'manager'},{password:'No'},{version:3},{version:0},{person_id:'bad'}]){const f=fixture();const r=await f.request({...manualRequest,...change});assert(r.response.status>=400);assert.equal(generateCalls(f.calls).length,0);}
+ for(const role of ['manager','editor','viewer']){const f=fixture({members:[membership(owner,{role})]});assert.equal((await f.request(manualRequest)).response.status,403);assert.equal(generateCalls(f.calls).length,0);}
+ for(const change of [{email_confirmed_at:'2026-01-01'},{email_confirmed_at:null,is_sso_user:true},{email_confirmed_at:null,banned_until:'2999-01-01'}]){const f=fixture({accounts:[user(other,'new@example.org',change)]});const r=await f.request(manualRequest);assert.equal(r.response.status,409);assert.equal(generateCalls(f.calls).length,0);assert.equal(emailCalls(f.calls).length,0);assert.equal(r.data.invitation_link,undefined);}
+ for(const row of [membership(other),membership(other,{active:false}),membership(other,{colony_id:foreign})]){const f=fixture({members:[membership(owner),row],accounts:[user(other,'new@example.org',{email_confirmed_at:null})]});assert.equal((await f.request(manualRequest)).response.status,409);assert.equal(generateCalls(f.calls).length,0);}
+ for(const change of [{status:'historical'},{archived:true},{linked_user_id:other,username:'claimed'},{email:'owner@example.org'}]){const f=fixture({roster:[preregistered(change)]});assert((await f.request(manualRequest)).response.status>=400);assert.equal(generateCalls(f.calls).length,0);}
+});
+
+test('manual links reject every untrusted URL shape, mismatched identity/type/token and malformed success without exposing link or OTP',async()=>{
+ const valid=validGenerated();
+ const cases=[{action_link:valid.action_link.replace('example.supabase.co','evil.example')},{action_link:valid.action_link.replace('/auth/v1/verify','/x/../auth/v1/verify')},{action_link:valid.action_link.replace('https:','http:')},{action_link:valid.action_link+'#secret'},{action_link:valid.action_link+'&extra=1'},{action_link:valid.action_link+'&token='+('b'.repeat(64))},{action_link:valid.action_link.replace('type=invite','type=magiclink')},{action_link:valid.action_link.replace(encodeURIComponent(values.USER_MANAGEMENT_APP_URL),encodeURIComponent('https://evil.example/'))},{action_link:valid.action_link.replace('token='+('a'.repeat(64)),'token=short')},{hashed_token:'b'.repeat(64)},{verification_type:'magiclink'},{redirect_to:'https://evil.example/'},{email:'other@example.org'},{id:owner},{action_link:null}];
+ for(const change of cases){const f=fixture({accounts:[user(other,'new@example.org',{email_confirmed_at:null})],intercept:({url})=>url.pathname==='/auth/v1/admin/generate_link'?json(validGenerated(change)):null});const {response,data}=await f.request(manualRequest);assert(response.status>=400);assert.equal(data.invitation_link,undefined);assert.equal(data.email_sent,false);assert(!JSON.stringify(data).includes('123456'));assert(!JSON.stringify(data).includes('a'.repeat(64)));assert.equal(generateCalls(f.calls).length,1);assert.equal(emailCalls(f.calls).length,0);}
+});
+
+test('manual links fail closed when owner, roster, target account or any-colony membership changes after generation',async()=>{
+ for(const kind of ['owner','roster','profile','membership','identity']){
+  let generated=false;const f=fixture({accounts:[user(owner,'owner@example.org'),user(other,'new@example.org',{email_confirmed_at:null})],intercept:({url})=>{
+   if(url.pathname==='/auth/v1/admin/generate_link'){generated=true;return json(validGenerated());}
+   if(!generated)return null;
+   if(kind==='owner'&&url.pathname==='/rest/v1/memberships'&&url.searchParams.get('user_id')==='eq.'+owner)return json([membership(owner,{active:false})]);
+   if(kind==='roster'&&url.pathname.endsWith('/list_lab_members'))return json({members:[preregistered({version:5,status:'historical'})]});
+   if(kind==='profile'&&url.pathname==='/auth/v1/admin/users/'+other)return json(user(other,'new@example.org',{email_confirmed_at:null,banned_until:'2999-01-01'}));
+   if(kind==='membership'&&url.pathname==='/rest/v1/memberships'&&url.searchParams.get('select')==='user_id')return json([{user_id:other}]);
+   if(kind==='identity'&&url.pathname==='/auth/v1/user')return json(user(owner,'changed@example.org'));
+   return null;
+  }});const r=await f.request(manualRequest);assert(r.response.status>=400,kind);assert.equal(r.data.invitation_link,undefined);assert(!JSON.stringify(r.data).includes('a'.repeat(64)));assert.equal(generateCalls(f.calls).length,1);assert.equal(emailCalls(f.calls).length,0);
+ }
+});
+
+test('accepted email remains accepted after a transient roster recheck, while timeout remains unknown',async()=>{
+ let count=0;const f=fixture({intercept:({url})=>url.pathname.endsWith('/list_lab_members')&&++count===3?json({message:'PRIVATE'},503):null});const r=await f.request(registrationRequest);assert.equal(r.response.status,200);assert.equal(r.data.delivery_status,'accepted');assert.equal(r.data.delivery_confirmed,false);assert.equal(r.data.registration_status,'unverified');assert.match(r.data.warning,/Refresh Members/);assert.equal(emailCalls(f.calls).length,1);
+ const g=fixture({intercept:({url})=>{if(url.pathname==='/auth/v1/invite')throw Error('PRIVATE');}}),unknown=await g.request(registrationRequest);assert.equal(unknown.data.delivery_status,'unknown');assert.equal(unknown.data.delivery_confirmed,false);assert.equal(emailCalls(g.calls).length,1);
+ const h=fixture({intercept:({url})=>{if(url.pathname==='/auth/v1/admin/generate_link')throw Error('PRIVATE');}}),manual=await h.request(manualRequest);assert.equal(manual.data.delivery_status,'not_sent');assert.equal(manual.data.email_sent,false);assert.equal(manual.data.invitation_link,undefined);assert.equal(generateCalls(h.calls).length,1);assert.equal(emailCalls(h.calls).length,0);
+});
+
+test('post-send authorization denial preserves acceptance but explicitly tells the client to clear private state',async()=>{
+  for(const status of [401,403]) {
+    let reads=0;
+    const f=fixture({intercept:({url})=>url.pathname==='/rest/v1/rpc/list_lab_members'&&++reads===3?json({code:'42501'},status):null});
+    const {response,data}=await f.request(registrationRequest);
+    assert.equal(response.status,200);assert.equal(data.delivery_status,'accepted');assert.equal(data.delivery_confirmed,false);assert.equal(data.access_revoked,true);assert.equal(data.registration_status,'unverified');assert.match(data.warning,/Sign in again/);assert.equal(emailCalls(f.calls).length,1);
+  }
+  let reads=0;
+  const changed=fixture({intercept:({url})=>url.pathname==='/rest/v1/rpc/list_lab_members'&&++reads===3?json({members:[preregistered({effective_role:'owner'})]}):null});
+  const {data}=await changed.request(registrationRequest);assert.equal(data.registration_status,'changed');assert.equal(data.access_revoked,undefined);
+  const denied=fixture({intercept:({url})=>url.pathname==='/rest/v1/rpc/list_lab_members'?json({code:'42501'},403):null});
+  assert.equal((await denied.request(registrationRequest)).response.status,403);assert.equal(emailCalls(denied.calls).length,0);
 });

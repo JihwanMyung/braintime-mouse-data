@@ -51,3 +51,39 @@ test('sign-out while sending cannot publish a confirmed result into another sess
  state.wait=new Promise(r=>release=r);const original=globalThis.fetch;globalThis.fetch=(url,init)=>{if(new URL(url).pathname==='/functions/v1/manage-colony-users')started();return original(url,init)};
  const pending=store.inviteLabMember({person_id:person,version:1});await began;await store.signOut();release();await assert.rejects(pending,/account or colony changed/);assert.equal(store.getCloudStatus().signedIn,false);
 });
+
+const setupLink='https://test.supabase.co/auth/v1/verify?token=synthetic-invitation-token-123456&type=invite&redirect_to=https%3A%2F%2Fbraintimelab.github.io%2Fmouse-data%2F';
+const manualResult=(extra={})=>({person_id:person,invitation_link:setupLink,link_kind:'invitation',expires_at:null,email_sent:false,delivery_status:'not_sent',...extra});
+test('manual setup link uses the saved registration and does not email or persist its token',async()=>{
+ const state=await fixture({result:manualResult()});const result=await store.createLabMemberInvitationLink({person_id:person,version:4});
+ assert.equal(result.invitation_link,setupLink);assert.equal(result.email_sent,false);
+ const sent=state.calls.filter(c=>c.path==='/functions/v1/manage-colony-users');assert.equal(sent.length,1);
+ assert.deepEqual(sent[0].body,{person_id:person,version:4,action:'create_preregistered_link',colony_id:colony});
+ assert(!JSON.stringify([...localStorage.values,...sessionStorage.values]).includes('synthetic-invitation-token'));
+});
+test('manual links reject changed recipients, non-invite tokens, foreign origins and redirects',async()=>{
+ for(const changed of [{person_id:uid},{email_sent:true},{delivery_status:'accepted'},{link_kind:'magiclink'},{expires_at:'2027-01-01'},
+ {invitation_link:setupLink.replace('test.supabase.co','other.supabase.co')},
+ {invitation_link:setupLink.replace('https:','http:')},
+ {invitation_link:setupLink.replace('type=invite','type=recovery')},
+ {invitation_link:setupLink.replace('braintimelab.github.io','attacker.example')},
+ {invitation_link:setupLink+'&type=invite'},
+ {invitation_link:setupLink+'&extra=secret'},
+ {invitation_link:setupLink+'#ignored'},
+ {invitation_link:setupLink.replace('synthetic-invitation-token-123456','short')}]){
+  const state=await fixture({result:manualResult(changed)});await assert.rejects(store.createLabMemberInvitationLink({person_id:person,version:1}),/could not be verified/);
+  assert.equal(state.calls.filter(c=>c.path==='/functions/v1/manage-colony-users').length,1);
+ }
+});
+test('manual links require owner access and cannot substitute email, redirect or permission',async()=>{
+ for(const role of ['viewer','editor','manager']){const state=await fixture({role});await assert.rejects(store.createLabMemberInvitationLink({person_id:person,version:1}),/owner/i);assert(!state.calls.some(c=>c.path==='/functions/v1/manage-colony-users'));}
+ const state=await fixture({result:manualResult()});
+ for(const extra of [{email:'another@example.org'},{role:'manager'},{redirect:'https://example.org'},{version:0}])await assert.rejects(store.createLabMemberInvitationLink({person_id:person,version:1,...extra}));
+ assert(!state.calls.some(c=>c.path==='/functions/v1/manage-colony-users'));
+});
+test('manual setup link cannot appear after sign-out while generating',async()=>{
+ let release,started;const began=new Promise(r=>started=r);const state=await fixture({result:manualResult()});
+ state.wait=new Promise(r=>release=r);const original=globalThis.fetch;globalThis.fetch=(url,init)=>{if(new URL(url).pathname==='/functions/v1/manage-colony-users')started();return original(url,init)};
+ const pending=store.createLabMemberInvitationLink({person_id:person,version:1});await began;await store.signOut();release();
+ await assert.rejects(pending,/account or colony changed/);assert.equal(store.getCloudStatus().signedIn,false);
+});

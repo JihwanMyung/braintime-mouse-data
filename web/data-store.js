@@ -1012,11 +1012,11 @@ export async function manageColonyUsers(action,payload={}) {
   if(!c)throw new Error('Configure the cloud project first.');
   if(!signedIn?.access_token||!signedIn.user?.id)throw new Error('Sign in before managing colony users.');
   if(signedIn.role!=='owner')throw new Error('Only an active colony owner can manage users.');
-  const allowed={list:[],invite:['email','role','export_level','permissions'],invite_preregistered:['person_id','version'],update_access:['user_id','role','active','export_level','permissions']};
+  const allowed={list:[],invite:['email','role','export_level','permissions'],invite_preregistered:['person_id','version'],create_preregistered_link:['person_id','version'],update_access:['user_id','role','active','export_level','permissions']};
   if(!Object.hasOwn(allowed,action))throw new Error('Unsupported user-management action.');
   if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(k=>!allowed[action].includes(k)))throw new Error('Unexpected user-management fields. Colony and invitation return URLs are configured by the app and server.');
   const fields={};
-  if(action==='invite_preregistered') {
+  if(action==='invite_preregistered'||action==='create_preregistered_link') {
     if(typeof payload.person_id!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.person_id)||!Number.isSafeInteger(payload.version)||payload.version<1)throw new Error('Refresh Members and choose a saved preregistered member.');
     fields.person_id=payload.person_id;fields.version=payload.version;
   }
@@ -1049,11 +1049,21 @@ export async function manageColonyUsers(action,payload={}) {
     if(result?.invitation_sent===true)error.invitationSent=true;
     throw error;
   }
+  if(action==='create_preregistered_link') {
+    if(!result||result.person_id!==fields.person_id||result.email_sent!==false||result.delivery_status!=='not_sent'||result.link_kind!=='invitation'||result.expires_at!==null)throw new Error('The invitation link could not be verified. Refresh Members.');
+    let link;
+    try{link=new URL(result.invitation_link);}catch{throw new Error('The invitation link could not be verified. Refresh Members.');}
+    const expectedOrigin=new URL(c.url).origin,keys=[...link.searchParams.keys()];
+    const redirect=link.searchParams.get('redirect_to');
+    if(link.protocol!=='https:'||link.origin!==expectedOrigin||link.username||link.password||link.hash||link.pathname!=='/auth/v1/verify'||keys.length!==3||new Set(keys).size!==3||keys.some(k=>!['token','type','redirect_to'].includes(k))||!/^[a-zA-Z0-9_-]{20,256}$/.test(link.searchParams.get('token')||'')||link.searchParams.get('type')!=='invite'||redirect!=='https://braintimelab.github.io/mouse-data/')throw new Error('The invitation link could not be verified. Refresh Members.');
+    return {person_id:fields.person_id,invitation_link:link.href,link_kind:result.link_kind,expires_at:null,email_sent:false,delivery_status:'not_sent'};
+  }
   if(!result||typeof result!=='object'||(action==='list'?!Array.isArray(result.users):action==='invite_preregistered'?result.person_id!==fields.person_id||result.email_sent!==true:!result.user||typeof result.user!=='object'))throw new Error('The server did not return a verifiable user-management result. Reload the user list before retrying.');
   return result;
 }
 
 export async function inviteLabMember(payload){return manageColonyUsers('invite_preregistered',payload);}
+export async function createLabMemberInvitationLink(payload){return manageColonyUsers('create_preregistered_link',payload);}
 
 const ACCESS_PAGES={mouse:['overview','mice','matings','litters','cages','family','planner','experiments','iacuc','housing','locobox','cryo','fees','archive','brainbot','settings'],reagents:['inventory','safety','usage','orders','vendors','equipment','history','review','settings']};
 // Authenticated app activity is best effort and contains only allowlisted labels.
