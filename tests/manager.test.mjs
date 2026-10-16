@@ -53,12 +53,13 @@ test('partly unknown resident managers do not establish a cage-wide assignment',
   assert.equal(cageManager({},[mouse('M1',{cage_sid:undefined,manager:'Keeper'})]).status,'missing');
 });
 
-test('new mice and cages need a manager, using explicit assignment or recorded owner',()=>{
+test('new mice need a manager; cages allow explicit unassigned responsibility',()=>{
   const d=dataset();
   assert.match(validateRecord('mice',mouse('M1'),d).errors.join(' '),/Assign a manager/);
   assert.deepEqual(validateRecord('mice',mouse('M1',{manager:'Keeper'}),d).errors,[]);
   assert.deepEqual(validateRecord('mice',mouse('M1',{owner:'Imported Keeper'}),d).errors,[]);
-  assert.match(validateRecord('cages',{cage_sid:'C2'},d).errors.join(' '),/Assign a manager/);
+  assert.deepEqual(validateRecord('cages',{cage_sid:'C2'},d).errors,[]);
+  assert.match(validateRecord('cages',{cage_sid:'C2'},d).warnings.join(' '),/No manager/);
   assert.deepEqual(validateRecord('cages',{cage_sid:'C2',manager:'Keeper'},d).errors,[]);
 });
 
@@ -70,11 +71,11 @@ test('historical missing assignment permits unrelated edits with a warning',()=>
   assert.deepEqual(cageResult.errors,[]);assert.match(cageResult.warnings.join(' '),/Some resident mice/);
 });
 
-test('deliberate clearing requires reassignment, while retained historical empty overrides stay editable',()=>{
+test('cages can be unassigned while mice still require a manager and historical empty overrides stay editable',()=>{
   const old=mouse('M1',{owner:'Imported Keeper'}),d=dataset([old],[{cage_sid:'C1',owner:'Imported Keeper'}]);
   for(const manager of [null,'',' ']){
     assert.match(validateRecord('mice',{...old,manager},d,'M1').errors.join(' '),/Assign a manager/);
-    assert.match(validateRecord('cages',{...d.tables.cages[0],manager},d,'C1').errors.join(' '),/Assign a manager/);
+    assert.deepEqual(validateRecord('cages',{...d.tables.cages[0],manager},d,'C1').errors,[]);
   }
   assert.deepEqual(validateRecord('mice',{...old,manager:'New Keeper'},d,'M1').errors,[]);
   const historical={...old,manager:null},historicalData=dataset([historical]);

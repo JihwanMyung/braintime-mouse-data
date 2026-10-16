@@ -29,6 +29,17 @@ function context(dataset){
 }
 const cell=(cage,field,value)=>({type:'cages',id:String(cage.cage_sid),field,base:cage[field]??null,value});
 const movement=(cage,position)=>[cell(cage,'location_id',position?.location_id??null),...(position?[cell(cage,'cage_tag',position.label)]:[])].filter(c=>(c.base??null)!==(c.value??null));
+// An explicit source-card assignment, including Unassigned, can become the
+// cage's assignment when that card is linked or registered. Source names alone
+// never establish a new assignment, and ordinary moves do not adopt slot staff.
+const positionManager=position=>Object.hasOwn(position,'manager')&&typeof position.manager==='string'?{manager:position.manager}:{};
+function positionWithManagerDraft(position,drafts){
+ const edits=drafts.filter(c=>c.type==='locations'&&c.id===position?.location_id&&c.field==='manager');
+ if(!edits.length)return position;
+ const [edit]=edits;
+ if(edits.length!==1||!active(position)||typeof edit.value!=='string'||!same(position.manager,edit.base)&&!same(position.manager,edit.value))throw new Error('Changed by another editor: the source position manager changed. Review the draft before saving.');
+ return {...position,manager:edit.value};
+}
 
 /** Plans explicit slot changes; applyCageSheetDrafts supplies fresh-data conflict and permission checks. */
 export function planCageMove(dataset,cageSid,destinationLocationId,options={}){
@@ -39,7 +50,11 @@ export function planCageMove(dataset,cageSid,destinationLocationId,options={}){
  if(!destination)return {...common,kind:'remove',changes:movement(cage,null),summary:`Remove cage ${id} from ${source.label}. Keep its tag and all animal records.`};
  const occupied=ctx.occupants(String(destination.location_id));
  if(occupied.length>1)throw new Error(`Position ${destination.label} has multiple current cage assignments. Resolve them before moving cages.`);
- if(!occupied.length)return {...common,kind:'move',changes:movement(cage,destination),summary:`Move cage ${id} from ${source?.label||'off rack'} to ${destination.label}. Its tag becomes ${destination.label}.`};
+ if(!occupied.length){
+  const changes=movement(cage,destination),assignment=positionManager(destination);
+  if(options.linkSourcePosition===true&&!Object.hasOwn(cage,'manager')&&Object.hasOwn(assignment,'manager'))changes.push({...cell(cage,'manager',assignment.manager),positionManager:{locationId:destination.location_id}});
+  return {...common,kind:'move',changes,summary:`Move cage ${id} from ${source?.label||'off rack'} to ${destination.label}. Its tag becomes ${destination.label}.`};
+ }
  if(!source)throw new Error(`Position ${destination.label} is occupied. Choose an empty position for a cage that is off the rack.`);
  ctx.location(String(source.location_id),{destination:true});
  const other=ctx.cage(String(occupied[0].cage_sid));ctx.oldPosition(other);
@@ -49,7 +64,12 @@ export function planCageRemoval(dataset,cageSid,options={}){return planCageMove(
 
 /** Recheck affected slots against freshly loaded data before applying cell drafts. */
 export function validateCageMovementOccupancy(dataset,changes){
- const selected=Array.from(changes||[]).filter(c=>c.type==='cages'&&c.field==='location_id'&&(c.value??null)!==(dataset?.tables?.cages||[]).find(r=>String(r.cage_sid)===String(c.id))?.location_id);
+ const drafts=Array.from(changes||[]);
+ for(const change of drafts.filter(c=>c.positionManager)){
+  const locationId=change.positionManager.locationId,position=positionWithManagerDraft((dataset.tables.locations||[]).find(p=>p.location_id===locationId),drafts),cage=(dataset.tables.cages||[]).find(c=>String(c.cage_sid)===String(change.id));
+  if(change.type!=='cages'||change.field!=='manager'||change.base!==null||typeof change.value!=='string'||!active(position)||position.source_current===false||historical(position)||!Object.hasOwn(positionManager(position),'manager')||position.manager!==change.value||!cage||Object.hasOwn(cage,'manager')&&cage.manager!==change.value)throw new Error('The source position manager changed. Reload before linking its cage.');
+ }
+ const selected=drafts.filter(c=>c.type==='cages'&&c.field==='location_id'&&(c.value??null)!==(dataset?.tables?.cages||[]).find(r=>String(r.cage_sid)===String(c.id))?.location_id);
  if(!selected.length)return true;
  const ctx=context(dataset),destinations=new Set(),updates=new Map();
  for(const change of selected){const cage=ctx.cage(String(change.id));ctx.oldPosition(cage);if(present(change.value)){const position=ctx.location(textId(change.value,'destination position'),{destination:true});destinations.add(String(position.location_id));}updates.set(String(cage.cage_sid),change.value??null);}
@@ -118,7 +138,7 @@ export function planMouseMove(dataset,mouseSid,destinationCageSid,{sourceCageSid
 }
 
 const createdCageFields=['cage_sid','cage_tag','state','record_origin','location_id','room_id','rack_id','cage_sheet_source_location_id'];
-function createdCage(position,id){return {cage_sid:id,cage_tag:position.label,state:'Active',record_origin:'app_created',location_id:position.location_id,room_id:position.room_id,rack_id:position.rack_id,cage_sheet_source_location_id:position.location_id};}
+function createdCage(position,id){return {cage_sid:id,cage_tag:position.label,state:'Active',record_origin:'app_created',location_id:position.location_id,room_id:position.room_id,rack_id:position.rack_id,cage_sheet_source_location_id:position.location_id,...positionManager(position)};}
 
 /** An unlinked destination is registered only on Save, using the supplied stable SID. */
 export function planMouseMoveToPosition(dataset,mouseSid,locationId,{cageSid,...options}={}){
@@ -146,11 +166,12 @@ function projectedCages(dataset,changes){
  const creations=drafts.filter(c=>c?.type==='cages'&&c.field==='$create'),seen=new Set();
  for(const change of creations){
   const id=textId(change.id,'new cage SID'),value=change.value;
-  if(seen.has(id)||change.base!==null||!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==createdCageFields.length||createdCageFields.some(field=>!Object.hasOwn(value,field))||value.cage_sid!==id)throw new Error('The new cage draft is invalid. Choose the destination again.');seen.add(id);
-  const ctx=context(projected),position=ctx.location(textId(value.location_id,'destination position'),{destination:true});
-  if(historical(position)||createdCageFields.some(field=>!same(value[field],createdCage(position,id)[field])))throw new Error('The destination changed. Reload before creating its cage.');
+  if(seen.has(id)||change.base!==null||!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(field=>!createdCageFields.includes(field)&&field!=='manager')||createdCageFields.some(field=>!Object.hasOwn(value,field))||value.cage_sid!==id)throw new Error('The new cage draft is invalid. Choose the destination again.');seen.add(id);
+  const ctx=context(projected),position=positionWithManagerDraft(ctx.location(textId(value.location_id,'destination position'),{destination:true}),drafts);
+  const expected=createdCage(position,id),fields=Object.keys(expected);
+  if(historical(position)||Object.keys(value).length!==fields.length||fields.some(field=>!Object.hasOwn(value,field)||!same(value[field],expected[field])))throw new Error('The destination changed. Reload before creating its cage.');
   const existing=(projected.tables.cages||[]).find(row=>String(row.cage_sid)===id),occupants=ctx.occupants(position.location_id);
-  if(existing&&(createdCageFields.some(field=>!same(existing[field],value[field]))||!active(existing)||historical(existing)))throw new Error('The new cage SID is already in use. Review the draft before saving.');
+  if(existing&&(fields.some(field=>!Object.hasOwn(existing,field)||!same(existing[field],value[field]))||!active(existing)||historical(existing)))throw new Error('The new cage SID is already in use. Review the draft before saving.');
   if(occupants.some(c=>String(c.cage_sid)!==id))throw new Error('The destination became occupied. Review the move before saving.');
   if(!existing)projected={...projected,tables:{...projected.tables,cages:[...(projected.tables.cages||[]),{...value}]}};
  }
@@ -207,6 +228,11 @@ export function getMouseMoveReadDependencies(dataset,changes){
  for(const change of drafts.filter(c=>c.type==='mice'&&c.sourceMatch)){
   const mouse=(dataset.tables.mice||[]).find(row=>String(row.mouse_sid)===String(change.id));
   if(mouse)for(const dep of movementDependencies(dataset,{mouse,source:null,target:null},change.sourceMatch))deps.set(dep.type+':'+dep.id,dep);
+ }
+ // A linked cage keeps its manager if moved again before Save. Its original
+ // source position remains a read dependency even when it is not the final slot.
+ for(const change of drafts.filter(c=>c.positionManager)){
+  for(const dep of movementDependencies(dataset,{mouse:{},source:null,target:null},{locationId:change.positionManager.locationId}))deps.set(dep.type+':'+dep.id,dep);
  }
  return [...deps.values()];
 }

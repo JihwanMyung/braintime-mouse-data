@@ -4,14 +4,14 @@ import {renderLabMembers,validateLabMemberDraft,clearLabMembers,verifiedInvitati
 const clone=structuredClone;
 const member=(id,extra={})=>({person_id:id,colony_id:'COLONY',version:3,name:'Synthetic Person',email:null,phone:null,acronym:'SP',category:'unknown',status:'current',intended_role:'editor',export_level:'low',notes:null,provenance:{source:'Historical record <sheet>',range:'B3'},archived:false,username:null,linked_user_id:null,...extra});
 const initial=()=>[member('CURRENT',{name:'Current person',email:'current@example.invalid',category:'phd',username:'current.user',linked_user_id:'AUTH1',membership_active:true}),member('HISTORICAL',{name:'Historical person',email:'history@example.invalid',phone:'+886 555 001',status:'historical'}),member('REVIEW',{name:'Uncertain person',acronym:'UP',status:'review'})];
-async function harness(overrides={}){const container={innerHTML:''},calls=[],messages=[];let members=initial();const hooks={listMembers:async()=>{calls.push({action:'list'});return {members:clone(members)}},saveMember:async person=>{calls.push({action:'save',person:clone(person)});const index=members.findIndex(m=>m.person_id===person.person_id),old=index<0?member('NEW',{version:0,provenance:{}}):members[index],next={...old,...person,person_id:person.person_id||'NEW',version:old.version+1};if(next.linked_user_id)next.membership_active=old.membership_active&&next.status==='current'&&!next.archived;if(index<0)members.push(next);else members[index]=next;return {member:clone(next)}},toast:(message,error)=>messages.push({message,error}),...overrides};await renderLabMembers(container,hooks);return {container,hooks,calls,messages,get members(){return members},setMembers(next){members=next},field(key,value){container.oninput({target:{value,dataset:{memberField:key}}})},async click(action,id=''){await container.onclick({target:{closest:()=>({dataset:{memberAction:action,memberId:id}})},preventDefault(){}})},async submit(values={}){await container.onsubmit({target:{hasAttribute:key=>key==='data-lab-member-form',elements:{namedItem:key=>Object.hasOwn(values,key)?{value:values[key]}:null}},preventDefault(){},stopPropagation(){}})}}}
+async function harness(overrides={}){const container={innerHTML:''},calls=[],messages=[];let members=initial();const hooks={listMembers:async()=>{calls.push({action:'list'});return {members:clone(members)}},saveMember:async person=>{calls.push({action:'save',person:clone(person)});const index=members.findIndex(m=>m.person_id===person.person_id),old=index<0?member('NEW',{version:0,provenance:{}}):members[index],next={...old,...person,person_id:person.person_id||'NEW',version:old.version+1};if(next.linked_user_id)next.membership_active=old.membership_active&&next.status==='current'&&!next.archived;if(index<0)members.push(next);else members[index]=next;return {member:clone(next)}},toast:(message,error)=>messages.push({message,error}),...overrides};await renderLabMembers(container,hooks);return {container,hooks,calls,messages,get members(){return members},setMembers(next){members=next},field(key,value){container.oninput({target:{value,checked:value===true,dataset:{memberField:key}}})},async click(action,id=''){await container.onclick({target:{closest:()=>({dataset:{memberAction:action,memberId:id}})},preventDefault(){}})},async submit(values={}){await container.onsubmit({target:{hasAttribute:key=>key==='data-lab-member-form',elements:{namedItem:key=>Object.hasOwn(values,key)?{value:values[key],checked:values[key]===true}:null}},preventDefault(){},stopPropagation(){}})}}}
 
 test('owner RPC load separates current, historical and review tabs and displays account identity',async()=>{
  const h=await harness();assert.deepEqual(h.calls,[{action:'list'}]);assert.match(h.container.innerHTML,/Current person/);assert.match(h.container.innerHTML,/@current.user/);assert.doesNotMatch(h.container.innerHTML,/Historical person|history@example.invalid/);assert.match(h.container.innerHTML,/Current \(1\)/);await h.click('tab','historical');assert.match(h.container.innerHTML,/Historical person/);assert.match(h.container.innerHTML,/\+886 555 001/);await h.click('edit','HISTORICAL');assert.match(h.container.innerHTML,/Source provenance/);assert.match(h.container.innerHTML,/Historical record &lt;sheet&gt;/);assert.match(h.container.innerHTML,/deactivates its access/);
 });
 
 test('preregistration defaults to current editor and saves without contact email or account creation',async()=>{
- const h=await harness();await h.click('new');assert.match(h.container.innerHTML,/value="editor" selected/);assert.match(h.container.innerHTML,/Preregistration sends no email/);h.field('name','New member');h.field('acronym','nm');h.field('category','masters');await h.submit();const call=h.calls.find(c=>c.action==='save');assert.deepEqual(call.person,{person_id:null,version:0,name:'New member',email:null,phone:null,acronym:'NM',category:'masters',status:'current',intended_role:'editor',export_level:'low',notes:null});assert.match(h.container.innerHTML,/Email needed/);assert.match(h.container.innerHTML,/Member saved. No email was sent/);assert(!h.calls.some(c=>/invite|auth|email/.test(c.action)));
+ const h=await harness();await h.click('new');assert.match(h.container.innerHTML,/value="editor" selected/);assert.match(h.container.innerHTML,/Preregistration sends no email/);h.field('name','New member');h.field('acronym','nm');h.field('category','masters');await h.submit();const call=h.calls.find(c=>c.action==='save');assert.deepEqual(call.person,{person_id:null,version:0,name:'New member',email:null,phone:null,acronym:'NM',category:'masters',status:'current',intended_role:'editor',export_level:'low',notes:null,cage_manager_eligible:false});assert.match(h.container.innerHTML,/Email needed/);assert.match(h.container.innerHTML,/Member saved. No email was sent/);assert(!h.calls.some(c=>/invite|auth|email/.test(c.action)));
 });
 
 test('editing submits exact CAS version while preserving provenance and server account fields by omission',async()=>{
@@ -76,6 +76,58 @@ test('stale or denied transition results do not claim a move, and disabled self-
 
 test('source-backed nicknames are displayed and searchable without changing the canonical name',async()=>{
  const h=await harness({listMembers:async()=>({members:[member('ALIAS',{name:'Canonical name',provenance:{aliases:['Nickname','<script>alias</script>'],nickname:'Prior nickname'}})]})});assert.match(h.container.innerHTML,/<strong>Canonical name \(Prior nickname\)<\/strong>/);assert.match(h.container.innerHTML,/Nickname/);assert.match(h.container.innerHTML,/Prior nickname/);assert.doesNotMatch(h.container.innerHTML,/<script>/);h.container.oninput({target:{id:'member-search',value:'Nickname',selectionStart:8}});assert.match(h.container.innerHTML,/Canonical name/);h.container.oninput({target:{id:'member-search',value:'Missing',selectionStart:7}});assert.doesNotMatch(h.container.innerHTML,/Canonical name/);assert.equal(h.calls.filter(c=>c.action==='save').length,0);
+});
+
+test('Historical cage-manager checkbox saves a strict boolean independently of account access',async()=>{
+ const h=await harness();await h.click('edit','HISTORICAL');
+ assert.match(h.container.innerHTML,/type="checkbox"[^>]*> Show in cage manager list/);
+ assert.doesNotMatch(h.container.innerHTML,/type="checkbox"[^>]* checked/);
+ h.field('cage_manager_eligible',true);await h.submit();
+ let saved=h.calls.filter(call=>call.action==='save').at(-1).person;
+ assert.equal(saved.cage_manager_eligible,true);assert.equal(saved.status,'historical');
+ assert.equal(saved.intended_role,'editor');assert.equal(saved.export_level,'low');
+ await h.click('edit','HISTORICAL');assert.match(h.container.innerHTML,/type="checkbox" checked/);
+ await h.submit({cage_manager_eligible:false});saved=h.calls.filter(call=>call.action==='save').at(-1).person;
+ assert.equal(saved.cage_manager_eligible,false);assert.equal(saved.intended_role,'editor');
+ assert(!h.calls.some(call=>/invite|auth/.test(call.action)));
+});
+
+test('cage-manager eligibility stays preserved on ordinary edits and is hidden outside unarchived Historical records',async()=>{
+ for(const extra of [{status:'current'},{status:'review'},{status:'historical',archived:true}]){
+  const h=await harness({listMembers:async()=>({members:[member('KEEP',{...extra,cage_manager_eligible:true})]})});
+  await h.click('edit','KEEP');assert.doesNotMatch(h.container.innerHTML,/Show in cage manager list/);
+  h.field('name','Edited person');h.field('cage_manager_eligible',false);await h.submit({cage_manager_eligible:false});
+  assert.equal(h.calls.find(call=>call.action==='save').person.cage_manager_eligible,true);
+ }
+ const h=await harness();await h.click('edit','CURRENT');assert.doesNotMatch(h.container.innerHTML,/Show in cage manager list/);
+ await h.submit();assert.equal(h.calls.find(call=>call.action==='save').person.cage_manager_eligible,false);
+});
+
+test('changing membership in the editor reveals Historical eligibility without changing access or bypassing transition review',async()=>{
+ const h=await harness();await h.click('edit','CURRENT');h.field('notes','Draft retained');
+ h.container.onchange({target:{value:'historical',dataset:{memberField:'status'}}});
+ assert.match(h.container.innerHTML,/Show in cage manager list/);assert.match(h.container.innerHTML,/Draft retained/);
+ h.container.onchange({target:{checked:true,value:'on',dataset:{memberField:'cage_manager_eligible'}}});
+ await h.submit();assert.equal(h.calls.filter(call=>call.action==='save').length,0);
+ assert.match(h.container.innerHTML,/lose access.*immediately/);await h.click('confirm-transition');
+ const saved=h.calls.find(call=>call.action==='save').person;
+ assert.equal(saved.cage_manager_eligible,true);assert.equal(saved.intended_role,'editor');assert.equal(saved.export_level,'low');
+ assert.equal(h.members.find(person=>person.person_id==='CURRENT').membership_active,false);
+ await h.click('edit','CURRENT');h.container.onchange({target:{value:'current',dataset:{memberField:'status'}}});
+ assert.doesNotMatch(h.container.innerHTML,/Show in cage manager list/);await h.submit();await h.click('confirm-transition');
+ assert.equal(h.calls.filter(call=>call.action==='save').at(-1).person.cage_manager_eligible,true);
+ assert.equal(h.members.find(person=>person.person_id==='CURRENT').membership_active,false);
+});
+
+test('quick membership moves leave cage-manager choice untouched and stale saves retain the checked draft',async()=>{
+ const h=await harness();h.setMembers([member('FLAG',{cage_manager_eligible:true})]);await h.click('refresh');
+ await h.click('move-historical','FLAG');await h.click('confirm-transition');
+ assert.deepEqual(h.calls.find(call=>call.action==='save').person,{person_id:'FLAG',version:3,status:'historical'});
+ assert.equal(h.members[0].cage_manager_eligible,true);
+ const stale=await harness({saveMember:async()=>{throw Object.assign(new Error('Stale'),{code:'40001'});}});
+ await stale.click('edit','HISTORICAL');stale.field('cage_manager_eligible',true);await stale.submit();
+ assert.match(stale.container.innerHTML,/changed while you were editing/);assert.match(stale.container.innerHTML,/type="checkbox" checked/);
+ for(const value of ['true','false',1,null])assert(validateLabMemberDraft({...initial()[1],cage_manager_eligible:value}).some(message=>message.includes('cage manager list')));
 });
 
 const invitee=(extra={})=>member('INVITEE',{name:'New colleague',email:'new@example.invalid',intended_role:'editor',export_level:'high',...extra});

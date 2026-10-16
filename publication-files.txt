@@ -258,3 +258,10 @@ supabase/member-email-approval.sql
 supabase/tests/member-email-approval.test.mjs
 supabase/MEMBER_EMAIL_APPROVAL.md
 tests/member-email-approval-store.test.mjs
+web/cage-managers.js
+tests/cage-managers.test.mjs
+tests/cage-manager-store.test.mjs
+supabase/cage-managers.sql
+supabase/CAGE_MANAGERS.md
+supabase/tests/cage-managers.test.mjs
+tests/cage-manager-editor.test.mjs

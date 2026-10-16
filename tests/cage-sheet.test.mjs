@@ -217,8 +217,8 @@ async function openEditor(ui,mode){await ui.host.onclick({target:renderedButtonT
 function enter(ui,node,field,value){const target=node.querySelector(`[data-sheet-field="${field}"]`);assert.ok(target,`editor ${field} present`);target.value=value;ui.host.oninput({target});return target;}
 
 test('compact source cages show manager, recording date/lux and one-line tag, ear, age with hover details',()=>{
- const ui=renderHarness(observationSample(),{selectedDate:'2026-10-12'}),article=[...ui.host.innerHTML.matchAll(/<article\b[^>]*data-sheet-slot="P1"[^>]*>([\s\S]*?)<\/article>/g)][0][1];
- assert.match(article,/>Vuong<\/span>/);assert.match(article,/datetime="2025-12-23"/);assert.match(article,/>150 lux<\/span>/);
+ const ui=renderHarness(observationSample(),{managers:[{person_id:'VU',name:'Vuong Truong',acronym:'VT',status:'current'}],selectedDate:'2026-10-12'}),article=[...ui.host.innerHTML.matchAll(/<article\b[^>]*data-sheet-slot="P1"[^>]*>([\s\S]*?)<\/article>/g)][0][1];
+ assert.match(article,/value="Vuong Truong" selected>Vuong<\/option>/);assert.match(article,/datetime="2025-12-23"/);assert.match(article,/>150 lux<\/span>/);
  assert.match(article,/title="0039 PB"/);assert.match(article,/>PB&#39;-M3193<\/button>/);assert.match(article,/>L1R1<\/button>/);assert.match(article,/title="DOB 2026-07-20"[^>]*>12wk<\/button>/);
  assert.doesNotMatch(article,/source labels|Source labels|Unlinked position|data-sheet-field="date_of_birth"|data-sheet-field="ear_mark"|data-sheet-field="physical_tag"/);
 });
@@ -527,4 +527,44 @@ test('renamed badge move stays unsaved if the original source observation change
  const fresh=structuredClone(data);fresh.tables.locations[0].source_cage_observation.animals[0].tag='Another-M999';
  const ui=renderHarness(data,{loadFresh:async()=>fresh});dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{position:'P2'}));assert.equal(hasCageSheetDrafts(),true);await ui.sync();
  assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.innerHTML,/Animal match changed/);assert.equal(fresh.tables.mice[0].cage_sid,null);clearCageSheetDrafts();
+});
+
+const managerDirectory=[{person_id:'JM',name:'Jihwan Myung',acronym:'JM',status:'current'},{person_id:'VT',name:'Vuong Truong',acronym:'VT',status:'current'},{person_id:'CB',name:'Cindy Brown',acronym:'CB',status:'historical'}];
+test('cage manager selector uses current directory names, saves full name only on Save, and leaves mouse responsibility intact',async()=>{
+ const data=sample(),ui=renderHarness(data,{managers:managerDirectory});
+ assert.match(ui.host.innerHTML,/<select[^>]*data-sheet-type="cages"[^>]*data-sheet-field="manager"/);
+ assert.match(ui.host.innerHTML,/<option value="Jihwan Myung" selected>Jihwan<\/option>/);
+ ui.input({sheetType:'cages',sheetId:'C1',sheetField:'manager'},'Cindy Brown');
+ assert.equal(data.tables.cages[0].manager,'JM');assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);
+ await ui.sync();assert.equal(ui.saved[0].tables.cages[0].manager,'Cindy Brown');assert.equal(ui.saved[0].tables.mice[0].manager,'JM');
+});
+test('clearing inherited cage manager is explicit and persists rather than restoring imported owner',async()=>{
+ const data=sample();delete data.tables.cages[0].manager;data.tables.cages[0].owner='Jihwan Myung';
+ const ui=renderHarness(data,{managers:managerDirectory});ui.input({sheetType:'cages',sheetId:'C1',sheetField:'manager'},'');await ui.sync();
+ const cage=ui.saved[0].tables.cages[0];assert.equal(cage.manager,'');assert.equal(cage.owner,'Jihwan Myung');
+ const reopened=renderHarness(ui.saved[0],{managers:managerDirectory});assert.match(reopened.host.innerHTML,/<option value="" selected>—<\/option>/);
+});
+test('explicit cage assignment wins over destination slot and source-only blank wins over imported name',async()=>{
+ const data=movementSample();Object.assign(data.tables.cages[0],{location_id:'P1',manager:'Cindy Brown'});Object.assign(data.tables.locations[0],{manager:'Jihwan Myung',source_manager_name:'Vuong Truong'});
+ const ui=renderHarness(data,{managers:managerDirectory}),article=ui.host.innerHTML.match(/<article[^>]*data-cage="C1"[^>]*>([\s\S]*?)<\/article>/)[1];
+ assert.match(article,/<option value="Cindy Brown" selected>Cindy<\/option>/);
+ const source=observationSample();delete source.tables.locations[0].manager;const unlinked=renderHarness(source,{managers:managerDirectory});unlinked.input({sheetType:'locations',sheetId:'P1',sheetField:'manager'},'');await unlinked.sync();
+ assert.equal(unlinked.saved[0].tables.locations[0].manager,'');assert.deepEqual(Object.fromEntries(Object.entries(unlinked.saved[0].tables.locations[0]).filter(([key])=>key.startsWith('source'))),Object.fromEntries(Object.entries(source.tables.locations[0]).filter(([key])=>key.startsWith('source'))));
+ const reopened=renderHarness(unlinked.saved[0],{managers:managerDirectory});assert.match(reopened.host.innerHTML,/<option value="" selected>—<\/option>/);
+});
+test('manager edits reject unknown names, unavailable directory, read-only access and concurrent assignment',async()=>{
+ const data=sample();let ui=renderHarness(data,{managers:managerDirectory});ui.input({sheetType:'cages',sheetId:'C1',sheetField:'manager'},'Invented Person');assert.equal(hasCageSheetDrafts(),false);
+ ui=renderHarness(data,{managers:managerDirectory,canEdit:()=>false});ui.input({sheetType:'cages',sheetId:'C1',sheetField:'manager'},'Cindy Brown');assert.equal(hasCageSheetDrafts(),false);
+ const fresh=structuredClone(data);fresh.tables.cages[0].manager='Jihwan Myung';ui=renderHarness(data,{managers:managerDirectory,loadFresh:async()=>fresh});ui.input({sheetType:'cages',sheetId:'C1',sheetField:'manager'},'Cindy Brown');await ui.sync();assert.equal(ui.saved.length,0);assert.match(ui.host.innerHTML,/Changed by another editor/);
+});
+test('fresh directory eligibility is checked before saving a selected historical manager',async()=>{
+ let reads=0;const data=sample(),ui=renderHarness(data,{managers:managerDirectory,loadManagers:async()=>++reads===1?managerDirectory:managerDirectory.filter(m=>m.status==='current')});
+ await new Promise(resolve=>setTimeout(resolve,0));ui.input({sheetType:'cages',sheetId:'C1',sheetField:'manager'},'Cindy Brown');await ui.sync();assert.equal(ui.saved.length,0);assert.match(ui.host.innerHTML,/no longer in the manager list/);assert.equal(hasCageSheetDrafts(),true);
+ clearCageSheetDrafts();
+});
+
+test('linking a source position preserves its existing legacy manager even when not offered for new assignments',async()=>{
+ const data=movementSample();delete data.tables.cages[0].manager;data.tables.locations[1].manager='Former keeper';
+ const ui=renderHarness(data,{managers:managerDirectory,loadManagers:async()=>managerDirectory});await new Promise(resolve=>setTimeout(resolve,0));
+ ui.input({sheetLink:'P2'},'C1');await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.cages[0].manager,'Former keeper');assert.equal(ui.saved[0].tables.mice[0].manager,'JM');
 });

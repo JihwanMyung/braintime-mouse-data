@@ -48,7 +48,7 @@ No real colony records or login secrets are included in this source package. Dep
 
 ## Managers and user accounts
 
-Mouse and cage records show an editable manager, using the imported SoftMouse owner until an assignment is changed. Original owner fields are preserved. Printed animal and cage cards include managers in a compact two-column layout.
+Mouse and cage records show an editable manager, using the imported SoftMouse owner until an assignment is changed. Original owner fields are preserved. Printed animal and cage cards include managers in a compact two-column layout. Cages use a first-name selector from current members plus Historical members whose owner has enabled **Show in cage manager list** in Settings → Lab members. **—** is an explicit unassigned cage; manager edits wait for **Save to Mouse Data** and do not change individual mouse managers. See `supabase/CAGE_MANAGERS.md` for the directory migration.
 
 Signed-in members can set their app password and display name in Settings. The configured database owner can list users, invite new accounts, assign Read only or Read & write access, and deactivate access. See `supabase/functions/manage-colony-users/README.md` for the server setup and email-delivery requirements. Passwords and administrative keys are never included in the public app package.
 

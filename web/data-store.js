@@ -2,7 +2,7 @@ import {clearHistoryIndex} from './history-index.js';
 import { projectLocoboxExport } from './locobox-export.js?v=24';
 import { PUBLIC_CONFIG } from './config.js';
 import { validateManagerPermissions } from './permissions.js';
-import { normalizeDataset, ID_FIELDS } from './model.js?v=48';
+import { normalizeDataset, ID_FIELDS } from './model.js?v=73';
 import {encodeArchive,decodeArchive,isArchiveChunk,partitionChanges,MAX_RPC_BYTES,utf8Size,ARCHIVE_MANIFEST_FORMAT} from './archive-format.js?v=48';
 
 const CONFIG_KEY='mouse-colony.cloud.v1',SESSION_KEY='mouse-colony.session.v1',MODE_KEY='mouse-colony.mode.v1',DEMO_KEY='mouse-colony.trusted-demo.v1';
@@ -1200,6 +1200,15 @@ export async function downloadHistoryIndex(){
 export async function listLabMembers(){
  if(await membership()!=='owner')throw new Error('Only the owner can view lab-member records.');
  return request('rpc/list_lab_members',{method:'POST',body:{p_colony_id:configuration().colonyId}});
+}
+export async function listCageManagers(){
+ const config=configuration(),actor=session()?.user?.id;
+ if(!config||!actor)throw new Error('Sign in to load cage managers.');
+ const result=await request('rpc/list_cage_managers',{method:'POST',body:{p_colony_id:config.colonyId}});
+ if(configuration()?.url!==config.url||configuration()?.colonyId!==config.colonyId||session()?.user?.id!==actor)throw new Error('Account changed. Reload cage managers.');
+ if(!Array.isArray(result?.managers))throw new Error('Cage manager list is unavailable.');
+ // Keep the contact-free directory in memory only, never in colony records/cache.
+ return {managers:result.managers.filter(row=>row&&typeof row.person_id==='string'&&typeof row.name==='string'&&['current','historical'].includes(row.status)).map(row=>({person_id:row.person_id,name:row.name,acronym:typeof row.acronym==='string'?row.acronym:null,nickname:typeof row.nickname==='string'?row.nickname:null,status:row.status}))};
 }
 export async function saveLabMember(person){
  if(await membership()!=='owner')throw new Error('Only the owner can edit lab-member records.');

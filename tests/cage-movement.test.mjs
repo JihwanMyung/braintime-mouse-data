@@ -99,6 +99,68 @@ test('new cage drafts reject stale placement, SID collisions, injected fields, i
  assert.equal(validateMouseMoveDrafts(done,changes),true,'completed moves do not require a source row hidden by the manual-assignment overlay');
 });
 
+test('registering a source position carries only its explicit cage manager, including Unassigned',()=>{
+ for(const manager of ['Selected caretaker','']){
+  const data=observed(),position=data.tables.locations[2];position.manager=manager;position.source_manager_name='Original source caretaker';
+  data.tables.mice[0].manager='Individual caretaker';const before=structuredClone(data);
+  const plan=planMouseMoveToPosition(data,'M1','L3',{cageSid:'CAGE-NEW',sourceMatch});
+  assert.equal(plan.changes[0].value.manager,manager);assert.equal(validateMouseMoveDrafts(data,plan.changes),true);assert.deepEqual(data,before);
+  const next=applyCageSheetDrafts(data,plan.changes,{at});assert.equal(next.tables.cages.find(c=>c.cage_sid==='CAGE-NEW').manager,manager);assert.equal(next.tables.mice[0].manager,'Individual caretaker');assert.deepEqual(next.tables.locations,data.tables.locations);
+  assert.deepEqual(applyCageSheetDrafts(next,plan.changes,{at}),next);
+  const changed=structuredClone(data);changed.tables.locations[2].manager='Changed caretaker';assert.throws(()=>validateMouseMoveDrafts(changed,plan.changes),/destination changed/);
+  const removed=structuredClone(data);delete removed.tables.locations[2].manager;assert.throws(()=>validateMouseMoveDrafts(removed,plan.changes),/destination changed/);
+ }
+ const data=observed();data.tables.locations[2].source_manager_name='Source only';data.tables.locations[2].source_cage_observation={managerName:'Source only'};
+ assert.equal(Object.hasOwn(planMouseMoveToPosition(data,'M1','L3',{cageSid:'CAGE-NEW',sourceMatch}).changes[0].value,'manager'),false);
+});
+
+test('explicit linking carries position manager only when the cage has no assignment and validates its source',()=>{
+ for(const manager of ['Selected caretaker','']){
+  const data=fixture();data.tables.locations[2].manager=manager;data.tables.mice[0].manager='Individual caretaker';
+  const before=structuredClone(data),plan=planCageMove(data,'C1','L3',{linkSourcePosition:true});
+  const assignment=plan.changes.find(c=>c.field==='manager');assert.deepEqual(assignment,{type:'cages',id:'C1',field:'manager',base:null,value:manager,positionManager:{locationId:'L3'}});
+  assert.deepEqual(data,before);const next=applyCageSheetDrafts(data,plan.changes,{at});assert.equal(next.tables.cages[0].manager,manager);assert.equal(next.tables.mice[0].manager,'Individual caretaker');assert.deepEqual(next.tables.locations,data.tables.locations);
+  assert.deepEqual(applyCageSheetDrafts(next,plan.changes,{at}),next);assert.ok(getMouseMoveReadDependencies(data,plan.changes).some(d=>d.type==='locations'&&d.id==='L3'));
+  const changed=structuredClone(data);changed.tables.locations[2].manager='Different caretaker';assert.throws(()=>applyCageSheetDrafts(changed,plan.changes,{at}),/source position manager changed/);
+  const changedCage=structuredClone(data);changedCage.tables.cages[0].manager='Concurrent assignment';assert.throws(()=>applyCageSheetDrafts(changedCage,plan.changes,{at}),/source position manager changed/);
+ }
+});
+
+test('a source-card manager edit and its cage link or registration save together with stale-value protection',()=>{
+ for(const manager of ['Selected caretaker','']){
+  const data=fixture(),preview=structuredClone(data);preview.tables.locations[2].manager=manager;
+  const managerDraft={type:'locations',id:'L3',field:'manager',base:null,value:manager};
+  const changes=[managerDraft,...planCageMove(preview,'C1','L3',{linkSourcePosition:true}).changes];
+  const next=applyCageSheetDrafts(data,changes,{at});assert.equal(next.tables.cages[0].manager,manager);assert.equal(next.tables.locations[2].manager,manager);assert.deepEqual(applyCageSheetDrafts(next,changes,{at}),next);
+  const stale=structuredClone(data);stale.tables.locations[2].manager='Concurrent caretaker';assert.throws(()=>applyCageSheetDrafts(stale,changes,{at}),/source position manager changed/);
+  assert.throws(()=>applyCageSheetDrafts(data,changes,{at,canEdit:type=>type!=='locations'}),/permission/);
+  const source=observed(),sourcePreview=structuredClone(source);sourcePreview.tables.locations[2].manager=manager;
+  const creation=[managerDraft,...planMouseMoveToPosition(sourcePreview,'M1','L3',{cageSid:'CAGE-NEW',sourceMatch}).changes];
+  const registered=applyCageSheetDrafts(source,creation,{at});assert.equal(registered.tables.cages.find(c=>c.cage_sid==='CAGE-NEW').manager,manager);assert.equal(registered.tables.locations[2].manager,manager);assert.deepEqual(applyCageSheetDrafts(registered,creation,{at}),registered);
+  const staleSource=structuredClone(source);staleSource.tables.locations[2].manager='Concurrent caretaker';assert.throws(()=>validateMouseMoveDrafts(staleSource,creation),/source position manager changed/);
+ }
+});
+
+test('a manager carried by linking follows a further staged move and keeps its original source dependency',()=>{
+ const data=fixture();data.tables.locations[2].manager='Selected caretaker';data.tables.locations.push({location_id:'L4',label:'B4',room_id:'R2',rack_id:'K2'});
+ const link=planCageMove(data,'C1','L3',{linkSourcePosition:true}),assignment=link.changes.find(c=>c.field==='manager');
+ const linked=applyCageSheetDrafts(data,link.changes,{at}),move=planCageMove(linked,'C1','L4');
+ const changes=[...move.changes.map(c=>({...c,base:data.tables.cages[0][c.field]??null})),assignment];
+ const next=applyCageSheetDrafts(data,changes,{at});assert.equal(next.tables.cages[0].location_id,'L4');assert.equal(next.tables.cages[0].manager,'Selected caretaker');assert.ok(getMouseMoveReadDependencies(data,changes).some(d=>d.type==='locations'&&d.id==='L3'));
+ const returned=applyCageSheetDrafts(data,[assignment],{at});assert.equal(returned.tables.cages[0].location_id,'L1');assert.equal(returned.tables.cages[0].manager,'Selected caretaker');assert.ok(getMouseMoveReadDependencies(data,[assignment]).some(d=>d.type==='locations'&&d.id==='L3'));
+ const stale=structuredClone(data);stale.tables.locations[2].manager='Concurrent caretaker';assert.throws(()=>applyCageSheetDrafts(stale,changes,{at}),/source position manager changed/);
+});
+
+test('ordinary cage moves and swaps never adopt destination managers or overwrite explicit cage assignments',()=>{
+ const data=fixture();data.tables.locations[1].manager='Slot two';data.tables.locations[2].manager='Slot three';
+ assert.ok(!planCageMove(data,'C1','L3').changes.some(c=>c.field==='manager'));
+ assert.ok(!planCageMove(data,'C1','L2',{linkSourcePosition:true}).changes.some(c=>c.field==='manager'));
+ for(const manager of ['Existing caretaker','']){
+  data.tables.cages[0].manager=manager;const plan=planCageMove(data,'C1','L3',{linkSourcePosition:true});assert.ok(!plan.changes.some(c=>c.field==='manager'));
+  const moved=applyCageSheetDrafts(data,plan.changes,{at});assert.equal(moved.tables.cages[0].manager,manager);
+ }
+});
+
 test('dated mouse events capture final cage placement and retain prior recorded IDs without changing identities or source history',()=>{
  const d=observed(),plan=planMouseMoveToPosition(d,'M1','L3',{cageSid:'CAGE-NEW',sourceMatch,effectiveDate:'2026-10-14'}),after=structuredClone(d);after.tables.cages.push(plan.changes[0].value);Object.assign(after.tables.mice[0],{cage_sid:'CAGE-NEW',cage_tag:'B3',cage_sheet_overrides:{cage_sid:true}});
  const event=buildMouseMoveEvent(d,after,plan.changes[1],{at,eventId:'MOVE-TEST'});assert.equal(event.mouse_sid,'M1');assert.equal(event.old_cage_sid,'LEGACY');assert.equal(event.cage_sid,'CAGE-NEW');assert.equal(event.event_date,'2026-10-14');assert.equal(event.room_id,'R2');assert.equal(event.location_label,'Room two / Rack two / B3');assert.equal(event.old_location_id,null);assert.equal(event.event_type,'cage_move');assert.equal(after.tables.mice[0].source_raw,d.tables.mice[0].source_raw);assert.deepEqual(after.tables.locations,d.tables.locations);assert.deepEqual(validateRecord('husbandry_events',event,after,null).errors,[]);
