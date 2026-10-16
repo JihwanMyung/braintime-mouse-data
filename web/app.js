@@ -1,6 +1,6 @@
 import { buildCageManagerChoices, cageManagerShortName, cageManagerValue } from './cage-managers.js?v=73';
 import { renderBrainbot, brainbotHelpHTML } from './brainbot.js?v=41';
-import * as store from './data-store.js?v=73';
+import * as store from './data-store.js?v=74';
 import * as model from './model.js?v=73';
 import { MOUSE_LINE_GROUPS, summarizeMice, mouseLineAssignments } from './mouse-summary.js?v=39';
 import { getStrainRegistry, strainNamingHelpHTML } from './strain-registry.js?v=36';
@@ -14,7 +14,7 @@ import { getBreedingOptions, getBreedingOptionsStatus, renderBreedingOptions } f
 import { renderHousing, scheduleApplies, lightClock } from './husbandry.js?v=63';
 import * as history from './history-index.js';
 import { renderUserManagement } from './user-management.js';
-import { renderLabMembers, clearLabMembers } from './lab-members.js?v=73';
+import { renderLabMembers, clearLabMembers } from './lab-members.js?v=74';
 import { renderAccessLogs } from './access-logs.js?v=69';
 import { createAccessActivity } from './access-activity.js?v=69';
 import { projectCageHistory, getCageHistoryDates } from './cage-history.js?v=24';
@@ -23,7 +23,7 @@ import { sortRooms, compareRooms } from './room-order.js?v=24';
 import { renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts, cageSheetHelpHTML } from './cage-sheet.js?v=73';
 import { prepareMouseCageSheetEdit } from './cage-observations.js?v=70';
 import { renderCageLabelEditor } from './cage-label.js?v=58';
-import { renderAccountSetup, clearAccountSetup } from './account-setup.js?v=72';
+import { renderAccountSetup, clearAccountSetup } from './account-setup.js?v=74';
 import { renderAccountAcronym } from './account-acronym.js';
 import { userAcronymHelpHTML, setLabUserDirectory } from './user-acronyms.js?v=24';
 import { normalizeManagerPermissions, visibleRoleLabel } from './permissions.js?v=66';

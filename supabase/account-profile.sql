@@ -30,6 +30,28 @@ begin
   if member.user_id is not null and not member.active then
     return jsonb_build_object('member',null,'eligible',false,'setup_required',false,'registration_allowed',false,'reason','access_disabled');
   end if;
+  -- Contact-only approval resolves an earlier self-registration permanently.
+  -- Use its immutable owner audit, not editable contact/profile fields. This
+  -- email cannot recreate a pending account when the reviewed row is archived,
+  -- or when the associated member later becomes historical.
+  if exists(select 1 from public.lab_member_audit approved
+    where approved.colony_id=p_colony_id and approved.operation='UPDATE'
+    and approved.actor_id is not null and approved.actor_id<>actor
+    and approved.actor_id::text=approved.after_record#>>'{provenance,email_approval,approved_by}'
+    and approved.after_record#>>'{provenance,email_approval,approval_kind}'='secondary_contact'
+    and approved.after_record#>>'{provenance,email_approval,registered_user_id}'=actor::text
+    and approved.after_record#>>'{provenance,email_approval,merged_into_person_id}' is not null
+    and approved.before_record->>'created_by'=actor::text
+    and approved.before_record->>'status'='review' and approved.before_record->'archived'='false'::jsonb
+    and approved.before_record#>>'{provenance,registration_method}'='verified_self_request'
+    and approved.before_record->>'email'=approved.after_record#>>'{provenance,email_approval,approved_email}'
+    and approved.after_record->'archived'='true'::jsonb and approved.after_record->'email'='null'::jsonb
+    and exists(select 1 from public.lab_member_audit original
+      where original.colony_id=p_colony_id and original.person_id=approved.person_id and original.operation='INSERT'
+      and original.actor_id=actor and original.after_record->>'email'=approved.before_record->>'email'
+      and original.after_record#>>'{provenance,registration_method}'='verified_self_request')) then
+    return jsonb_build_object('member',null,'eligible',false,'setup_required',false,'registration_allowed',false,'reason','secondary_contact_only');
+  end if;
   -- Pending approved identity is stable before a username is chosen. An Auth
   -- email change must not turn it into a second Current profile.
   if exists(select 1 from public.lab_members pending

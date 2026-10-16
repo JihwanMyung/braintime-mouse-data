@@ -15,6 +15,7 @@ export async function renderAccountSetup(container,hooks){
  function paint(message=''){
   if(!current())return;
   const profile=mount.profile,member=profile?.member||{};
+  if(profile?.reason==='secondary_contact_only'&&!profile.eligible&&profile.registration_allowed!==true){container.innerHTML='<p class="small" role="status">This email is saved as a contact. Sign in with your registered email.</p>';return;}
   if(!profile?.eligible&&profile?.registration_allowed!==true){container.innerHTML='<p class="small" role="status">Contact the owner about account access.</p>';return;}
   const pending=!profile.eligible,setup=profile.eligible&&profile.setup_required===true;
   if(!pending&&!setup){

@@ -14,7 +14,7 @@ declare
   saved_target public.lab_members%rowtype; saved_request public.lab_members%rowtype;
   owner_account auth.users%rowtype; request_account auth.users%rowtype; original_account auth.users%rowtype;
   original_member public.memberships%rowtype; saved_member public.memberships%rowtype;
-  matches integer; flags jsonb; previous_email text; contacts text[]; approval jsonb;
+  matches integer; flags jsonb; previous_email text; contacts text[]; approval jsonb; registered_target boolean;
 begin
   if actor is null then raise exception using errcode='42501',message='Only an active colony owner can approve a registration email';end if;
   perform 1 from public.colonies where id=p_colony_id for update;
@@ -33,14 +33,15 @@ begin
   end if;
   if request_person.status<>'review' or request_person.archived or request_person.linked_user_id is not null or request_person.username is not null
     or request_person.email is null or request_person.provenance->>'registration_method' is distinct from 'verified_self_request'
-    or target_person.status<>'current' or target_person.archived or target_person.linked_user_id is not null or target_person.username is not null
+    or target_person.status<>'current' or target_person.archived
     or target_person.email is null or target_person.email=request_person.email then
-    raise exception using errcode='42501',message='Use an unclaimed self-registration request and an unclaimed current member';
+    raise exception using errcode='42501',message='Use an unclaimed self-registration request and a current member';
   end if;
+  registered_target:=target_person.linked_user_id is not null and target_person.username is not null;
   -- Lock exact Auth identities in one order. Confirmation, email, ban and deletion
   -- changes cannot race the approval. FOR UPDATE also blocks foreign-key inserts
   -- that would add concurrent memberships elsewhere. No Auth row is changed.
-  perform 1 from auth.users where id in (actor,request_person.created_by) or lower(btrim(email)) in (request_person.email,target_person.email) order by id for update;
+  perform 1 from auth.users where id in (actor,request_person.created_by,target_person.linked_user_id) or lower(btrim(email)) in (request_person.email,target_person.email) order by id for update;
   select * into owner_account from auth.users where id=actor;
   if owner_account.id is null or owner_account.email_confirmed_at is null
     or coalesce((to_jsonb(owner_account)->>'is_anonymous')::boolean,false)
@@ -69,6 +70,44 @@ begin
   select count(*) into matches from auth.users where lower(btrim(email))=target_person.email;
   if matches>1 then raise exception using errcode='42501',message='The original email has conflicting accounts';end if;
   select * into original_account from auth.users where lower(btrim(email))=target_person.email;
+  if registered_target then
+    -- A completed account keeps its working login. The reviewed alternate email
+    -- is a contact only: do not replace credentials, username or membership.
+    if original_account.id is null or original_account.id<>target_person.linked_user_id
+      or original_account.id in (actor,request_account.id) or original_account.email_confirmed_at is null
+      or nullif(btrim(to_jsonb(original_account)->>'email_change'),'') is not null
+      or coalesce((to_jsonb(original_account)->>'is_anonymous')::boolean,false)
+      or coalesce((to_jsonb(original_account)->>'banned_until')::timestamptz>clock_timestamp(),false)
+      or to_jsonb(original_account)->>'deleted_at' is not null
+      or exists(select 1 from public.lab_members where colony_id=p_colony_id and linked_user_id=original_account.id and person_id<>target_person.person_id)
+      or exists(select 1 from public.lab_members where colony_id=p_colony_id and person_id not in (request_person.person_id,target_person.person_id)
+        and request_person.email=any(secondary_emails)) then
+      raise exception using errcode='42501',message='The registered member account or contact association could not be verified';
+    end if;
+    select * into original_member from public.memberships where colony_id=p_colony_id and user_id=original_account.id for update;
+    if original_member.user_id is null or not original_member.active or original_member.role='owner' then
+      raise exception using errcode='42501',message='Select an active registered non-owner member';
+    end if;
+    if original_member.role<>target_person.intended_role or original_member.export_level<>target_person.export_level then
+      raise exception using errcode='40001',message='The registered access differs from the member record. Review its access before approval';
+    end if;
+    select coalesce(array_agg(contact order by contact),'{}'::text[]) into contacts from (
+      select distinct lower(btrim(value)) contact from unnest(target_person.secondary_emails||array[request_person.email]) value
+      where nullif(btrim(value),'') is not null and lower(btrim(value))<>target_person.email
+    ) entries;
+    approval:=jsonb_build_object('request_person_id',request_person.person_id,'registered_user_id',request_account.id,
+      'previous_email',target_person.email,'approved_email',request_person.email,'approved_by',actor,'approved_at',clock_timestamp(),
+      'approval_kind','secondary_contact','merged_into_person_id',target_person.person_id);
+    update public.lab_members set email=null,archived=true,provenance=provenance||jsonb_build_object('email_approval',approval),
+      version=version+1,updated_at=clock_timestamp(),updated_by=actor where person_id=request_person.person_id returning * into saved_request;
+    -- Preserve any earlier login-approval provenance on the canonical member.
+    -- The immutable request and roster audits record this contact approval.
+    update public.lab_members set secondary_emails=contacts,version=version+1,updated_at=clock_timestamp(),updated_by=actor
+      where person_id=target_person.person_id returning * into saved_target;
+    return jsonb_build_object('member',colony_private.lab_member_payload(saved_target),
+      'merged_request',jsonb_build_object('person_id',saved_request.person_id,'version',saved_request.version,'archived',saved_request.archived),
+      'setup_required',false,'approval_kind','secondary_contact','approved_email',request_person.email);
+  end if;
   if original_account.id is not null then
     if original_account.id in (actor,request_account.id) or original_account.email_confirmed_at is not null
       or to_jsonb(original_account)->>'invited_at' is null or nullif(btrim(to_jsonb(original_account)->>'email_change'),'') is not null
@@ -93,7 +132,7 @@ begin
   ) entries;
   flags:=coalesce(original_member.permissions,colony_private.default_manager_permissions());
   approval:=jsonb_build_object('request_person_id',request_person.person_id,'registered_user_id',request_account.id,
-    'previous_email',previous_email,'approved_email',request_person.email,'approved_by',actor,'approved_at',clock_timestamp());
+    'previous_email',previous_email,'approved_email',request_person.email,'approved_by',actor,'approved_at',clock_timestamp(),'approval_kind','login_email');
   -- Preserve the reviewed request and its audit. Free only its unique primary
   -- email; its identity and submitted details remain in the archived row.
   update public.lab_members set email=null,archived=true,provenance=provenance||jsonb_build_object('email_approval',approval||jsonb_build_object('merged_into_person_id',target_person.person_id)),
@@ -111,7 +150,7 @@ begin
   insert into public.audit_log(colony_id,entity_type,entity_id,operation,actor_id,before_record,after_record)
     values(p_colony_id,'membership',request_account.id::text,'INSERT',actor,null,to_jsonb(saved_member));
   return jsonb_build_object('member',colony_private.lab_member_payload(saved_target),
-    'merged_request',jsonb_build_object('person_id',saved_request.person_id,'version',saved_request.version,'archived',saved_request.archived),'setup_required',true);
+    'merged_request',jsonb_build_object('person_id',saved_request.person_id,'version',saved_request.version,'archived',saved_request.archived),'setup_required',true,'approval_kind','login_email','approved_email',request_person.email);
 end $$;
 revoke all on function public.approve_lab_member_email(uuid,uuid,integer,uuid,integer) from public,anon,authenticated;
 grant execute on function public.approve_lab_member_email(uuid,uuid,integer,uuid,integer) to authenticated;
@@ -201,6 +240,28 @@ begin
   select * into member from public.memberships where colony_id=p_colony_id and user_id=actor;
   if member.user_id is not null and not member.active then
     return jsonb_build_object('member',null,'eligible',false,'setup_required',false,'registration_allowed',false,'reason','access_disabled');
+  end if;
+  -- Contact-only approval resolves an earlier self-registration permanently.
+  -- Use its immutable owner audit, not editable contact/profile fields. This
+  -- email cannot recreate a pending account when the reviewed row is archived,
+  -- or when the associated member later becomes historical.
+  if exists(select 1 from public.lab_member_audit approved
+    where approved.colony_id=p_colony_id and approved.operation='UPDATE'
+    and approved.actor_id is not null and approved.actor_id<>actor
+    and approved.actor_id::text=approved.after_record#>>'{provenance,email_approval,approved_by}'
+    and approved.after_record#>>'{provenance,email_approval,approval_kind}'='secondary_contact'
+    and approved.after_record#>>'{provenance,email_approval,registered_user_id}'=actor::text
+    and approved.after_record#>>'{provenance,email_approval,merged_into_person_id}' is not null
+    and approved.before_record->>'created_by'=actor::text
+    and approved.before_record->>'status'='review' and approved.before_record->'archived'='false'::jsonb
+    and approved.before_record#>>'{provenance,registration_method}'='verified_self_request'
+    and approved.before_record->>'email'=approved.after_record#>>'{provenance,email_approval,approved_email}'
+    and approved.after_record->'archived'='true'::jsonb and approved.after_record->'email'='null'::jsonb
+    and exists(select 1 from public.lab_member_audit original
+      where original.colony_id=p_colony_id and original.person_id=approved.person_id and original.operation='INSERT'
+      and original.actor_id=actor and original.after_record->>'email'=approved.before_record->>'email'
+      and original.after_record#>>'{provenance,registration_method}'='verified_self_request')) then
+    return jsonb_build_object('member',null,'eligible',false,'setup_required',false,'registration_allowed',false,'reason','secondary_contact_only');
   end if;
   -- Pending approved identity is stable before a username is chosen. An Auth
   -- email change must not turn it into a second Current profile.

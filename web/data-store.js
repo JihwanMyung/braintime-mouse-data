@@ -1228,8 +1228,11 @@ export async function approveLabMemberEmail(payload){
  try{result=await request('rpc/approve_lab_member_email',{method:'POST',body:{p_colony_id:c.colonyId,p_request_person_id:payload.request_person_id,p_request_version:payload.request_version,p_target_person_id:payload.target_person_id,p_target_version:payload.target_version}});}
  catch(error){check();if(error.status===409)error.code='40001';throw error;}
  check();
- const member=result?.member,merged=result?.merged_request;
- if(member?.person_id!==payload.target_person_id||member.status!=='current'||member.archived!==false||member.linked_user_id||!Number.isSafeInteger(member.version)||member.version<=payload.target_version||!Array.isArray(member.secondary_emails)||merged?.person_id!==payload.request_person_id||merged.archived!==true||!Number.isSafeInteger(merged.version)||merged.version<=payload.request_version||result.setup_required!==true)throw new Error('The email approval result could not be confirmed. Refresh Members before trying again.');
+ const member=result?.member,merged=result?.merged_request,email=result?.approved_email;
+ const validEmail=typeof email==='string'&&email===email.trim().toLowerCase()&&email.length<=254&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+ const loginApproval=result?.approval_kind==='login_email'&&result.setup_required===true&&member?.linked_user_id===null&&member?.username===null&&member?.email===email;
+ const contactApproval=result?.approval_kind==='secondary_contact'&&result.setup_required===false&&typeof member?.linked_user_id==='string'&&uuid.test(member.linked_user_id)&&typeof member?.username==='string'&&/^[a-z][a-z0-9_.-]{2,31}$/.test(member.username)&&member.membership_active===true&&member.email!==email&&member.secondary_emails?.includes(email);
+ if(member?.person_id!==payload.target_person_id||member.status!=='current'||member.archived!==false||!Number.isSafeInteger(member.version)||member.version<=payload.target_version||!Array.isArray(member.secondary_emails)||!validEmail||!(loginApproval||contactApproval)||merged?.person_id!==payload.request_person_id||merged.archived!==true||!Number.isSafeInteger(merged.version)||merged.version<=payload.request_version)throw new Error('The email approval result could not be confirmed. Refresh Members before trying again.');
  return result;
 }
 function applyMyLabProfile(result){

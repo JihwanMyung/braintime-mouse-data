@@ -5,7 +5,7 @@ class Storage{values=new Map();getItem(k){return this.values.get(k)??null}setIte
 globalThis.localStorage=new Storage();globalThis.sessionStorage=new Storage();
 const colony='11111111-1111-4111-8111-111111111111',uid='22222222-2222-4222-8222-222222222222',requestId='33333333-3333-4333-8333-333333333333',targetId='44444444-4444-4444-8444-444444444444';
 const payload=()=>({request_person_id:requestId,request_version:2,target_person_id:targetId,target_version:5});
-const approved=()=>({member:{person_id:targetId,email:'registered@example.org',secondary_emails:['original@example.org'],name:'Member',status:'current',archived:false,linked_user_id:null,intended_role:'editor',export_level:'high',version:6},merged_request:{person_id:requestId,version:3,archived:true},setup_required:true});
+const approved=()=>({member:{person_id:targetId,email:'registered@example.org',secondary_emails:['original@example.org'],name:'Member',status:'current',archived:false,linked_user_id:null,username:null,intended_role:'editor',export_level:'high',version:6},merged_request:{person_id:requestId,version:3,archived:true},setup_required:true,approval_kind:'login_email',approved_email:'registered@example.org'});
 async function fixture(options={}){
  localStorage.clear();sessionStorage.clear();store.configureCloud({url:'https://test.supabase.co',anonKey:'x.'+btoa(JSON.stringify({role:'anon'}))+'.x',colonyId:colony});
  const state={role:'owner',calls:[],...options};
@@ -43,4 +43,19 @@ test('signout during approval suppresses the result for the replaced session',as
 test('account change during owner check prevents the approval mutation',async()=>{
  let release;const state=await fixture();state.membershipWait=new Promise(resolve=>release=resolve);
  const pending=store.approveLabMemberEmail(payload());await new Promise(resolve=>setTimeout(resolve,0));await store.signOut();release();await assert.rejects(pending,/account.*changed/);assert(!state.calls.some(c=>c.path.endsWith('/approve_lab_member_email')));
+});
+
+test('registered members can approve a secondary contact without replacing the existing login',async()=>{
+ const response={...approved(),approval_kind:'secondary_contact',setup_required:false,member:{...approved().member,email:'original@example.org',secondary_emails:['registered@example.org'],linked_user_id:'55555555-5555-4555-8555-555555555555',username:'existing.member',membership_active:true}};
+ const state=await fixture({result:response});assert.deepEqual(await store.approveLabMemberEmail(payload()),response);
+ assert.equal(state.calls.filter(c=>c.path.endsWith('/approve_lab_member_email')).length,1);
+ assert(!JSON.stringify([...localStorage.values,...sessionStorage.values]).includes('registered@example.org'));
+ for(const change of [
+  {approval_kind:'login_email'},{setup_required:true},{approved_email:'other@example.org'},
+  {member:{...response.member,email:response.approved_email}},
+  {member:{...response.member,secondary_emails:[]}},
+  {member:{...response.member,linked_user_id:null}},
+  {member:{...response.member,username:null}},
+  {member:{...response.member,membership_active:false}}
+ ]){await fixture({result:{...response,...change}});await assert.rejects(store.approveLabMemberEmail(payload()),/could not be confirmed/);}
 });

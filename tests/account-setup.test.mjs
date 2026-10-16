@@ -121,3 +121,8 @@ test('missing verified email is not inferred from invitation hints and email dis
  const ui=view();await renderAccountSetup(ui.container,hooksFor({...profile(),invitation_email:'suggested@example.invalid',member:{...profile().member,email:null}}));assert.equal(ui.form.fields.email.value,'');assert.doesNotMatch(ui.container.innerHTML,/suggested@example.invalid/);
  await renderAccountSetup(ui.container,hooksFor({...profile(),member:{...profile().member,email:'a" autofocus="true@example.invalid'}}));assert.match(ui.container.innerHTML,/value="a&quot; autofocus=&quot;true@example.invalid"/);assert.doesNotMatch(ui.container.innerHTML,/ autofocus="true/);
 });
+
+test('approved secondary contacts use the existing registered login rather than submitting another request',async()=>{
+ const ui=view();await renderAccountSetup(ui,{getProfile:async()=>({member:null,eligible:false,setup_required:false,registration_allowed:false,reason:'secondary_contact_only'})});
+ assert.match(ui.innerHTML,/This email is saved as a contact/);assert.match(ui.innerHTML,/Sign in with your registered email/);assert.doesNotMatch(ui.innerHTML,/<form|Awaiting approval|Submit for approval/);
+});
