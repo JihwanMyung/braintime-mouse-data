@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { applyCageSheetDrafts, renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts } from '../web/cage-sheet.js';
+import { planMouseMove, planMouseMoveToPosition } from '../web/cage-movement.js';
 import { projectCageHistory } from '../web/cage-history.js';
 import { normalizeDataset } from '../web/model.js';
 globalThis.crypto??=webcrypto;
@@ -184,7 +185,7 @@ test('printing waits for pending sheet edits to be synced or discarded on both p
  ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-label','C1')});
  ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-position-label','P2')});
  assert.equal(calls,0);assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);
- assert.match(ui.host.innerHTML,/Sync or discard pending edits before printing/);assert.equal(data.tables.mice[0].genotype,undefined);clearCageSheetDrafts();
+ assert.match(ui.host.innerHTML,/Save or discard pending edits before printing/);assert.equal(data.tables.mice[0].genotype,undefined);clearCageSheetDrafts();
 });
 
 test('mouse-reference-derived cages never masquerade as a registered print target',()=>{
@@ -221,12 +222,12 @@ test('compact source cages show manager, recording date/lux and one-line tag, ea
  assert.doesNotMatch(article,/source labels|Source labels|Unlinked position|data-sheet-field="date_of_birth"|data-sheet-field="ear_mark"|data-sheet-field="physical_tag"/);
 });
 
-test('note editor uses displayed observation, saves on Done to exact mouse, and preserves raw note plus concurrent overrides',async()=>{
+test('note editor uses displayed observation, stages on Done and saves explicitly to exact mouse, and preserves raw note plus concurrent overrides',async()=>{
  const data=observationSample(),fresh=structuredClone(data);fresh.tables.mice[0].cage_sheet_overrides={ear_mark:true};
  const ui=renderHarness(data,{loadFresh:async()=>fresh}),editor=await openEditor(ui,'note');
  assert.ok(editor);assert.equal(editor.querySelector('[data-sheet-field="comment"]').value,'0039 PB');assert.match(editor.innerHTML,/data-sheet-open-mouse="M1"/);
  enter(ui,editor,'comment','Reviewed note');assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);
- await ui.host.onclick({target:doneTarget()});
+ await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);await ui.sync();
  assert.equal(ui.saved.length,1);const mouse=ui.saved[0].tables.mice[0];assert.equal(mouse.comment,'Reviewed note');assert.deepEqual(mouse.cage_sheet_overrides,{ear_mark:true,comment:true});
  assert.equal(ui.saved[0].tables.locations[0].source_cage_observation.animals[0].note,'0039 PB');assert.equal(mouse.cage_sid,null);assert.equal(hasCageSheetDrafts(),false);
 });
@@ -234,26 +235,26 @@ test('note editor uses displayed observation, saves on Done to exact mouse, and 
 test('ear editor uses source L/R counts, retains zero, and writes canonical mark to Mice',async()=>{
  const ui=renderHarness(observationSample()),editor=await openEditor(ui,'ear'),left=editor.querySelector('[data-sheet-ear-side="L"]'),right=editor.querySelector('[data-sheet-ear-side="R"]');
  assert.equal(left.value,'1');assert.equal(right.value,'1');left.value='0';ui.host.oninput({target:left});right.value='2';ui.host.oninput({target:right});
- await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].ear_mark,'L0R2');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.ear_mark,true);
+ await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].ear_mark,'L0R2');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.ear_mark,true);
 });
 
 test('DOB editor saves exact mouse DOB and updates compact age without changing source observation',async()=>{
  const ui=renderHarness(observationSample(),{selectedDate:'2026-10-12'}),editor=await openEditor(ui,'dob');
  assert.equal(editor.querySelector('[data-sheet-field="date_of_birth"]').value,'2026-07-20');enter(ui,editor,'date_of_birth','2026-07-13');
- await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved[0].tables.mice[0].date_of_birth,'2026-07-13');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.date_of_birth,true);
+ await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);await ui.sync();assert.equal(ui.saved[0].tables.mice[0].date_of_birth,'2026-07-13');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.date_of_birth,true);
  assert.match(ui.host.innerHTML,/title="DOB 2026-07-13"[^>]*>13wk<\/button>/);assert.equal(ui.saved[0].tables.locations[0].source_cage_observation.animals[0].dateOfBirth,'2026-07-20');
 });
 
-test('pre-existing sheet drafts prevent inline auto-save and remain a single explicit Sync',async()=>{
+test('mouse and cage drafts remain a single explicit Save changes',async()=>{
  const ui=renderHarness(observationSample());ui.input({sheetType:'locations',sheetId:'P1',sheetField:'notes'},'Cage note');
  const editor=await openEditor(ui,'note');enter(ui,editor,'comment','Mouse note');await ui.host.onclick({target:doneTarget()});
  assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.locations[0].notes,'Cage note');assert.equal(ui.saved[0].tables.mice[0].comment,'Mouse note');
 });
 
-test('inline auto-save rechecks permission and concurrent same-field edits without overwriting them',async()=>{
+test('explicit Save changes rechecks permission and concurrent same-field edits without overwriting them',async()=>{
  const data=observationSample(),fresh=structuredClone(data);fresh.tables.mice[0].ear_mark='L2R2';
  const ui=renderHarness(data,{loadFresh:async()=>fresh}),editor=await openEditor(ui,'ear'),left=editor.querySelector('[data-sheet-ear-side="L"]');left.value='0';ui.host.oninput({target:left});
- await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);assert.equal(fresh.tables.mice[0].ear_mark,'L2R2');assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.querySelector('#cage-sheet-status').textContent,/Changed by another editor/);clearCageSheetDrafts();
+ await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);await ui.sync();assert.equal(ui.saved.length,0);assert.equal(fresh.tables.mice[0].ear_mark,'L2R2');assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.innerHTML,/Changed by another editor/);clearCageSheetDrafts();
 });
 
 test('ambiguous and historical rows cannot open editable controls or navigate to guessed Mice',async()=>{
@@ -267,23 +268,23 @@ test('future DOB is rejected without saving an earlier draft or changing Mice',a
  assert.throws(()=>applyCageSheetDrafts(observationSample(),[edit('mice','M1','date_of_birth','2026-07-20','2999-01-01')],{at:'2026-10-16T12:00:00Z'}),/DOB cannot be in the future/);
 });
 
-test('leaving an inline editor saves, but tabbing between controls does not save while typing',async()=>{
+test('leaving an inline editor and tabbing never save without Save changes',async()=>{
  const ui=renderHarness(observationSample()),editor=await openEditor(ui,'note'),target=enter(ui,editor,'comment','Saved on leaving');
  ui.host.onfocusout({target,relatedTarget:target});await new Promise(resolve=>setTimeout(resolve,3));assert.equal(ui.saved.length,0);
- ui.host.onfocusout({target,relatedTarget:null});await new Promise(resolve=>setTimeout(resolve,3));assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].comment,'Saved on leaving');
+ ui.host.onfocusout({target,relatedTarget:null});await new Promise(resolve=>setTimeout(resolve,3));assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].comment,'Saved on leaving');
 });
 
 test('source-linked inline save rejects a changed identity match or revoked permission on fresh reload',async()=>{
  const data=observationSample(),fresh=structuredClone(data);fresh.tables.mice[0].physical_tag='Different mouse';
- let ui=renderHarness(data,{loadFresh:async()=>fresh}),editor=await openEditor(ui,'note');enter(ui,editor,'comment','Must not save');await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);assert.match(ui.host.querySelector('#cage-sheet-status').textContent,/Animal match changed/);clearCageSheetDrafts();
- let allowed=true;ui=renderHarness(observationSample(),{canEdit:()=>allowed});editor=await openEditor(ui,'note');enter(ui,editor,'comment','Must not save');allowed=false;await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);assert.match(ui.host.querySelector('#cage-sheet-status').textContent,/permission/);clearCageSheetDrafts();
+ let ui=renderHarness(data,{loadFresh:async()=>fresh}),editor=await openEditor(ui,'note');enter(ui,editor,'comment','Must not save');await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);await ui.sync();assert.equal(ui.saved.length,0);assert.match(ui.host.innerHTML,/Animal match changed/);clearCageSheetDrafts();
+ let allowed=true;ui=renderHarness(observationSample(),{canEdit:()=>allowed});editor=await openEditor(ui,'note');enter(ui,editor,'comment','Must not save');allowed=false;await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);await ui.sync();assert.equal(ui.saved.length,0);assert.match(ui.host.innerHTML,/permission/);clearCageSheetDrafts();
 });
 
 test('deliberately choosing the stored value still overrides differing source notes and earmarks',async()=>{
  const data=observationSample();data.tables.mice[0].comment=null;
- let ui=renderHarness(data),editor=await openEditor(ui,'note');enter(ui,editor,'comment','');await ui.host.onclick({target:doneTarget()});
+ let ui=renderHarness(data),editor=await openEditor(ui,'note');enter(ui,editor,'comment','');await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);await ui.sync();
  assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].comment,null);assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.comment,true);
- ui=renderHarness(observationSample());editor=await openEditor(ui,'ear');const left=editor.querySelector('[data-sheet-ear-side="L"]'),right=editor.querySelector('[data-sheet-ear-side="R"]');left.value='0';ui.host.oninput({target:left});right.value='0';ui.host.oninput({target:right});await ui.host.onclick({target:doneTarget()});
+ ui=renderHarness(observationSample());editor=await openEditor(ui,'ear');const left=editor.querySelector('[data-sheet-ear-side="L"]'),right=editor.querySelector('[data-sheet-ear-side="R"]');left.value='0';ui.host.oninput({target:left});right.value='0';ui.host.oninput({target:right});await ui.host.onclick({target:doneTarget()});assert.equal(ui.saved.length,0);await ui.sync();
  assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].ear_mark,'L0R0');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.ear_mark,true);
  const sourceCard=[...ui.host.innerHTML.matchAll(/<article\b[^>]*data-sheet-slot="P1"[^>]*>([\s\S]*?)<\/article>/g)][0][1];assert.match(sourceCard,/>L0R0<\/button>/);
 });
@@ -299,4 +300,149 @@ test('pending source-linked mouse edits survive a sheet repaint before explicit 
  card=[...ui.host.innerHTML.matchAll(/<article\b[^>]*data-sheet-slot="P1"[^>]*>([\s\S]*?)<\/article>/g)][0][1];assert.match(card,/title="Current note only"/);assert.doesNotMatch(card,/title="Current note only · 0039 PB"/);
  assert.equal(ui.saved.length,0);await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].date_of_birth,'2026-07-13');assert.equal(ui.saved[0].tables.mice[0].comment,'Current note only');
  assert.equal(ui.saved[0].tables.locations[0].source_cage_observation.animals[0].note,'0039 PB');
+});
+
+function registeredMoveSample(){
+ const data=movementSample();Object.assign(data.tables.cages[0],{location_id:'P1',room_id:'R1',rack_id:'K1'});
+ data.tables.cages.push({cage_sid:'C2',cage_tag:'B2',state:'Active',location_id:'P2',room_id:'R2',rack_id:'K2'});return data;
+}
+function firstRenderedButton(host,attribute){const match=host.innerHTML.match(new RegExp(attribute+'="([^\"]+)"'));assert.ok(match,attribute+' is rendered');return renderedButtonTarget(host,attribute,match[1]);}
+function renderedCardTarget(host,{cage,position}){
+ const article=[...host.innerHTML.matchAll(/<article\b([^>]*)>/g)].map(([,value])=>attributes(value)).find(value=>cage?value['data-cage']===cage:value['data-sheet-slot']===position);
+ assert.ok(article,'Destination card rendered');const card={dataset:datasetAttributes(article),classList:{add(){},remove(){}}};return {closest:selector=>selector==='.sheet-cage'?card:null};
+}
+function dragTo(ui,source,destination){
+ const values=new Map(),transfer={setData:(key,value)=>values.set(key,value)};let prevented=false;
+ ui.host.ondragstart({target:source,dataTransfer:transfer,preventDefault(){prevented=true;}});
+ if(!prevented)ui.host.ondrop({target:destination,dataTransfer:transfer,preventDefault(){}});
+ return {prevented,values};
+}
+test('mouse tag drag stages a cross-room move, retains original data, then saves one dated event with guarded dependencies',async()=>{
+ const data=registeredMoveSample(),original=structuredClone(data),calls=[];
+ const ui=renderHarness(data,{save:async(next,options)=>calls.push({next,options})});
+ assert.match(ui.host.innerHTML,/Save changes/);assert.match(ui.host.innerHTML,/data-sheet-drag-mouse=/);
+ dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{cage:'C2'}));
+ assert.equal(calls.length,0);assert.equal(hasCageSheetDrafts(),true);assert.deepEqual(data,original);
+ const destination=[...ui.host.innerHTML.matchAll(/<article\b([^>]*)>([\s\S]*?)<\/article>/g)].find(([,attrs])=>attributes(attrs)['data-cage']==='C2');assert.match(destination[2],/>P1<\/button>/);
+ await ui.sync();assert.equal(calls.length,1);const {next,options}=calls[0];
+ assert.equal(next.tables.mice[0].cage_sid,'C2');assert.equal(next.tables.mice[0].cage_tag,'B2');assert.equal(next.tables.mice[0].cage_sheet_overrides.cage_sid,true);
+ assert.equal(next.tables.husbandry_events.length,1);assert.equal(next.tables.husbandry_events[0].event_type,'cage_move');assert.equal(next.tables.husbandry_events[0].old_cage_sid,'C1');
+ assert.ok(options.readDependencies.some(d=>d.type==='locations'&&d.id==='P2'));assert.ok(options.readDependencies.some(d=>d.type==='cages'&&d.id==='C2'));
+});
+test('mouse move can be discarded without saving, and unrelated external drag data is ignored',async()=>{
+ const data=registeredMoveSample(),ui=renderHarness(data,{confirm:async()=>true}),target=renderedCardTarget(ui.host,{cage:'C2'});
+ ui.host.ondrop({target,dataTransfer:{getData:()=>'{"mouseSid":"M1"}'},preventDefault(){}});assert.equal(hasCageSheetDrafts(),false);
+ dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),target);assert.equal(hasCageSheetDrafts(),true);
+ await ui.host.querySelector('#cage-sheet-discard').onclick();assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);assert.equal(data.tables.mice[0].cage_sid,'C1');
+});
+test('cage header drag stages a swap while mouse records keep their cage IDs',async()=>{
+ const data=registeredMoveSample(),ui=renderHarness(data);
+ dragTo(ui,renderedButtonTarget(ui.host,'data-sheet-drag-cage','C1'),renderedCardTarget(ui.host,{cage:'C2'}));
+ assert.equal(ui.saved.length,0);await ui.sync();assert.equal(ui.saved.length,1);
+ assert.deepEqual(ui.saved[0].tables.cages.map(c=>[c.cage_sid,c.location_id]),[['C1','P2'],['C2','P1']]);assert.equal(ui.saved[0].tables.mice[0].cage_sid,'C1');assert.equal(ui.saved[0].tables.mice[0].cage_tag,'B2');
+});
+test('note, DOB and mouse moves stay staged together and compare identity against the original row',async()=>{
+ const data=registeredMoveSample(),ui=renderHarness(data);let editor=await openEditor(ui,'dob');enter(ui,editor,'date_of_birth','2026-07-01');await ui.host.onclick({target:doneTarget()});
+ editor=await openEditor(ui,'note');enter(ui,editor,'comment','Move note');await ui.host.onclick({target:doneTarget()});
+ dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{cage:'C2'}));assert.equal(ui.saved.length,0);
+ await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].date_of_birth,'2026-07-01');assert.equal(ui.saved[0].tables.mice[0].comment,'Move note');assert.equal(ui.saved[0].tables.mice[0].cage_sid,'C2');
+});
+test('sequential mouse moves retain the original cage CAS and returning home removes the draft',async()=>{
+ const data=registeredMoveSample(),ui=renderHarness(data);
+ dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{cage:'C2'}));
+ dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{cage:'C1'}));
+ assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);
+});
+test('touch Move mouse selection reaches a destination and does not open the mouse record',async()=>{
+ let opened=0;const ui=renderHarness(registeredMoveSample(),{openMouse:()=>opened++}),editor=await openEditor(ui,'note');
+ const attrs=attributes(editor.innerHTML.match(/<button\b([^>]*data-sheet-move-mouse[^>]*)>/)[1]),button={dataset:datasetAttributes(attrs)};
+ await ui.host.onclick({target:{closest:selector=>selector.includes('[data-sheet-move-mouse]')?button:null}});
+ assert.match(ui.host.innerHTML,/Moving mouse P1/);assert.equal(ui.saved.length,0);
+ await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-mouse-destination-button','C2')});assert.equal(hasCageSheetDrafts(),true);assert.equal(opened,0);await ui.sync();assert.equal(ui.saved[0].tables.mice[0].cage_sid,'C2');
+});
+test('historical, ambiguous, ended and read-only rows have no drag handles',()=>{
+ for(const options of [{readOnly:true},{canEdit:()=>false}]){const ui=renderHarness(registeredMoveSample(),options);assert.doesNotMatch(ui.host.innerHTML,/draggable="true"/);}
+ const ambiguous=observationSample();ambiguous.tables.mice.push({...ambiguous.tables.mice[0],mouse_sid:'M2'});assert.doesNotMatch(renderHarness(ambiguous).host.innerHTML,/data-sheet-drag-mouse=/);
+ const ended=observationSample();ended.tables.mice[0].state='Ended';assert.doesNotMatch(renderHarness(ended).host.innerHTML,/data-sheet-drag-mouse=/);
+});
+test('a changed mouse assignment or withdrawn target blocks every staged change on Save',async()=>{
+ for(const changeFresh of [fresh=>{fresh.tables.mice[0].cage_sid='REMOTE';},fresh=>{fresh.tables.locations[1].source_current=false;}]){
+  const data=registeredMoveSample(),fresh=structuredClone(data);changeFresh(fresh);const ui=renderHarness(data,{loadFresh:async()=>fresh});
+  ui.input({sheetType:'cages',sheetId:'C1',sheetField:'comment'},'Keep pending');dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{cage:'C2'}));await ui.sync();
+  assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);assert.equal(data.tables.cages[0].comment,undefined);
+ }
+});
+test('verified source mouse can move to an unlinked grid, creating only the destination on Save',async()=>{
+ const data=observationSample(),housing=movementSample();data.tables.rooms=housing.tables.rooms;data.tables.racks=housing.tables.racks;data.tables.locations.push(housing.tables.locations[1]);
+ data.tables.mice[0].cage_sid='LEGACY';data.tables.mice[0].cage_tag='L7';
+ data.tables.locations[1].source_cage_observation={schemaVersion:1,animals:[{tag:'Unknown-F999',sourceCell:'T20'}]};
+ const original=structuredClone(data),ui=renderHarness(data);dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{position:'P2'}));
+ assert.equal(hasCageSheetDrafts(),true);assert.equal(ui.saved.length,0);assert.deepEqual(data,original);assert.match(ui.host.innerHTML,/Unknown-F999/);
+ await ui.sync();assert.equal(ui.saved.length,1);const next=ui.saved[0],created=next.tables.cages[0];assert.equal(next.tables.cages.length,1);assert.equal(created.location_id,'P2');assert.equal(created.cage_sheet_source_location_id,'P2');assert.equal(next.tables.mice.length,1);assert.equal(next.tables.mice[0].cage_sid,created.cage_sid);assert.deepEqual(next.tables.locations,original.tables.locations);assert.equal(next.tables.husbandry_events.length,2);
+ assert.doesNotMatch(ui.host.innerHTML,new RegExp('data-sheet-drag-cage="'+created.cage_sid+'"'));
+});
+test('unlinked target creation requires cage permission and rejects new remote occupancy atomically',async()=>{
+ const data=observationSample(),housing=movementSample();data.tables.rooms=housing.tables.rooms;data.tables.racks=housing.tables.racks;data.tables.locations.push(housing.tables.locations[1]);
+ let ui=renderHarness(data,{canEdit:type=>type==='mice'});assert.doesNotMatch(ui.host.innerHTML,/data-sheet-drag-mouse=/);assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);
+ const fresh=structuredClone(data);fresh.tables.cages.push({cage_sid:'ARRIVAL',cage_tag:'B2',state:'Active',location_id:'P2'});ui=renderHarness(data,{loadFresh:async()=>fresh});
+ dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{position:'P2'}));await ui.sync();assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.innerHTML,/became occupied/);
+});
+test('combined mouse and cage moves use final housing and a saved move retry adds no duplicate event',()=>{
+ const data=registeredMoveSample(),mouse=planMouseMove(data,'M1','C2'),drafts=[...mouse.changes,edit('cages','C2','location_id','P2','P1'),edit('cages','C2','cage_tag','B2','A1'),edit('cages','C1','location_id','P1','P2'),edit('cages','C1','cage_tag','A1','B2')];
+ const next=applyCageSheetDrafts(data,drafts,{at:'2026-10-16T03:00:00Z'});assert.equal(next.tables.mice[0].cage_tag,'A1');assert.equal(next.tables.husbandry_events.find(e=>e.event_type==='cage_move').location_id,'P1');
+ assert.deepEqual(applyCageSheetDrafts(next,drafts,{at:'2026-10-16T03:01:00Z'}),next);
+});
+
+test('returning a mouse from a staged new cage removes the unused cage draft',()=>{
+ const data=movementSample();Object.assign(data.tables.cages[0],{location_id:'P1',room_id:'R1',rack_id:'K1'});const ui=renderHarness(data);
+ dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{position:'P2'}));
+ assert.equal(hasCageSheetDrafts(),true);const created=[...ui.host.innerHTML.matchAll(/<article\b([^>]*)>/g)].map(([,a])=>attributes(a)).find(a=>a['data-sheet-slot']==='P2')['data-cage'];
+ assert.ok(created.startsWith('CAGE-'));assert.doesNotMatch(ui.host.innerHTML,new RegExp('data-sheet-drag-cage="'+created+'"'));
+ assert.match(ui.host.innerHTML,new RegExp('data-sheet-id="'+created+'" data-sheet-field="cage_tag"[^>]* disabled'));
+ dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{cage:'C1'}));assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);assert.equal(data.tables.cages.length,1);
+});
+test('source destination creation retry is idempotent and records no duplicate cage or move',()=>{
+ const data=observationSample(),housing=movementSample();data.tables.rooms=housing.tables.rooms;data.tables.racks=housing.tables.racks;data.tables.locations.push(housing.tables.locations[1]);
+ const plan=planMouseMoveToPosition(data,'M1','P2',{cageSid:'C-NEW',sourceMatch:{locationId:'P1',tag:"PB'-M3193",sourceCell:'T10'}});
+ const next=applyCageSheetDrafts(data,plan.changes,{at:'2026-10-16T03:00:00Z'});assert.deepEqual(applyCageSheetDrafts(next,plan.changes,{at:'2026-10-16T03:01:00Z'}),next);
+});
+test('stale drag targets after access loss cannot stage or save a mouse move',()=>{
+ let allowed=true;const ui=renderHarness(registeredMoveSample(),{canEdit:()=>allowed}),source=firstRenderedButton(ui.host,'data-sheet-drag-mouse'),destination=renderedCardTarget(ui.host,{cage:'C2'});allowed=false;
+ const result=dragTo(ui,source,destination);assert.equal(result.prevented,true);assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);
+});
+test('retry of a saved move plus an explicit identity edit is idempotent',()=>{
+ const data=registeredMoveSample(),drafts=[...planMouseMove(data,'M1','C2').changes,edit('mice','M1','date_of_birth',null,'2026-07-01')];
+ const next=applyCageSheetDrafts(data,drafts,{at:'2026-10-16T03:00:00Z'});assert.deepEqual(applyCageSheetDrafts(next,drafts,{at:'2026-10-16T03:01:00Z'}),next);
+ const remote=structuredClone(next);remote.tables.mice[0].date_of_birth='2026-07-02';assert.throws(()=>applyCageSheetDrafts(remote,drafts),/identity fields changed/);
+});
+
+test('mouse movement requires mouse and housing permissions while cell editing remains available',async()=>{
+ const data=registeredMoveSample(),drafts=planMouseMove(data,'M1','C2').changes;
+ for(const allowed of ['mice','cages'])assert.throws(()=>applyCageSheetDrafts(data,drafts,{canEdit:type=>type===allowed}),/Mouse and housing edit permission/);
+ const ui=renderHarness(data,{canEdit:type=>type==='mice'});
+ assert.doesNotMatch(ui.host.innerHTML,/data-sheet-drag-mouse=|data-sheet-mouse-destination-button=/);
+ const editor=await openEditor(ui,'note');assert.doesNotMatch(editor.innerHTML,/data-sheet-move-mouse=/);
+ enter(ui,editor,'comment','Mouse-only note');await ui.host.onclick({target:doneTarget()});await ui.sync();
+ assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].comment,'Mouse-only note');assert.equal(ui.saved[0].tables.mice[0].cage_sid,'C1');
+ const fields=applyCageSheetDrafts(data,[edit('mice','M1','ear_mark',null,'L1R2'),edit('mice','M1','date_of_birth',null,'2026-07-01')],{canEdit:type=>type==='mice',at:'2026-10-16T03:00:00Z'});
+ assert.equal(fields.tables.mice[0].ear_mark,'L1R2');assert.equal(fields.tables.mice[0].date_of_birth,'2026-07-01');
+});
+
+test('housing access loss blocks stale mouse drag, touch destination and staged Save',async()=>{
+ let housing=true;const ui=renderHarness(registeredMoveSample(),{canEdit:type=>type!=='cages'||housing});
+ const source=firstRenderedButton(ui.host,'data-sheet-drag-mouse'),destination=renderedCardTarget(ui.host,{cage:'C2'});
+ housing=false;assert.equal(dragTo(ui,source,destination).prevented,true);assert.equal(hasCageSheetDrafts(),false);
+ housing=true;const editor=await openEditor(ui,'note'),attrs=attributes(editor.innerHTML.match(/<button\b([^>]*data-sheet-move-mouse[^>]*)>/)[1]),button={dataset:datasetAttributes(attrs)};
+ await ui.host.onclick({target:{closest:selector=>selector.includes('[data-sheet-move-mouse]')?button:null}});
+ const touch=renderedButtonTarget(ui.host,'data-sheet-mouse-destination-button','C2');housing=false;await ui.host.onclick({target:touch});assert.equal(hasCageSheetDrafts(),false);
+ housing=true;await ui.host.onclick({target:touch});assert.equal(hasCageSheetDrafts(),true);
+ housing=false;await ui.sync();assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.innerHTML,/Mouse and housing edit permission/);
+});
+
+test('source earmark and note remain visible after staging and returning home removes automatic fills',async()=>{
+ const data=movementSample();Object.assign(data.tables.cages[0],{location_id:'P1',room_id:'R1',rack_id:'K1'});
+ data.tables.mice[0].ear_mark=null;data.tables.locations[0].source_cage_observation={schemaVersion:1,animals:[{tag:'P1',sourceCell:'T10',earMark:'L0R0',note:'Source note'}]};
+ const ui=renderHarness(data);dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{position:'P2'}));
+ assert.match(ui.host.innerHTML,/>L0R0<\/button>/);assert.match(ui.host.innerHTML,/Source note/);assert.equal(ui.saved.length,0);
+ dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{cage:'C1'}));assert.equal(hasCageSheetDrafts(),false);assert.equal(data.tables.mice[0].ear_mark,null);
 });

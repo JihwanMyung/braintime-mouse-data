@@ -1,4 +1,4 @@
-import {cageObservations,ageWeeks,todayTaipei} from './cage-observations.js?v=60';
+import {cageObservations,ageWeeks,todayTaipei} from './cage-observations.js?v=62';
 import {compareRooms,sortRooms} from './room-order.js?v=24';
 /* Editable housing and recorded light history. No bundled laboratory data. */
 import { cageManager, buildCageLocationEvent } from './model.js?v=48';

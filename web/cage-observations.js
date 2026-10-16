@@ -87,10 +87,26 @@ export function cageSheetAnimals(dataset,item={}){
   const status=candidates.length>1||sourceCounts.get(key)>1?'ambiguous':conflicting?'conflict':unique?'matched':'unlinked',mouse=status==='matched'?unique:null;
   const take=(key,source,stored)=>mouse&&override(mouse,key)?stored:source??stored;
   return {...animal,mouseSid:mouse?text(mouse.mouse_sid):null,dateOfBirth:take('date_of_birth',animal.dateOfBirth,mouse?date(mouse.date_of_birth):null),earMark:take('ear_mark',animal.earMark,mouse?text(mouse.ear_mark)||null:null),note:mouse&&override(mouse,'comment')?text(mouse.comment):animal.note||text(mouse?.comment),sourceNote:animal.note,sex:animal.sex||sex(mouse?.sex),locationId,matchStatus:status};
+ }).filter(row=>{
+  if(row.matchStatus!=='matched')return true;
+  const mouse=mice.find(m=>text(m.mouse_sid)===row.mouseSid);
+  if(!override(mouse,'cage_sid'))return true;
+  const assigned=(dataset.tables.cages||[]).find(c=>active(c)&&text(c.cage_sid)===text(mouse.cage_sid));
+  // A deliberate transfer supersedes the old grid display, while the imported
+  // observation remains intact for history and review. Never hide an uncertain match.
+  return Boolean(assigned&&locationId&&text(assigned.location_id)===locationId);
  });
- if(item.cage)return (item.mice||[]).filter(active).map(mouse=>{
+ if(item.cage){const residents=(item.mice||[]).filter(active).map(mouse=>{
   const saved=managedRow(mouse,locationId),matches=rows.filter(row=>row.matchStatus==='matched'&&row.mouseSid===saved.mouseSid);
   return matches.length===1?{...matches[0],key:saved.key}:saved;
  });
+  // Registering a cage for one explicitly transferred animal must not erase
+  // other literal occupants, nor silently assign them to the new cage.
+  if(locationId&&text(item.cage.cage_sheet_source_location_id)===locationId){
+   const residentIds=new Set(residents.map(row=>row.mouseSid));
+   return [...residents,...rows.filter(row=>!row.mouseSid||!residentIds.has(row.mouseSid))];
+  }
+  return residents;
+ }
  return rows;
 }

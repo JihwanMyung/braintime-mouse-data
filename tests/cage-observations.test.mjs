@@ -72,3 +72,18 @@ test('only the delimiter before terminal sex/SID is normalized for registered an
 test('delimiter-equivalent duplicate source tags cannot create a unique overlay',()=>{
  const d=dataset(),p=position();p.source_block_text=p.source_block_text.replace("PB'-M102","PB' M101");const rows=cageSheetAnimals(d,{position:p});assert.equal(rows[0].matchStatus,'ambiguous');assert.equal(rows[1].matchStatus,'ambiguous');const registered=cageSheetAnimals(d,{cage:{cage_sid:'OLD'},mice:[d.tables.mice[0]],position:p})[0];assert.equal(registered.matchStatus,'registered');assert.equal(registered.note,'Older note');assert.equal(registered.sourceNote,'');
 });
+
+test('explicit transfers suppress only uniquely matched old grid rows and preserve imported evidence',()=>{
+ const d=dataset(),p=position(),original=structuredClone(p);d.tables.cages=[{cage_sid:'NEW',location_id:'NEXT'}];
+ Object.assign(d.tables.mice[0],{cage_sid:'NEW',cage_sheet_overrides:{cage_sid:true}});
+ const old=cageSheetAnimals(d,{position:p});assert.deepEqual(old.map(r=>r.mouseSid),['102','103']);assert.deepEqual(p,original);
+ const target=cageSheetAnimals(d,{position:{location_id:'NEXT'},cage:d.tables.cages[0],mice:[d.tables.mice[0]]});assert.equal(target[0].mouseSid,'101');
+ d.tables.mice.push({...d.tables.mice[0],mouse_sid:'OTHER',physical_tag:"PB'-M101"});assert.equal(cageSheetAnimals(d,{position:p})[0].matchStatus,'ambiguous');
+});
+test('staged cage registration retains unassigned source occupants without silently adopting them',()=>{
+ const d=dataset(),p=position(),cage={cage_sid:'NEW',location_id:'POS',cage_sheet_source_location_id:'POS'},m={mouse_sid:'104',physical_tag:'E-M104',state:'Stock',cage_sid:'NEW',cage_sheet_overrides:{cage_sid:true}};
+ d.tables.mice.push(m);d.tables.cages=[cage];const before=structuredClone(d);
+ const rows=cageSheetAnimals(d,{position:p,cage,mice:[m]});assert.deepEqual(rows.map(r=>r.mouseSid),['104','101','102','103']);assert.deepEqual(d,before);
+ d.tables.mice[1].physical_tag='Unknown';assert.equal(cageSheetAnimals(d,{position:p,cage,mice:[m]}).find(r=>r.tag==="PB'-M102").matchStatus,'unlinked');
+ const moved={...cage,location_id:'NEXT'};assert.equal(cageSheetAnimals(d,{position:{...p,location_id:'NEXT'},cage:moved,mice:[m]}).length,1);
+});
