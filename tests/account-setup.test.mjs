@@ -11,7 +11,7 @@ function view(){
   const fields={};for(const [,attrs] of found[2].matchAll(/<input\b([^>]*)>/g)){const props=attributes(attrs);if(props.name)fields[props.name]={value:props.value||'',disabled:false,required:/\brequired\b/.test(attrs),type:props.type||'text'};}
   for(const [,attrs,body] of found[2].matchAll(/<select\b([^>]*)>([\s\S]*?)<\/select>/g)){const props=attributes(attrs),options=[...body.matchAll(/<option\b([^>]*)>/g)].map(([,a])=>({props:attributes(a),selected:/\bselected\b/.test(a)}));if(props.name)fields[props.name]={value:(options.find(o=>o.selected)||options[0])?.props.value||'',disabled:false,type:'select'};}
   const button={disabled:false,textContent:''};form={id:attributes(found[1]).id,fields,button,elements:{namedItem:key=>fields[key]},querySelector:()=>button};
- },querySelector:selector=>nodes.get(selector.slice(1))||null,querySelectorAll:selector=>selector==='input[type="password"]'?Object.values(form?.fields||{}).filter(f=>f.type==='password'):[]};
+ },querySelector:selector=>selector==='#'+(form?.id||'')?form:nodes.get(selector.slice(1))||null,querySelectorAll:selector=>selector==='input[type="password"]'?Object.values(form?.fields||{}).filter(f=>f.type==='password'):[]};
  return {container,get form(){return form;},get status(){return nodes.get('setup-status');},submit:()=>container.onsubmit({target:form,preventDefault(){},stopPropagation(){}}),fillCredentials(){form.fields.username.value='lab.user';form.fields.password.value='long-account-password';form.fields.confirmation.value='long-account-password';}};
 }
 const nextProfile=(before,fields)=>({...before,member:{...before.member,...fields,version:before.member.version+1}});
@@ -57,7 +57,7 @@ test('completed accounts edit details only, preserving separately managed acrony
  await renderAccountSetup(ui.container,hooksFor(before,{saveProfile:async(fields,version)=>{writes.push([fields,version]);return nextProfile(before,fields);}}));assert.equal(ui.form.id,'account-details');assert.equal(ui.form.fields.acronym,undefined);assert.equal(ui.form.fields.password,undefined);ui.form.fields.phone.value='999';await ui.submit();assert.deepEqual(writes,[[{name:'<Name>',phone:'999',category:'phd'},3]]);assert.match(ui.container.innerHTML,/owner/);assert.doesNotMatch(ui.container.innerHTML,/intended_role|export_level|type="password"/);
 });
 test('profile timeout offers an explicit retry and stale results cannot replace a newer account',async()=>{
- const ui=view();let count=0;await renderAccountSetup(ui.container,hooksFor(profile(),{getProfile:async()=>{if(++count===1)throw Error('Profile request timed out');return profile();}}));assert.match(ui.container.innerHTML,/Retry profile/);ui.container.onclick({target:{closest:()=>({})}});await new Promise(resolve=>setTimeout(resolve,0));assert.equal(ui.form.id,'first-account-setup');
+ const ui=view();let count=0;await renderAccountSetup(ui.container,hooksFor(profile(),{getProfile:async()=>{if(++count===1)throw Error('Profile request timed out');return profile();}}));assert.match(ui.container.innerHTML,/Retry profile/);ui.container.onclick({target:{closest:selector=>selector==='[data-account-retry]'?{}:null}});await new Promise(resolve=>setTimeout(resolve,0));assert.equal(ui.form.id,'first-account-setup');
  let release;const first=renderAccountSetup(ui.container,{getProfile:()=>new Promise(resolve=>release=resolve)});await renderAccountSetup(ui.container,hooksFor({...profile(),setup_required:false,member:{...profile().member,username:'new.account'}}));release(profile());await first;assert.match(ui.container.innerHTML,/new.account/);assert.doesNotMatch(ui.container.innerHTML,/first-account-setup/);
 });
 test('remount or signout during profile save clears secrets and blocks the subsequent credential write',async()=>{
@@ -73,4 +73,33 @@ test('unconfirmed profile save cannot proceed to credentials and forbidden self 
 
 test('a verified unchanged profile response may retain its version without blocking setup',async()=>{
  const before=profile(),ui=view();let calls=0;await renderAccountSetup(ui.container,hooksFor(before,{saveProfile:async()=>before,complete:async()=>{calls++;}}));ui.fillCredentials();await ui.submit();assert.equal(calls,1);assert.match(ui.container.innerHTML,/Account ready/);
+});
+
+
+const pendingProfile=()=>({...profile(),eligible:false,setup_required:false,reason:'approval_pending',member:{...profile().member,name:'Submitted Member',status:'review',effective_export_level:'high'}});
+const checkAccess=ui=>ui.container.onclick({target:{closest:selector=>selector==='[data-account-check-access]'?{}:null}});
+test('pending approval exposes Check access and uses only the refreshed server eligibility',async()=>{
+ const pending=pendingProfile(),ui=view();let reads=0,writes=0,approved=false;
+ const approvedProfile={...pending,eligible:true,setup_required:true,reason:'username_required',member:{...pending.member,status:'current',version:4}};
+ await renderAccountSetup(ui.container,hooksFor(pending,{getProfile:async()=>{reads++;return approved?approvedProfile:pending;},saveProfile:async()=>writes++,complete:async()=>writes++}));
+ assert.match(ui.container.innerHTML,/data-account-check-access="true">Check access/);assert.doesNotMatch(ui.container.innerHTML,/name="username"|type="password"/);
+ await checkAccess(ui);assert.equal(reads,2);assert.equal(writes,0);assert.equal(ui.form.id,'account-registration');assert.match(ui.container.innerHTML,/Approval is still pending/);assert.equal(ui.form.fields.name.value,'Submitted Member');assert.equal(ui.form.fields.phone.value,'0123456');
+ approved=true;await checkAccess(ui);assert.equal(reads,3);assert.equal(writes,0);assert.equal(ui.form.id,'first-account-setup');assert.equal(ui.form.fields.name.value,'Submitted Member');assert.equal(ui.form.fields.phone.value,'0123456');assert.equal(ui.form.fields.password.value,'');assert.doesNotMatch(ui.container.innerHTML,/Awaiting approval|Check access/);
+});
+test('access refresh failure retains submitted details and permits retry without writes',async()=>{
+ const pending=pendingProfile(),ui=view();let reads=0;
+ await renderAccountSetup(ui.container,hooksFor(pending,{getProfile:async()=>{if(++reads===2)throw Error('Connection unavailable');return pending;},saveProfile:async()=>assert.fail('Refresh must not save'),complete:async()=>assert.fail('Refresh must not complete setup')}));
+ await checkAccess(ui);assert.equal(ui.form.id,'account-registration');assert.equal(ui.form.fields.name.value,'Submitted Member');assert.equal(ui.form.fields.phone.value,'0123456');assert.match(ui.status.textContent,/Connection unavailable/);assert.equal(ui.container.querySelector('#setup-check-access').disabled,false);
+ await checkAccess(ui);assert.equal(reads,3);assert.match(ui.container.innerHTML,/Approval is still pending/);
+});
+test('duplicate access checks are blocked and stale results cannot replace another account',async()=>{
+ const pending=pendingProfile(),ui=view();let reads=0,release;
+ await renderAccountSetup(ui.container,hooksFor(pending,{getProfile:async()=>{reads++;if(reads===1)return pending;return new Promise(resolve=>release=resolve);}}));
+ const first=checkAccess(ui);await checkAccess(ui);assert.equal(reads,2);assert.equal(ui.container.querySelector('#setup-check-access').disabled,true);assert.equal(ui.form.button.disabled,true);
+ await renderAccountSetup(ui.container,hooksFor({...profile(),setup_required:false,member:{...profile().member,username:'different.account'}}));release({...pending,eligible:true,setup_required:true,reason:'username_required'});await first;
+ assert.match(ui.container.innerHTML,/different.account/);assert.doesNotMatch(ui.container.innerHTML,/Submitted Member|first-account-setup|account-registration/);
+});
+test('access refresh denial clears the pending private profile',async()=>{
+ const ui=view();let reads=0;await renderAccountSetup(ui.container,hooksFor(pendingProfile(),{getProfile:async()=>{if(++reads>1)throw Object.assign(Error('Expired'),{status:401});return pendingProfile();}}));
+ await checkAccess(ui);assert.match(ui.container.innerHTML,/Sign in again/);assert.doesNotMatch(ui.container.innerHTML,/Submitted Member|0123456|person@example/);assert.equal(ui.container.onclick,null);
 });

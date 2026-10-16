@@ -22,7 +22,7 @@ import { sortRooms, compareRooms } from './room-order.js?v=24';
 import { renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts, cageSheetHelpHTML } from './cage-sheet.js?v=70';
 import { prepareMouseCageSheetEdit } from './cage-observations.js?v=70';
 import { renderCageLabelEditor } from './cage-label.js?v=58';
-import { renderAccountSetup, clearAccountSetup } from './account-setup.js?v=64';
+import { renderAccountSetup, clearAccountSetup } from './account-setup.js?v=71';
 import { renderAccountAcronym } from './account-acronym.js';
 import { userAcronymHelpHTML, setLabUserDirectory } from './user-acronyms.js?v=24';
 import { normalizeManagerPermissions, visibleRoleLabel } from './permissions.js?v=66';

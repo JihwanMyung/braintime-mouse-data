@@ -20,7 +20,7 @@ export async function renderAccountSetup(container,hooks){
   if(!pending&&!setup){
    container.innerHTML=`<p class="small">Username: <strong>${esc(member.username||'Not set')}</strong></p><details class="source-disclosure" open><summary>Edit details</summary><form id="account-details" class="form-stack" style="margin-top:14px">${details(member)}<button type="submit" class="button secondary">Save details</button><p id="setup-status" role="status">${esc(message)}</p><button type="button" class="text-button" id="setup-profile-retry" data-account-retry="true" hidden>Retry profile</button></form></details>`;return;
   }
-  container.innerHTML=`<section class="panel"><div class="panel-head"><h2>${pending?'Registration':'Finish your account'}</h2></div><form id="${pending?'account-registration':'first-account-setup'}" class="form-stack panel-body"><p class="small">${esc(member.email||'')}</p>${profile.reason==='approval_pending'?'<p class="small">Awaiting approval.</p>':''}${details(member,{acronym:true})}${setup?`<div class="field"><label for="setup-username">Username</label><input id="setup-username" name="username" autocomplete="username" pattern="[A-Za-z][A-Za-z0-9_.\\-]{2,31}" minlength="3" maxlength="32" required value="${esc(member.username||'')}"><small>3–32 letters, numbers, dots, underscores or hyphens.</small></div><div id="setup-password-fields"><div class="field"><label for="setup-password">Password</label><input id="setup-password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></div><div class="field"><label for="setup-confirm">Confirm password</label><input id="setup-confirm" name="confirmation" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></div></div>`:''}<button type="submit" class="button primary">${pending?'Submit for approval':'Save account'}</button><p id="setup-status" role="status">${esc(message)}</p><button type="button" class="text-button" id="setup-profile-retry" data-account-retry="true" hidden>Retry profile</button></form></section>`;
+  container.innerHTML=`<section class="panel"><div class="panel-head"><h2>${pending?'Registration':'Finish your account'}</h2></div><form id="${pending?'account-registration':'first-account-setup'}" class="form-stack panel-body"><p class="small">${esc(member.email||'')}</p>${profile.reason==='approval_pending'?'<p class="small">Awaiting approval.</p>':''}${details(member,{acronym:true})}${setup?`<div class="field"><label for="setup-username">Username</label><input id="setup-username" name="username" autocomplete="username" pattern="[A-Za-z][A-Za-z0-9_.\\-]{2,31}" minlength="3" maxlength="32" required value="${esc(member.username||'')}"><small>3–32 letters, numbers, dots, underscores or hyphens.</small></div><div id="setup-password-fields"><div class="field"><label for="setup-password">Password</label><input id="setup-password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></div><div class="field"><label for="setup-confirm">Confirm password</label><input id="setup-confirm" name="confirmation" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></div></div>`:''}<button type="submit" class="button primary">${pending?'Submit for approval':'Save account'}</button>${pending&&profile.reason==='approval_pending'?'<button type="button" class="button secondary" id="setup-check-access" data-account-check-access="true">Check access</button>':''}<p id="setup-status" role="status">${esc(message)}</p><button type="button" class="text-button" id="setup-profile-retry" data-account-retry="true" hidden>Retry profile</button></form></section>`;
  }
  async function load(){
   const sequence=++mount.load;mount.busy=true;clearPasswords(container);container.innerHTML='<p class="small muted" role="status">Loading your profile…</p>';
@@ -45,7 +45,27 @@ export async function renderAccountSetup(container,hooks){
   if(!next?.member||!Number.isSafeInteger(next.member.version)||next.member.version<version||Object.entries(fields).some(([key,value])=>normalized(next.member[key],key)!==value))throw new Error('Profile save was not confirmed. Retry profile before continuing.');
   mount.profile=next;mount.savedProfile=true;
  }
- container.onclick=event=>{if(event.target.closest?.('[data-account-retry]')&&!mount.busy)void load();};
+ async function checkAccess(){
+  if(!current()||mount.busy||mount.profile?.eligible||mount.profile?.reason!=='approval_pending')return;
+  const sequence=++mount.load;mount.busy=true;
+  const check=container.querySelector('#setup-check-access'),form=container.querySelector('#account-registration'),submit=form?.querySelector('button[type="submit"]');
+  if(check)check.disabled=true;if(submit)submit.disabled=true;status('Checking access…');
+  try{
+   const profile=await hooks.getProfile();if(!current()||sequence!==mount.load)return;
+   mount.profile=profile;mount.savedProfile=false;mount.resume=null;
+   paint(profile?.reason==='approval_pending'?'Approval is still pending.':'');
+  }catch(error){
+   if(!current()||sequence!==mount.load)return;
+   if(error.status===401||error.status===403){clearAccountSetup(container);container.innerHTML='<p class="small" role="status">Sign in again to continue.</p>';return;}
+   status(error.message||'Access could not be checked. Try again.');
+  }finally{
+   if(current()&&sequence===mount.load){mount.busy=false;if(check)check.disabled=false;if(submit)submit.disabled=false;}
+  }
+ }
+ container.onclick=event=>{
+  if(event.target.closest?.('[data-account-check-access]'))return checkAccess();
+  if(event.target.closest?.('[data-account-retry]')&&!mount.busy)void load();
+ };
  container.onsubmit=async event=>{
   const form=event.target;if(!['first-account-setup','account-registration','account-details'].includes(form.id))return;
   event.preventDefault();event.stopPropagation?.();if(!current()||mount.busy)return;
