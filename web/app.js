@@ -20,7 +20,7 @@ import { createAccessActivity } from './access-activity.js?v=69';
 import { projectCageHistory, getCageHistoryDates } from './cage-history.js?v=24';
 import { projectAnimalSheet } from './animal-sheet-export.js?v=48';
 import { sortRooms, compareRooms } from './room-order.js?v=24';
-import { renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts, cageSheetHelpHTML } from './cage-sheet.js?v=76';
+import { renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts, cageSheetHelpHTML } from './cage-sheet.js?v=78';
 import { prepareMouseCageSheetEdit } from './cage-observations.js?v=70';
 import { renderCageLabelEditor } from './cage-label.js?v=58';
 import { renderAccountSetup, clearAccountSetup } from './account-setup.js?v=74';
@@ -118,7 +118,7 @@ function canEditRecords(section=route){
  if(startupLoading||cloud.passwordRecovery||cloud.role==='pending')return false;if(cloud.mode!=='cloud')return true;if(!cloudReady)return false;
  if(['owner','editor'].includes(cloud.role))return true;
  if(cloud.role!=='manager')return false;
- const key=({mice:'mice',matings:'breeding',litters:'breeding',cages:'housing',housing:'housing',locobox:'housing',planner:'genetics',family:'genetics',experiments:'experiments',iacuc:'iacuc',cryo:'cryo',fees:'fees',archive:'archive'})[section]||section;
+ const key=({mice:'mice',matings:'breeding',litters:'breeding',cages:'housing',locations:'housing',rooms:'housing',racks:'housing',housing:'housing',locobox:'housing',planner:'genetics',family:'genetics',experiments:'experiments',iacuc:'iacuc',cryo:'cryo',fees:'fees',archive:'archive'})[section]||section;
  return normalizeManagerPermissions(cloud.permissions)[key]===true;
 }
 function canArchiveRecords(){return canEditRecords()&&(cloud.mode!=='cloud'||cloud.role!=='manager'||normalizeManagerPermissions(cloud.permissions).archive)}

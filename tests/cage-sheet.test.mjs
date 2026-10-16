@@ -63,11 +63,11 @@ const datasetAttributes=attrs=>Object.fromEntries(Object.entries(attrs).filter((
 function sheetHost(){
  let html='',nodes=new Map(),editors=[];
  const host={get innerHTML(){return html;},set innerHTML(value){
-  html=value;nodes=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{disabled:false,textContent:'',querySelector(){return {textContent:''};}}]));
+  html=value;host.dragNodes=[];nodes=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{disabled:false,textContent:'',querySelector(){return {textContent:''};}}]));
   editors=[...html.matchAll(/<div class="sheet-animal-editor"([^>]*)>/g)].map(([,attrs])=>{
    let content='',controls=[];const node={dataset:datasetAttributes(attributes(attrs)),hidden:true,get innerHTML(){return content;},set innerHTML(value){content=value;controls=[...value.matchAll(/<(input)\b([^>]*)>|<(textarea|select|button)\b([^>]*)>([\s\S]*?)<\/\3>/g)].map(([,input,inputAttrs,paired,pairedAttrs,body=''])=>{const tag=input||paired,all=attributes(inputAttrs||pairedAttrs),selected=tag==='select'?(body.match(/<option[^>]*value="([^"]*)"[^>]* selected[^>]*>/)||body.match(/<option[^>]*value="([^"]*)"/))?.[1]:null;return {tag,attrs:all,dataset:datasetAttributes(all),value:tag==='textarea'?decode(body):tag==='select'?decode(selected):all.value||'',focus(){},classList:{toggle(){}}};});},querySelector(selector){if(selector==='textarea,input'||selector==='textarea,input,select,button')return controls[0];const match=selector.match(/^\[([^=]+)="([^"]*)"\]$/);return match?controls.find(c=>c.attrs[match[1]]===match[2])||null:null;},contains(target){return target===node||controls.includes(target)||target?.editor===node;}};return node;
   });
- },querySelector(selector){return nodes.get(selector.slice(1))||null;},querySelectorAll(selector){return selector==='[data-sheet-inline-editor]'?editors:[];}};
+ },querySelector(selector){return nodes.get(selector.slice(1))||null;},querySelectorAll(selector){return selector==='[data-sheet-inline-editor]'?editors:(host.dragNodes||[]).filter(node=>selector.split(',').some(part=>node.classes?.has(part.slice(1))));}};
  return host;
 }
 function movementSample(){
@@ -158,8 +158,8 @@ test('current read-only viewers can open header print actions for cages and sour
  const data=movementSample();data.tables.cages[0].location_id='P1';
  for(const layout of ['compact','detailed']){
   const calls=[],ui=renderHarness(data,{layout,canEdit:()=>false,printLabel:id=>calls.push(['cage',id]),printPositionLabel:id=>calls.push(['position',id])});
-  assert.match(ui.host.innerHTML,/<header>[\s\S]*?data-sheet-label="C1"[^>]*aria-label="Print label for cage A1"[^>]*><svg/);
-  assert.match(ui.host.innerHTML,/<header>[\s\S]*?data-sheet-position-label="P2"[^>]*aria-label="Print label for position B2"[^>]*><svg/);
+  assert.match(ui.host.innerHTML,/<header\b[^>]*>[\s\S]*?data-sheet-label="C1"[^>]*aria-label="Print label for cage A1"[^>]*><svg/);
+  assert.match(ui.host.innerHTML,/<header\b[^>]*>[\s\S]*?data-sheet-position-label="P2"[^>]*aria-label="Print label for position B2"[^>]*><svg/);
   assert.doesNotMatch(ui.host.innerHTML,/<footer>[^<]*(?:<button[^>]*>[^<]*<\/button>)*<button[^>]*data-sheet-(?:position-)?label=/);
   ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-label','C1')});
   ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-position-label','P2')});
@@ -171,11 +171,11 @@ test('nested print icons do not select cages or complete a pending move',()=>{
  const data=movementSample();data.tables.cages[0].location_id='P1';
  const calls=[],ui=renderHarness(data,{printLabel:id=>calls.push(id),printPositionLabel:id=>calls.push(id)});
  ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move','C1')});
- assert.match(ui.host.innerHTML,/Moving cage C1/);
+ assert.match(ui.host.innerHTML,/Moving cage A1/);
  const target=renderedButtonTarget(ui.host,'data-sheet-position-label','P2');
  ui.host.onclick({target});
  ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-label','C1')});
- assert.deepEqual(calls,['P2','C1']);assert.match(ui.host.innerHTML,/Moving cage C1/);assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);
+ assert.deepEqual(calls,['P2','C1']);assert.match(ui.host.innerHTML,/Moving cage A1/);assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);
  let prevented=false;ui.host.onkeydown({key:'Enter',target:target.button,preventDefault(){prevented=true;}});assert.equal(prevented,false);
 });
 
@@ -395,7 +395,7 @@ test('verified source mouse can move to an unlinked grid, creating only the dest
  data.tables.locations[1].source_cage_observation={schemaVersion:1,animals:[{tag:'Unknown-F999',sourceCell:'T20'}]};
  const original=structuredClone(data),ui=renderHarness(data);dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{position:'P2'}));
  assert.equal(hasCageSheetDrafts(),true);assert.equal(ui.saved.length,0);assert.deepEqual(data,original);assert.match(ui.host.innerHTML,/Unknown-F999/);
- await ui.sync();assert.equal(ui.saved.length,1);const next=ui.saved[0],created=next.tables.cages[0];assert.equal(next.tables.cages.length,1);assert.equal(created.location_id,'P2');assert.equal(created.cage_sheet_source_location_id,'P2');assert.equal(next.tables.mice.length,1);assert.equal(next.tables.mice[0].cage_sid,created.cage_sid);assert.deepEqual(next.tables.locations,original.tables.locations);assert.equal(next.tables.husbandry_events.length,2);
+ await ui.sync();assert.equal(ui.saved.length,1);const next=ui.saved[0],created=next.tables.cages[0];assert.equal(next.tables.cages.length,1);assert.equal(created.location_id,'P2');assert.equal(created.cage_sheet_source_location_id,'P2');assert.equal(next.tables.mice.length,1);assert.equal(next.tables.mice[0].cage_sid,created.cage_sid);assert.deepEqual(next.tables.locations.map(({app_modified_at,...p})=>p),original.tables.locations);assert.ok(next.tables.locations.every(p=>p.app_modified_at));assert.equal(next.tables.husbandry_events.length,2);
  assert.doesNotMatch(ui.host.innerHTML,new RegExp('data-sheet-drag-cage="'+created.cage_sid+'"'));
 });
 test('unlinked target creation requires cage permission and rejects new remote occupancy atomically',async()=>{
@@ -631,7 +631,7 @@ test('note color rejects arbitrary values and permissions are rechecked at save'
 
 test('note light never navigates, moves cages or starts a mouse drag',async()=>{
  const data=registeredMoveSample();data.tables.mice[0].comment='Watch tail';let opened=0;const ui=renderHarness(data,{openMouse:()=>opened++});
- await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move','C1')});const light=renderedButtonTarget(ui.host,'data-sheet-edit-animal','note');await ui.host.onclick({target:light});assert.equal(opened,0);assert.match(ui.host.innerHTML,/Moving cage C1/);assert.equal(hasCageSheetDrafts(),false);
+ await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move','C1')});const light=renderedButtonTarget(ui.host,'data-sheet-edit-animal','note');await ui.host.onclick({target:light});assert.equal(opened,0);assert.match(ui.host.innerHTML,/Moving cage A1/);assert.equal(hasCageSheetDrafts(),false);
  let prevented=false;ui.host.ondragstart({target:light,preventDefault(){prevented=true;}});assert.equal(prevented,true);assert.equal(ui.saved.length,0);
 });
 
@@ -649,11 +649,95 @@ test('clearing a source note when stored comment is already null records the del
 test('note editor labels and read-only text cannot move a selected cage to the note cage',async()=>{
  for(const editable of [true,false]){
   const data=registeredMoveSample();data.tables.mice.push({...data.tables.mice[0],mouse_sid:'M2',physical_tag:'P2',cage_sid:'C2',cage_tag:'B2',comment:'Watch this tail'});
-  const ui=renderHarness(data,{canEdit:type=>type==='mice'?editable:true});
-  await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move','C1')});await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-edit-animal','note','C2')});
+  let mouseEditable=true;const ui=renderHarness(data,{canEdit:type=>type==='mice'?mouseEditable:true});
+  await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move','C1')});mouseEditable=editable;await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-edit-animal','note','C2')});
   const editor=ui.host.querySelectorAll('[data-sheet-inline-editor]').find(node=>!node.hidden);assert.ok(editor);assert.match(editor.innerHTML,editable?/sheet-note-editor-label/:/sheet-readonly-note/);
   const card=renderedCardTarget(ui.host,{cage:'C2'}).closest('.sheet-cage');
   const content={editor,closest(selector){if(selector==='.sheet-cage')return card;if(selector.split(',').includes('.sheet-animal-editor'))return editor;return null;}};
-  await ui.host.onclick({target:content});assert.equal(editor.hidden,false);assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);assert.match(ui.host.innerHTML,/Moving cage C1/);assert.equal(data.tables.cages[0].location_id,'P1');
+  await ui.host.onclick({target:content});assert.equal(editor.hidden,false);assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);assert.match(ui.host.innerHTML,/Moving cage A1/);assert.equal(data.tables.cages[0].location_id,'P1');
  }
+});
+
+function cageDragTarget(host,position,{control=null}={}){
+ const article=[...host.innerHTML.matchAll(/<article\b([^>]*)>([\s\S]*?)<\/article>/g)].find(([,attrs])=>attributes(attrs)['data-sheet-slot']===position);assert.ok(article);
+ const headerAttrs=attributes(article[2].match(/<header\b([^>]*)>/)[1]);
+ const node=(dataset={})=>{const classes=new Set();return {dataset,classes,classList:{add(...names){names.forEach(name=>classes.add(name));},remove(...names){names.forEach(name=>classes.delete(name));}},getBoundingClientRect(){return {width:210};}};};
+ const card=node(datasetAttributes(attributes(article[1]))),frame=node({sheetSlotFrame:position}),header=node(datasetAttributes(headerAttrs));
+ host.dragNodes.push(card,frame);const input=control?{dataset:{},tag:control}:null;
+ const target={card,frame,header,closest(selector){
+  if(selector==='.sheet-cage')return card;if(selector==='.sheet-slot-frame')return frame;
+  if(input&&selector.split(',').includes(control))return input;
+  if(selector.split(',').some(part=>part.startsWith('[')&&Object.hasOwn(headerAttrs,part.slice(1,-1))))return header;
+  return null;
+ }};return target;
+}
+function sourceCageMoveSample({occupied=false}={}){
+ const data=observationSample(),housing=movementSample();data.tables.rooms=housing.tables.rooms;data.tables.racks=housing.tables.racks;data.tables.locations.push(housing.tables.locations[1]);
+ data.tables.mice[0].comment=null;data.tables.mice[0].ear_mark=null;Object.assign(data.tables.locations[0],{row:1,column:1});Object.assign(data.tables.locations[1],{row:1,column:1});
+ if(occupied){data.tables.mice.push({mouse_sid:'M2',physical_tag:'P-F2',sex:'Female',state:'Stock',manager:'JM',date_of_birth:'2026-06-01'});data.tables.locations[1].source_cage_observation={schemaVersion:1,managerName:'JM',startedDate:'2026-09-01',animals:[{tag:'P-F2',sourceCell:'A2',dateOfBirth:'2026-06-01',left:0,right:2,note:'Second cage'}]};}
+ return data;
+}
+function articleAt(host,position){return [...host.innerHTML.matchAll(/<article\b([^>]*)>([\s\S]*?)<\/article>/g)].find(([,attrs])=>attributes(attrs)['data-sheet-slot']===position)?.[2]||'';}
+
+test('whole header drag keeps a numbered origin outline and shows a destination swap cue, then cleans up',()=>{
+ const ui=renderHarness(registeredMoveSample()),source=cageDragTarget(ui.host,'P1'),destination=cageDragTarget(ui.host,'P2');let image=null,allowed=false;
+ assert.match(ui.host.innerHTML,/<header draggable="true"[^>]*data-sheet-drag-slot="P1"/);assert.match(ui.host.innerHTML,/data-sheet-slot-frame="P1" data-sheet-slot-label="A1"><div class="sheet-slot-outline" aria-hidden="true"><span>A1<\/span>/);
+ ui.host.ondragstart({target:source,dataTransfer:{setData(){},setDragImage(value){image=value;}},preventDefault(){assert.fail('verified header drag must start');}});
+ assert.equal(image,source.card);assert.ok(source.frame.classes.has('sheet-drag-origin'));assert.ok(source.card.classes.has('sheet-dragging'));
+ ui.host.ondragover({target:destination,dataTransfer:{},preventDefault(){allowed=true;}});assert.equal(allowed,true);assert.ok(destination.frame.classes.has('sheet-slot-destination'));assert.equal(destination.frame.dataset.sheetDropCue,'Swap');assert.ok(destination.card.classes.has('sheet-drop-target'));
+ ui.host.ondragend();assert.equal(source.frame.classes.size,0);assert.equal(source.card.classes.size,0);assert.equal(destination.frame.classes.size,0);assert.equal(destination.frame.dataset.sheetDropCue,undefined);assert.equal(hasCageSheetDrafts(),false);
+});
+test('whole-header drag excludes nested controls and cannot accidentally start from a print button or selector',()=>{
+ for(const control of ['button','input','select','textarea','a','summary','details','.sheet-animal-editor']){
+  const ui=renderHarness(registeredMoveSample()),target=cageDragTarget(ui.host,'P1',{control});let prevented=false;
+  ui.host.ondragstart({target,preventDefault(){prevented=true;},dataTransfer:{setData(){assert.fail('control started cage drag');}}});assert.equal(prevented,true);assert.equal(hasCageSheetDrafts(),false);
+ }
+});
+test('source-only whole cage moves by its header, carrying all mice into one cage only on Save',async()=>{
+ const data=sourceCageMoveSample(),before=structuredClone(data);data.tables.mice[0].comment=null;before.tables.mice[0].comment=null;
+ const ui=renderHarness(data);assert.match(ui.host.innerHTML,/data-sheet-drag-slot="P1"/);
+ dragTo(ui,cageDragTarget(ui.host,'P1'),cageDragTarget(ui.host,'P2'));assert.equal(hasCageSheetDrafts(),true);assert.equal(ui.saved.length,0);assert.deepEqual(data,before);
+ assert.doesNotMatch(articleAt(ui.host,'P1'),/>PB&#39;-M3193<\/button>/);assert.match(articleAt(ui.host,'P2'),/>PB&#39;-M3193<\/button>/);assert.match(articleAt(ui.host,'P2'),/datetime="2025-12-23"/);
+ assert.doesNotMatch(ui.host.innerHTML,/draggable="true"/);await ui.sync();assert.equal(ui.saved.length,1);
+ const next=ui.saved[0],cage=next.tables.cages[0];assert.equal(next.tables.cages.length,1);assert.equal(cage.location_id,'P2');assert.equal(cage.cage_tag,'B2');assert.equal(cage.manager,'Vuong Truong');assert.equal(cage.start_date,'2025-12-23');assert.equal(next.tables.mice[0].cage_sid,cage.cage_sid);assert.equal(next.tables.mice[0].comment,'0039 PB');assert.equal(next.tables.mice[0].cage_sheet_overrides.cage_sid,true);
+ assert.deepEqual(next.tables.locations.map(({app_modified_at,...p})=>p),before.tables.locations);assert.ok(next.tables.locations.every(p=>p.app_modified_at));
+});
+test('two source-only cages swap with stable slot labels and preview contains each animal once',async()=>{
+ const data=sourceCageMoveSample({occupied:true}),ui=renderHarness(data);dragTo(ui,cageDragTarget(ui.host,'P1'),cageDragTarget(ui.host,'P2'));
+ assert.match(articleAt(ui.host,'P1'),/>P-F2<\/button>/);assert.doesNotMatch(articleAt(ui.host,'P1'),/>PB&#39;-M3193<\/button>/);assert.match(articleAt(ui.host,'P2'),/>PB&#39;-M3193<\/button>/);assert.doesNotMatch(articleAt(ui.host,'P2'),/>P-F2<\/button>/);
+ assert.match(ui.host.innerHTML,/data-sheet-slot-frame="P1" data-sheet-slot-label="L7"/);assert.match(ui.host.innerHTML,/data-sheet-slot-frame="P2" data-sheet-slot-label="B2"/);
+ await ui.sync();assert.equal(ui.saved.length,1);const next=ui.saved[0];assert.equal(next.tables.cages.length,2);for(const [mouseId,position] of [['M1','P2'],['M2','P1']]){const mouse=next.tables.mice.find(m=>m.mouse_sid===mouseId);assert.equal(next.tables.cages.find(c=>c.cage_sid===mouse.cage_sid).location_id,position);}
+});
+test('Move button works for a source-only cage and discard leaves source data untouched',async()=>{
+ const data=sourceCageMoveSample(),before=structuredClone(data),ui=renderHarness(data,{confirm:async()=>true});
+ await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move-slot','P1')});assert.match(ui.host.innerHTML,/Moving cage L7/);
+ await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-destination','P2')});assert.equal(hasCageSheetDrafts(),true);await ui.host.querySelector('#cage-sheet-discard').onclick();assert.equal(hasCageSheetDrafts(),false);assert.deepEqual(data,before);assert.equal(ui.saved.length,0);
+});
+test('source whole cage Save rechecks identity, occupancy and all permissions and retains conflicted draft',async()=>{
+ for(const mutate of [fresh=>fresh.tables.mice[0].physical_tag='Different',fresh=>fresh.tables.locations[0].source_cage_observation.animals.push({tag:'P-M99',sourceCell:'T11'}),fresh=>fresh.tables.cages.push({cage_sid:'ARRIVAL',state:'Active',location_id:'P2',room_id:'R2',rack_id:'K2',cage_tag:'B2'})]){
+  const data=sourceCageMoveSample(),fresh=structuredClone(data),ui=renderHarness(data,{loadFresh:async()=>fresh});dragTo(ui,cageDragTarget(ui.host,'P1'),cageDragTarget(ui.host,'P2'));mutate(fresh);await ui.sync();assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.innerHTML,/Review|changed|occupied|registered/);
+ }
+ let locations=true;const ui=renderHarness(sourceCageMoveSample(),{canEdit:type=>type!=='locations'||locations});dragTo(ui,cageDragTarget(ui.host,'P1'),cageDragTarget(ui.host,'P2'));locations=false;await ui.sync();assert.equal(ui.saved.length,0);assert.match(ui.host.innerHTML,/permission/);
+});
+test('unmatched source cages expose a disabled Move reason, and history or missing access cannot drag',()=>{
+ const data=sourceCageMoveSample();data.tables.locations[0].source_cage_observation.animals.push({tag:'Unknown',sourceCell:'T11'});let ui=renderHarness(data);assert.doesNotMatch(articleAt(ui.host,'P1'),/draggable="true"[^>]*data-sheet-drag-slot=/);assert.match(articleAt(ui.host,'P1'),/disabled title="Review the unmatched animals in L7 before moving the whole cage."/);
+ for(const overrides of [{readOnly:true},{canEdit:type=>type!=='locations'}]){ui=renderHarness(sourceCageMoveSample(),overrides);assert.doesNotMatch(ui.host.innerHTML,/draggable="true"/);}
+});
+test('faint slot labels escape markup and location fencing changes on real moves but not applied retries',()=>{
+ const data=registeredMoveSample();data.tables.locations[0].label='<L7 & "rack">';const ui=renderHarness(data);assert.match(ui.host.innerHTML,/data-sheet-slot-label="&lt;L7 &amp; &quot;rack&quot;&gt;"/);assert.match(ui.host.innerHTML,/<span>&lt;L7 &amp; &quot;rack&quot;&gt;<\/span>/);
+ const changes=[edit('cages','C1','location_id','P1','P2'),edit('cages','C2','location_id','P2','P1')];data.tables.locations[0].app_modified_at='2026-10-16T12:00:00.000Z';const next=applyCageSheetDrafts(data,changes,{at:'2026-10-16T12:00:00.000Z'});assert.equal(next.tables.locations[0].app_modified_at,'2026-10-16T12:00:00.001Z');assert.deepEqual(applyCageSheetDrafts(next,changes,{at:'2026-10-16T12:00:01.000Z'}),next);
+});
+
+test('source-note conflict disables whole cage move until the user explicitly saves a reviewed note',async()=>{
+ const data=sourceCageMoveSample();data.tables.mice[0].comment='Older stored note';const ui=renderHarness(data);
+ assert.doesNotMatch(articleAt(ui.host,'P1'),/data-sheet-drag-slot="P1"/);assert.match(articleAt(ui.host,'P1'),/Review[^\"]*note/);
+ const editor=await openEditor(ui,'note');assert.match(editor.innerHTML,/0039 PB/);enter(ui,editor,'comment','0039 PB');await ui.host.onclick({target:doneTarget()});await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.mice[0].comment,'0039 PB');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.comment,true);assert.match(articleAt(ui.host,'P1'),/data-sheet-drag-slot="P1"/);
+});
+
+
+test('click Move shows the numbered slot outline, omits a self destination and Cancel removes selection',async()=>{
+ const ui=renderHarness(sourceCageMoveSample());await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move-slot','P1')});
+ assert.match(ui.host.innerHTML,/<div class="sheet-slot-frame sheet-move-origin" data-sheet-slot-frame="P1" data-sheet-slot-label="L7"><div class="sheet-slot-outline" aria-hidden="true"><span>L7<\/span>/);
+ assert.doesNotMatch(articleAt(ui.host,'P1'),/data-sheet-destination="P1"/);assert.match(articleAt(ui.host,'P2'),/data-sheet-destination="P2"/);
+ ui.host.querySelector('#cage-sheet-cancel-move').onclick();assert.doesNotMatch(ui.host.innerHTML,/<div class="sheet-slot-frame sheet-move-origin"/);assert.doesNotMatch(ui.host.innerHTML,/data-sheet-destination=/);assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);
 });

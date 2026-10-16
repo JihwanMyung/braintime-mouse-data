@@ -306,6 +306,8 @@ await vm.runInContext(`(async()=>{
  cageDate='2020-01-02';assert(cageViewMenuHTML().includes('disabled title="Select Current to import"'));await openCageSheetImport();assert(!mounted);cageDate='';
  for(const denied of [{mode:'local',signedIn:true,role:'owner'},{mode:'cloud',signedIn:false,role:'owner'},...['viewer','pending'].map(role=>({mode:'cloud',signedIn:true,role})),{mode:'cloud',signedIn:true,role:'manager',permissions:{housing:true,imports:false}},{mode:'cloud',signedIn:true,role:'manager',permissions:{housing:false,imports:true}}]){cloud=denied;assert(!cageViewMenuHTML().includes('data-action="cage-import"'));await openCageSheetImport();assert(!mounted);}
  cloud={mode:'cloud',signedIn:true,role:'manager',permissions:{housing:true,imports:true}};assert(canImportAnimalsSheet());
+ for(const section of ['cages','locations','rooms','racks'])assert(canEditRecords(section));
+ cloud={...cloud,permissions:{housing:false,imports:true}};for(const section of ['cages','locations','rooms','racks'])assert(!canEditRecords(section));
  dataset=previous.dataset;route=previous.route;detail=previous.detail;cloud=previous.cloud;cageDate=previous.cageDate;cageView=previous.cageView;cloudReady=previous.cloudReady;renderAnimalSheetImport=previous.renderAnimalSheetImport;hasCageSheetDrafts=previous.hasCageSheetDrafts;store.pullFromCloud=previous.pull;store.getCloudStatus=previous.status;
 })()`,context);
 

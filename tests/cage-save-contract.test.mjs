@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeDataset } from '../web/model.js';
+import { normalizeDataset, ID_FIELDS } from '../web/model.js';
+import { planCageSlotMove, getMouseMoveReadDependencies } from '../web/cage-movement.js';
+import { applyCageSheetDrafts } from '../web/cage-sheet.js';
 import * as store from '../web/data-store.js';
 
 // An isolated browser/cache and transactional RPC fixture. No live service is used.
@@ -32,19 +34,21 @@ const data=()=>normalizeDataset({source_archive_restricted:true,source_projectio
   mice:[{mouse_sid:'M1',state:'Stock',cage_sid:'C1',cage_tag:'A1'},{mouse_sid:'M2',state:'Stock',cage_sid:'C2',cage_tag:'A2'}],
   cages:[{cage_sid:'C1',state:'Active',cage_tag:'A1'},{cage_sid:'C2',state:'Active',cage_tag:'A2'}],
 }});
-async function fixture(){
+async function fixture(seed=data(),{fullAccess=false}={}){
   localStorage.clear();sessionStorage.clear();savedLocal.clear();
   const server={records:new Map(),batches:[],beforeResponse:null};
-  for(const [type,rows] of Object.entries(data().tables))for(const payload of rows){
-    const entity_id=payload[type==='mice'?'mouse_sid':'cage_sid'];
+  const policy=fullAccess?{...visibility,owner:true,actual:true,source_archive_allowed:true}:visibility;
+  for(const [type,rows] of Object.entries(seed.tables))for(const payload of rows){
+    const entity_id=payload[ID_FIELDS[type]];
     server.records.set(`${type}:${entity_id}`,{colony_id:colony,entity_type:type,entity_id,payload,version:1,archived:false});
   }
   globalThis.fetch=async(url,init={})=>{
     const u=new URL(url),body=init.body?JSON.parse(init.body):null;
     if(u.pathname==='/auth/v1/token')return Response.json({access_token:'synthetic',refresh_token:'synthetic-refresh',expires_in:3600,user:{id:user,email:'test@example.invalid'}});
-    if(u.pathname==='/rest/v1/memberships')return Response.json([{role:'editor',active:true}]);
-    if(u.pathname==='/rest/v1/rpc/get_lac_fee_visibility')return Response.json(visibility);
-    if(['/rest/v1/rpc/get_lac_fee_records','/rest/v1/rpc/get_managed_locations'].includes(u.pathname))return Response.json({visibility,rows:[],next_offset:null});
+    if(u.pathname==='/rest/v1/memberships')return Response.json([{role:fullAccess?'owner':'editor',active:true}]);
+    if(u.pathname==='/rest/v1/rpc/get_lac_fee_visibility')return Response.json(policy);
+    if(u.pathname==='/rest/v1/rpc/get_lac_fee_records')return Response.json({visibility:policy,rows:[],next_offset:null});
+    if(u.pathname==='/rest/v1/rpc/get_managed_locations')return Response.json({visibility:policy,rows:[...server.records.values()].filter(r=>r.entity_type==='locations'),next_offset:null});
     if(u.pathname==='/rest/v1/entity_records'){
       const type=u.searchParams.get('entity_type')?.slice(3),id=u.searchParams.get('entity_id');
       const rows=[...server.records.values()].filter(r=>r.entity_type===type&&(!id||id.startsWith('eq.')&&r.entity_id===id.slice(3)||id.startsWith('gt.')&&r.entity_id>id.slice(3))).sort((a,b)=>a.entity_id.localeCompare(b.entity_id)).slice(0,Number(u.searchParams.get('limit'))||1000);
@@ -125,4 +129,62 @@ test('dependency IDs are strict and must belong to the verified existing snapsho
   for(const readDependencies of [null,{},[{type:'archive',id:'reconstruction'}],[{type:'cages',id:' C2'}],[{type:'cages',id:'C2',version:1}],[{type:'cages',id:'unknown'}]])await assert.rejects(store.saveDataset(initial,{readDependencies}),/dependenc/);
   assert.equal(server.batches.length,0);
   await store.saveDataset(initial,{readDependencies:[{type:'cages',id:'C2'}]});assert.equal(server.batches.length,1,'validation failures must release the save guard');
+});
+
+function sourceObservation(tag,sourceCell,note=''){return {schemaVersion:1,startedDate:null,intensityLux:null,managerName:null,managerCell:null,startedCell:null,intensityCell:null,animals:[{key:sourceCell,tag,note,dateOfBirth:null,earMark:null,left:null,right:null,sex:null,sourceCell,requiresReview:false}]};}
+function sourceCageSeed(){return normalizeDataset({tables:{
+  rooms:[{room_id:'R1',name:'Ani Beh'},{room_id:'R2',name:'SHLAC Rat room'}],
+  racks:[{rack_id:'K1',room_id:'R1',name:'L'},{rack_id:'K2',room_id:'R2',name:'R'}],
+  locations:[{location_id:'P1',room_id:'R1',rack_id:'K1',label:'L7',manager:'JM',source_cage_observation:sourceObservation('P-M1','T10','Tail note')},{location_id:'P2',room_id:'R2',rack_id:'K2',label:'R1',manager:'VT',source_cage_observation:sourceObservation('P-F2','T20')}],
+  mice:[{mouse_sid:'M1',physical_tag:'P-M1',state:'Stock',sex:'Male',manager:'JM',cage_sid:null,comment:'Tail note',note_color:'red'},{mouse_sid:'M2',physical_tag:'P-F2',state:'Stock',sex:'Female',manager:'VT',cage_sid:null}],
+}});}
+
+test('whole source cage swaps save both groups and their guarded slots in one cloud transaction',async()=>{
+  const {server,initial}=await fixture(sourceCageSeed());
+  const plan=planCageSlotMove(initial,'P1','P2',{newCageIds:{P1:'C-ONE',P2:'C-TWO'}});
+  const next=applyCageSheetDrafts(initial,plan.changes);
+  await store.saveDataset(next,{readDependencies:getMouseMoveReadDependencies(initial,plan.changes)});
+  assert.equal(server.batches.length,1);
+  assert.equal(server.records.get('cages:C-ONE').payload.location_id,'P2');
+  assert.equal(server.records.get('cages:C-TWO').payload.location_id,'P1');
+  assert.equal(server.records.get('mice:M1').payload.cage_sid,'C-ONE');
+  assert.equal(server.records.get('mice:M2').payload.cage_sid,'C-TWO');
+  assert.equal(server.records.get('mice:M1').payload.note_color,'red');
+  for(const id of ['P1','P2']){
+    const saved=server.records.get('locations:'+id);
+    assert.equal(saved.version,2,'slot occupancy fence must advance for concurrent saves');
+    assert.deepEqual(saved.payload.source_cage_observation,initial.tables.locations.find(r=>r.location_id===id).source_cage_observation,'source history stays unchanged');
+    assert.ok(saved.payload.app_modified_at);
+  }
+  assert.ok(server.batches[0].some(r=>r.entity_type==='locations'&&r.entity_id==='P1'));
+  assert.ok(server.batches[0].some(r=>r.entity_type==='locations'&&r.entity_id==='P2'));
+});
+
+test('source slot changed after planning rejects the entire cage swap at the cloud boundary',async()=>{
+  const {server,initial}=await fixture(sourceCageSeed());
+  const plan=planCageSlotMove(initial,'P1','P2',{newCageIds:{P1:'C-ONE',P2:'C-TWO'}});
+  const next=applyCageSheetDrafts(initial,plan.changes),deps=getMouseMoveReadDependencies(initial,plan.changes);
+  const changed=server.records.get('locations:P2');changed.payload={...changed.payload,manager:'Another caretaker'};changed.version++;
+  await assert.rejects(store.saveDataset(next,{readDependencies:deps}),/changed in another session|Version conflict|not confirmed/);
+  assert.equal(server.records.has('cages:C-ONE'),false);assert.equal(server.records.has('cages:C-TWO'),false);
+  assert.equal(server.records.get('mice:M1').payload.cage_sid,null);assert.equal(server.records.get('mice:M2').payload.cage_sid,null);
+});
+
+test('another cage taking an empty slot rejects a competing whole-cage move',async()=>{
+  const seed=sourceCageSeed();seed.tables.locations.push({location_id:'P3',room_id:'R1',rack_id:'K1',label:'L9'});
+  const {server,initial}=await fixture(seed);
+  const plan=planCageSlotMove(initial,'P1','P3',{newCageIds:{P1:'C-ONE'}});
+  const next=applyCageSheetDrafts(initial,plan.changes);
+  // A second client commits P2 → P3 after our fresh read. Its same-slot fence
+  // changes the location version even though the old observation is untouched.
+  const other=planCageSlotMove(initial,'P2','P3',{newCageIds:{P2:'C-TWO'}});
+  const committed=applyCageSheetDrafts(initial,other.changes);
+  for(const [type,rows] of Object.entries(committed.tables))for(const payload of rows){
+    const entity_id=payload[ID_FIELDS[type]],key=`${type}:${entity_id}`,old=server.records.get(key);
+    if(!old||JSON.stringify(old.payload)!==JSON.stringify(payload))server.records.set(key,{colony_id:colony,entity_type:type,entity_id,payload,version:(old?.version||0)+1,archived:false});
+  }
+  await assert.rejects(store.saveDataset(next,{readDependencies:getMouseMoveReadDependencies(initial,plan.changes)}),/changed in another session|Version conflict|not confirmed/);
+  assert.equal(server.records.has('cages:C-ONE'),false);
+  assert.equal(server.records.get('cages:C-TWO').payload.location_id,'P3');
+  assert.equal(server.records.get('mice:M1').payload.cage_sid,null);
 });
