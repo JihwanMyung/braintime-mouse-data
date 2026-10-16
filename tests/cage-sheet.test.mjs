@@ -65,7 +65,7 @@ function sheetHost(){
  const host={get innerHTML(){return html;},set innerHTML(value){
   html=value;nodes=new Map([...html.matchAll(/\bid="([^"]+)"/g)].map(([,id])=>[id,{disabled:false,textContent:'',querySelector(){return {textContent:''};}}]));
   editors=[...html.matchAll(/<div class="sheet-animal-editor"([^>]*)>/g)].map(([,attrs])=>{
-   let content='',controls=[];const node={dataset:datasetAttributes(attributes(attrs)),hidden:true,get innerHTML(){return content;},set innerHTML(value){content=value;controls=[...value.matchAll(/<(input|textarea)\b([^>]*)>([^<]*)/g)].map(([,tag,attrs,body])=>{const all=attributes(attrs);return {tag,attrs:all,dataset:datasetAttributes(all),value:tag==='textarea'?decode(body):all.value||'',focus(){},classList:{toggle(){}}};});},querySelector(selector){if(selector==='textarea,input')return controls[0];const match=selector.match(/^\[([^=]+)="([^"]*)"\]$/);return match?controls.find(c=>c.attrs[match[1]]===match[2])||null:null;},contains(target){return target===node||controls.includes(target);}};return node;
+   let content='',controls=[];const node={dataset:datasetAttributes(attributes(attrs)),hidden:true,get innerHTML(){return content;},set innerHTML(value){content=value;controls=[...value.matchAll(/<(input)\b([^>]*)>|<(textarea|select|button)\b([^>]*)>([\s\S]*?)<\/\3>/g)].map(([,input,inputAttrs,paired,pairedAttrs,body=''])=>{const tag=input||paired,all=attributes(inputAttrs||pairedAttrs),selected=tag==='select'?(body.match(/<option[^>]*value="([^"]*)"[^>]* selected[^>]*>/)||body.match(/<option[^>]*value="([^"]*)"/))?.[1]:null;return {tag,attrs:all,dataset:datasetAttributes(all),value:tag==='textarea'?decode(body):tag==='select'?decode(selected):all.value||'',focus(){},classList:{toggle(){}}};});},querySelector(selector){if(selector==='textarea,input'||selector==='textarea,input,select,button')return controls[0];const match=selector.match(/^\[([^=]+)="([^"]*)"\]$/);return match?controls.find(c=>c.attrs[match[1]]===match[2])||null:null;},contains(target){return target===node||controls.includes(target)||target?.editor===node;}};return node;
   });
  },querySelector(selector){return nodes.get(selector.slice(1))||null;},querySelectorAll(selector){return selector==='[data-sheet-inline-editor]'?editors:[];}};
  return host;
@@ -138,8 +138,8 @@ test('historical light applicability uses noon in Taipei, preserving event time-
 
 // Resolve a rendered button, then simulate a click on its nested icon. The parent
 // card remains reachable to catch accidental cage selection or movement.
-function renderedButtonTarget(host,attribute,value){
- const article=[...host.innerHTML.matchAll(/<article\b([^>]*)>([\s\S]*?)<\/article>/g)].find(([,attrs,content])=>content.includes(`${attribute}="${value}"`));
+function renderedButtonTarget(host,attribute,value,cageId=null){
+ const article=[...host.innerHTML.matchAll(/<article\b([^>]*)>([\s\S]*?)<\/article>/g)].find(([,attrs,content])=>content.includes(`${attribute}="${value}"`)&&(!cageId||attrs.includes(`data-cage="${cageId}"`)));
  assert.ok(article,`Rendered cage card containing ${attribute}=${value}`);
  const match=[...article[2].matchAll(/<button\b([^>]*)>/g)].find(([,attrs])=>attrs.includes(`${attribute}="${value}"`));
  assert.ok(match,'Rendered button exists');
@@ -356,7 +356,7 @@ test('sequential mouse moves retain the original cage CAS and returning home rem
 test('compact badge opens the exact Mice record directly for editors and viewers',async()=>{
  for(const canEdit of [()=>true,()=>false]){
   const opened=[],ui=renderHarness(observationSample(),{canEdit,openMouse:id=>opened.push(id)});
-  assert.match(ui.host.innerHTML,/sheet-animal-badge/);assert.doesNotMatch(ui.host.innerHTML,/data-sheet-edit-animal="note"|data-sheet-move-mouse|Move mouse|Open mouse ↗/);
+  assert.match(ui.host.innerHTML,/sheet-animal-badge/);assert.doesNotMatch(ui.host.innerHTML,/data-sheet-move-mouse|Move mouse|Open mouse ↗/);
   await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-open-mouse','M1')});assert.deepEqual(opened,['M1']);assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),false);
   assert.ok(ui.host.querySelectorAll('[data-sheet-inline-editor]').every(node=>node.hidden));
  }
@@ -567,4 +567,93 @@ test('linking a source position preserves its existing legacy manager even when 
  const data=movementSample();delete data.tables.cages[0].manager;data.tables.locations[1].manager='Former keeper';
  const ui=renderHarness(data,{managers:managerDirectory,loadManagers:async()=>managerDirectory});await new Promise(resolve=>setTimeout(resolve,0));
  ui.input({sheetLink:'P2'},'C1');await ui.sync();assert.equal(ui.saved.length,1);assert.equal(ui.saved[0].tables.cages[0].manager,'Former keeper');assert.equal(ui.saved[0].tables.mice[0].manager,'JM');
+});
+
+
+test('note light sits between the mouse badge and earmark and reflects note presence and saved color',()=>{
+ const data=observationSample();
+ for(const [stored,hasNote,expected] of [[undefined,true,'green'],['red',true,'red'],['none',true,'none'],['red',false,'none'],[undefined,false,'none']]){
+  data.tables.mice[0].note_color=stored;data.tables.mice[0].comment=null;data.tables.locations[0].source_cage_observation.animals[0].note=hasNote?'Tail discolored':'';
+  const ui=renderHarness(data),line=ui.host.innerHTML.match(/<div class="sheet-animal-line">([\s\S]*?)<\/div>/)[1];
+  assert.match(line,new RegExp('sheet-animal-badge.*sheet-note-light sheet-note-'+expected+'.*sheet-animal-ear'));
+  const note=renderedButtonTarget(ui.host,'data-sheet-edit-animal','note');assert.equal(note.button.dataset.sheetDragMouse,undefined);assert.equal(note.button.dataset.sheetOpenMouse,undefined);
+  assert.match(line,hasNote?/title="Tail discolored"/:/title="No note"/);
+ }
+});
+
+test('note and light edits stay staged together, preserve source text and save to the matching mouse',async()=>{
+ const data=observationSample(),ui=renderHarness(data),editor=await openEditor(ui,'note');
+ assert.equal(editor.querySelector('[data-sheet-field="comment"]').value,'0039 PB');assert.equal(editor.querySelector('[data-sheet-field="note_color"]').value,'green');
+ enter(ui,editor,'comment','Tail discolored');enter(ui,editor,'note_color','red');await ui.host.onclick({target:doneTarget()});
+ assert.equal(ui.saved.length,0);assert.equal(data.tables.mice[0].comment,'Older note');assert.equal(hasCageSheetDrafts(),true);
+ assert.match(ui.host.innerHTML,/sheet-note-light sheet-note-red/);assert.match(ui.host.innerHTML,/title="Tail discolored"/);
+ await ui.sync();assert.equal(ui.saved.length,1);const mouse=ui.saved[0].tables.mice[0];assert.equal(mouse.comment,'Tail discolored');assert.equal(mouse.note_color,'red');assert.equal(mouse.cage_sheet_overrides.comment,true);
+ assert.equal(ui.saved[0].tables.locations[0].source_cage_observation.animals[0].note,'0039 PB');assert.equal(mouse.cage_sid,null);
+});
+
+test('none light keeps a note readable, and clearing a note switches any saved color off',async()=>{
+ const data=observationSample();data.tables.mice[0].note_color='red';const ui=renderHarness(data);let editor=await openEditor(ui,'note');
+ enter(ui,editor,'note_color','none');await ui.host.onclick({target:doneTarget()});assert.match(ui.host.innerHTML,/sheet-note-light sheet-note-none/);assert.match(ui.host.innerHTML,/title="0039 PB"/);
+ editor=await openEditor(ui,'note');enter(ui,editor,'note_color','red');enter(ui,editor,'comment','');await ui.host.onclick({target:doneTarget()});assert.match(ui.host.innerHTML,/sheet-note-light sheet-note-none/);assert.match(ui.host.innerHTML,/title="No note"/);
+ await ui.sync();assert.equal(ui.saved[0].tables.mice[0].comment,null);assert.equal(ui.saved[0].tables.mice[0].note_color,'red');assert.equal(ui.saved[0].tables.mice[0].cage_sheet_overrides.comment,true);
+});
+
+test('note edits escape markup, preserve multiline text and can be discarded',async()=>{
+ const data=observationSample(),ui=renderHarness(data,{confirm:async()=>true}),editor=await openEditor(ui,'note'),note='<img src=x onerror="alert(1)">\nTail "red" & sore';
+ enter(ui,editor,'comment',note);enter(ui,editor,'note_color','red');await ui.host.onclick({target:doneTarget()});assert.doesNotMatch(ui.host.innerHTML,/<img src=x/);assert.match(ui.host.innerHTML,/&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
+ const reopened=await openEditor(ui,'note');assert.equal(reopened.querySelector('[data-sheet-field="comment"]').value,note);await ui.host.onclick({target:doneTarget()});
+ await ui.host.querySelector('#cage-sheet-discard').onclick();assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),false);assert.match(ui.host.innerHTML,/title="0039 PB"/);assert.match(ui.host.innerHTML,/sheet-note-light sheet-note-green/);assert.equal(data.tables.mice[0].comment,'Older note');
+});
+
+test('viewers, unlinked, ambiguous and historical rows can read notes without edit controls or writes',async()=>{
+ const unlinked=observationSample();unlinked.tables.mice=[];const ambiguous=observationSample();ambiguous.tables.mice.push({...ambiguous.tables.mice[0],mouse_sid:'M2'});
+ const historicalMouse=observationSample();historicalMouse.tables.mice[0].history_read_only=true;
+ for(const [data,hooks] of [[observationSample(),{canEdit:()=>false}],[unlinked,{}],[ambiguous,{}],[observationSample(),{readOnly:true,selectedDate:'2026-10-12'}],[historicalMouse,{}]]){
+  const ui=renderHarness(data,hooks),editor=await openEditor(ui,'note');assert.ok(editor);assert.match(editor.innerHTML,/0039 PB/);assert.doesNotMatch(editor.innerHTML,/<textarea|<select|data-sheet-field=/);
+  await ui.host.onclick({target:doneTarget()});assert.equal(editor.hidden,true);assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),false);
+ }
+});
+
+test('note and color save rechecks concurrent field edits and source identity without overwriting',async()=>{
+ for(const changed of ['comment','note_color','physical_tag']){
+  const data=observationSample(),fresh=structuredClone(data);fresh.tables.mice[0][changed]=changed==='note_color'?'none':changed==='comment'?'A different note':'Another mouse';
+  const ui=renderHarness(data,{loadFresh:async()=>fresh}),editor=await openEditor(ui,'note');enter(ui,editor,'comment','Tail discolored');enter(ui,editor,'note_color','red');await ui.host.onclick({target:doneTarget()});await ui.sync();
+  assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),true);assert.match(ui.host.innerHTML,changed==='physical_tag'?/Animal match changed/:/Changed by another editor/);
+ }
+ clearCageSheetDrafts();
+});
+
+test('note color rejects arbitrary values and permissions are rechecked at save',async()=>{
+ const ui=renderHarness(observationSample()),editor=await openEditor(ui,'note');enter(ui,editor,'note_color','<script>');await ui.host.onclick({target:doneTarget()});assert.equal(editor.hidden,false);assert.equal(hasCageSheetDrafts(),false);assert.match(ui.host.querySelector('#cage-sheet-status').textContent,/Choose None, Green or Red/);
+ assert.throws(()=>applyCageSheetDrafts(observationSample(),[edit('mice','M1','note_color',null,'yellow')]),/Choose None, Green or Red/);
+ let allowed=true;const other=renderHarness(observationSample(),{canEdit:()=>allowed}),note=await openEditor(other,'note');enter(other,note,'comment','Tail discolored');enter(other,note,'note_color','green');allowed=false;await other.sync();assert.equal(other.saved.length,0);assert.match(other.host.innerHTML,/permission/);clearCageSheetDrafts();
+});
+
+test('note light never navigates, moves cages or starts a mouse drag',async()=>{
+ const data=registeredMoveSample();data.tables.mice[0].comment='Watch tail';let opened=0;const ui=renderHarness(data,{openMouse:()=>opened++});
+ await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move','C1')});const light=renderedButtonTarget(ui.host,'data-sheet-edit-animal','note');await ui.host.onclick({target:light});assert.equal(opened,0);assert.match(ui.host.innerHTML,/Moving cage C1/);assert.equal(hasCageSheetDrafts(),false);
+ let prevented=false;ui.host.ondragstart({target:light,preventDefault(){prevented=true;}});assert.equal(prevented,true);assert.equal(ui.saved.length,0);
+});
+
+test('changing only note light preserves the stored comment and does not override the source note',async()=>{
+ const data=observationSample(),ui=renderHarness(data),editor=await openEditor(ui,'note');enter(ui,editor,'note_color','red');await ui.host.onclick({target:doneTarget()});await ui.sync();
+ const mouse=ui.saved[0].tables.mice[0];assert.equal(mouse.note_color,'red');assert.equal(mouse.comment,'Older note');assert.notEqual(mouse.cage_sheet_overrides?.comment,true);assert.equal(ui.saved[0].tables.locations[0].source_cage_observation.animals[0].note,'0039 PB');assert.match(ui.host.innerHTML,/title="0039 PB"/);
+});
+
+test('clearing a source note when stored comment is already null records the deliberate override',async()=>{
+ const data=observationSample();data.tables.mice[0].comment=null;const ui=renderHarness(data),editor=await openEditor(ui,'note');enter(ui,editor,'comment','');await ui.host.onclick({target:doneTarget()});assert.equal(hasCageSheetDrafts(),true);await ui.sync();
+ const mouse=ui.saved[0].tables.mice[0];assert.equal(mouse.comment,null);assert.equal(mouse.cage_sheet_overrides.comment,true);assert.match(ui.host.innerHTML,/sheet-note-light sheet-note-none/);assert.match(ui.host.innerHTML,/title="No note"/);assert.equal(ui.saved[0].tables.locations[0].source_cage_observation.animals[0].note,'0039 PB');
+});
+
+
+test('note editor labels and read-only text cannot move a selected cage to the note cage',async()=>{
+ for(const editable of [true,false]){
+  const data=registeredMoveSample();data.tables.mice.push({...data.tables.mice[0],mouse_sid:'M2',physical_tag:'P2',cage_sid:'C2',cage_tag:'B2',comment:'Watch this tail'});
+  const ui=renderHarness(data,{canEdit:type=>type==='mice'?editable:true});
+  await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-move','C1')});await ui.host.onclick({target:renderedButtonTarget(ui.host,'data-sheet-edit-animal','note','C2')});
+  const editor=ui.host.querySelectorAll('[data-sheet-inline-editor]').find(node=>!node.hidden);assert.ok(editor);assert.match(editor.innerHTML,editable?/sheet-note-editor-label/:/sheet-readonly-note/);
+  const card=renderedCardTarget(ui.host,{cage:'C2'}).closest('.sheet-cage');
+  const content={editor,closest(selector){if(selector==='.sheet-cage')return card;if(selector.split(',').includes('.sheet-animal-editor'))return editor;return null;}};
+  await ui.host.onclick({target:content});assert.equal(editor.hidden,false);assert.equal(hasCageSheetDrafts(),false);assert.equal(ui.saved.length,0);assert.match(ui.host.innerHTML,/Moving cage C1/);assert.equal(data.tables.cages[0].location_id,'P1');
+ }
 });

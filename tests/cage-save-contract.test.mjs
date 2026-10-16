@@ -80,6 +80,27 @@ test('overlapping disjoint cloud saves cannot overwrite a newer cache or silentl
   if(outcomes[1].status==='fulfilled')assert.equal(local.tables.mice[1].comment,'Second explicit edit');
 });
 
+test('mouse notes and light colors round-trip through incremental cloud saves',async()=>{
+  const {server,initial}=await fixture(),next=structuredClone(initial);
+  next.tables.mice[0].comment='Tail discoloration, check at next cage change.';
+  next.tables.mice[0].note_color='red';
+  await store.saveDataset(next);
+  assert.equal(server.batches.length,1);
+  assert.deepEqual(server.batches[0].map(r=>`${r.entity_type}:${r.entity_id}`),['mice:M1']);
+  assert.equal(server.batches[0][0].expected_version,1);
+  const refreshed=await store.pullFromCloud(),mouse=refreshed.tables.mice.find(r=>r.mouse_sid==='M1');
+  assert.equal(mouse.comment,next.tables.mice[0].comment);
+  assert.equal(mouse.note_color,'red');
+  assert.equal(mouse.cage_sid,'C1');
+  assert.equal(refreshed.tables.husbandry_events.length,0);
+  const colorOnly=structuredClone(refreshed);
+  colorOnly.tables.mice.find(r=>r.mouse_sid==='M1').note_color='none';
+  await store.saveDataset(colorOnly);
+  assert.deepEqual(server.batches[1].map(r=>`${r.entity_type}:${r.entity_id}`),['mice:M1']);
+  assert.equal(server.records.get('mice:M1').payload.comment,mouse.comment);
+  assert.equal(server.records.get('mice:M1').payload.note_color,'none');
+});
+
 test('unchanged destination guards share one transaction with the mouse and history event',async()=>{
   const {server,initial}=await fixture(),next=structuredClone(initial);
   next.tables.mice[0].cage_sid='C2';next.tables.mice[0].cage_tag='A2';

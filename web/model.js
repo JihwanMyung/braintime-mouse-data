@@ -286,6 +286,7 @@ export function validateRecord(type,draft,dataset,originalId=null) {
   if(old)for(const name of new Set([...Object.keys(old),...Object.keys(draft)]))if(provenance(name)&&key(old[name])!==key(draft[name]))errors.push(`Imported provenance ${name} cannot be changed.`);
   if(type==='mice'&&!['Male','Female','Unknown'].includes(draft.sex))errors.push('Sex must be Male, Female, or Unknown.');
   if(type==='mice'&&draft.ear_mark!==undefined&&draft.ear_mark!==null&&(typeof draft.ear_mark!=='string'||[...draft.ear_mark].length>160))errors.push('Ear marking must be text of at most 160 characters, or blank.');
+  if(type==='mice'&&draft.note_color!=null&&!['none','green','red'].includes(draft.note_color))errors.push('Note light must be None, Green, or Red.');
   if(type==='mice'||type==='cages') {
     if(Object.hasOwn(draft,'manager')&&draft.manager!==null&&typeof draft.manager!=='string')errors.push('Manager must be a name or an empty assignment.');
     const resolved=type==='mice'?mouseManager(draft):cageManager(draft,base.tables.mice);
