@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {webcrypto} from 'node:crypto';
 import {planCageMove,planCageRemoval,validateCageMovementOccupancy,planMouseMove,planMouseMoveToPosition,validateMouseMoveDrafts,getMouseMoveReadDependencies,buildMouseMoveEvent} from '../web/cage-movement.js';import {applyCageSheetDrafts} from '../web/cage-sheet.js';import {normalizeDataset,validateRecord} from '../web/model.js';
+import {prepareMouseCageSheetEdit,cageSheetAnimals} from '../web/cage-observations.js';
 globalThis.crypto??=webcrypto;
 function fixture(){return normalizeDataset({tables:{rooms:[{room_id:'R1',name:'Room one'},{room_id:'R2',name:'Room two'}],racks:[{rack_id:'K1',room_id:'R1',name:'Rack one'},{rack_id:'K2',room_id:'R2',name:'Rack two'}],locations:[{location_id:'L1',room_id:'R1',rack_id:'K1',label:'A1'},{location_id:'L2',room_id:'R2',rack_id:'K2',label:'B2'},{location_id:'L3',room_id:'R2',rack_id:'K2',label:'B3'}],cages:[{cage_sid:'C1',cage_tag:'A1',location_id:'L1',room_id:'R1',rack_id:'K1',state:'Active',source_raw:'original one'},{cage_sid:'C2',cage_tag:'B2',location_id:'L2',room_id:'R2',rack_id:'K2',state:'Active',source_raw:'original two'}],mice:[{mouse_sid:'M1',physical_tag:'P001',state:'Stock',cage_sid:'C1',cage_tag:'A1',ear_mark:'L0R1'},{mouse_sid:'M2',state:'Stock',cage_sid:'C2',cage_tag:'B2'},{mouse_sid:'OLD',state:'Ended',cage_sid:'C1',cage_tag:'Old historical label'}]}});}
 const at='2026-10-15T08:00:00+08:00';
@@ -140,4 +141,18 @@ test('source field fills reject changed observations, concurrent actual edits an
  const remote=structuredClone(d);remote.tables.mice[0].comment='Concurrent saved note';assert.throws(()=>applyCageSheetDrafts(remote,plan.changes,{at}),/Changed by another editor/);
  assert.throws(()=>validateMouseMoveDrafts(d,plan.changes.filter(c=>c.sourceFill)),/require their staged/);
  const bad=structuredClone(plan.changes);bad.find(c=>c.sourceFill).value='L9R9';assert.throws(()=>validateMouseMoveDrafts(d,bad),/source details changed/);
+});
+
+
+test('renamed source-linked mouse moves against its retained source tag and records original evidence',()=>{
+ const data=observed(),before=data.tables.mice[0];
+ data.tables.mice[0]=prepareMouseCageSheetEdit(data,before,{...before,physical_tag:'P-RENAMED'});
+ const raw=structuredClone(data.tables.locations),row=cageSheetAnimals(data,{position:data.tables.locations[0]})[0];
+ assert.equal(row.tag,'P-RENAMED');assert.equal(row.sourceTag,'P001');assert.equal(row.mouseSid,'M1');
+ const plan=planMouseMove(data,'M1','C2',{sourceMatch});assert.deepEqual(plan.changes[0].sourceMatch,sourceMatch);
+ const after=applyCageSheetDrafts(data,plan.changes,{at});assert.equal(after.tables.mice[0].physical_tag,'P-RENAMED');assert.equal(after.tables.mice[0].cage_sid,'C2');
+ assert.deepEqual(after.tables.locations,raw);assert.equal(after.tables.husbandry_events.at(-1).source_observation.tag,'P001');
+ const stale=structuredClone(data);stale.tables.locations[0].source_cage_observation.animals[0].note='Different occupant observation';
+ const staleBefore=structuredClone(stale);assert.throws(()=>applyCageSheetDrafts(stale,plan.changes,{at}),/Animal match changed/);assert.deepEqual(stale,staleBefore);
+ assert.throws(()=>planMouseMove(data,'M1','C2',{sourceMatch:{...sourceMatch,tag:'P-RENAMED'}}),/Animal match changed/);
 });

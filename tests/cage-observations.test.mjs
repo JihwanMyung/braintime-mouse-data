@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {cageObservations,cageSheetAnimals,ageWeeks,todayTaipei} from '../web/cage-observations.js';
+import {cageObservations,cageSheetAnimals,prepareMouseCageSheetEdit,ageWeeks,todayTaipei} from '../web/cage-observations.js';
 const position=()=>({location_id:'POS',source_cell:'T7',source_block_range:'T6:Y13',source_block_text:"W6: Researcher A\nT7: L7\nY8: (wk)\nT10: PB'-M101\nU10: Protocol note\nV10: 2026-07-23\nW10: 1\nX10: 1\nY10: 12\nT11: PB'-M102\nV11: 2026-07-23\nW11: 0\nX11: 0\nT12: PB'-M103\nV12: 2026-07-22\nW12: 0\nX12: 2\nT13: 2025-12-29\nU13: 150 lux\nV13: 41 wks\nW13: $\nX13: 123.45"});
 const dataset=()=>({tables:{mice:[{mouse_sid:'101',physical_tag:"PB'-M",sex:'Male',date_of_birth:'2026-07-23',state:'Stock',cage_sid:'OLD',comment:'Older note'},{mouse_sid:'102',physical_tag:"PB'-M",sex:'Male',date_of_birth:'2026-07-23',state:'Stock'},{mouse_sid:'103',physical_tag:"PB'-M",sex:'Male',date_of_birth:'2026-07-22',state:'Stock'}]}});
 test('six-column grid reads per-animal notes, DOB and explicit zero ear holes without fee/footer leakage',()=>{
@@ -86,4 +86,62 @@ test('staged cage registration retains unassigned source occupants without silen
  const rows=cageSheetAnimals(d,{position:p,cage,mice:[m]});assert.deepEqual(rows.map(r=>r.mouseSid),['104','101','102','103']);assert.deepEqual(d,before);
  d.tables.mice[1].physical_tag='Unknown';assert.equal(cageSheetAnimals(d,{position:p,cage,mice:[m]}).find(r=>r.tag==="PB'-M102").matchStatus,'unlinked');
  const moved={...cage,location_id:'NEXT'};assert.equal(cageSheetAnimals(d,{position:{...p,location_id:'NEXT'},cage:moved,mice:[m]}).length,1);
+});
+
+const editableDataset=()=>{const d=dataset();d.tables.locations=[position()];return d;};
+function editMouse(d,patch){const before=d.tables.mice[0],after=prepareMouseCageSheetEdit(d,before,{...before,...patch});d.tables.mice[0]=after;return after;}
+test('Mouse editor fields override source details and a renamed tag keeps only its verified SID link',()=>{
+ const d=editableDataset(),original=structuredClone(d),before=d.tables.mice[0],draft={...before,physical_tag:'Updated-M101',date_of_birth:'2026-07-24',ear_mark:'L2R0',comment:'Updated note'};
+ const after=prepareMouseCageSheetEdit(d,before,draft);assert.deepEqual(d,original);assert.equal(draft.cage_sheet_overrides,undefined);
+ assert.deepEqual(after.cage_sheet_overrides,{comment:true,ear_mark:true,date_of_birth:true,physical_tag:true});assert.equal(after.cage_sheet_source_links.length,1);assert.equal(after.cage_sheet_source_links[0].source_tag,"PB'-M101");
+ d.tables.mice[0]=after;const row=cageSheetAnimals(d,{position:d.tables.locations[0]})[0];assert.equal(row.matchStatus,'matched');assert.equal(row.mouseSid,'101');assert.equal(row.tag,'Updated-M101');assert.equal(row.sourceTag,"PB'-M101");assert.equal(row.note,'Updated note');assert.equal(row.sourceNote,'Protocol note');assert.equal(row.earMark,'L2R0');assert.equal(row.dateOfBirth,'2026-07-24');assert.equal(after.cage_sid,'OLD');assert.deepEqual(d.tables.locations,original.tables.locations);
+ // A second rename retains the same literal observation, not an invented tag alias.
+ const again=editMouse(d,{physical_tag:'Second-M101'});assert.deepEqual(again.cage_sheet_source_links,after.cage_sheet_source_links);assert.equal(cageSheetAnimals(d,{position:d.tables.locations[0]})[0].tag,'Second-M101');
+});
+test('Mouse editor marking preserves existing overrides, deliberate blanks and DOB-only edits',()=>{
+ const d=editableDataset(),m=d.tables.mice[0];m.ear_mark='L1R1';m.cage_sheet_overrides={ear_mark:true,cage_sid:false};
+ const after=editMouse(d,{comment:'',ear_mark:'',date_of_birth:'2026-07-24'});assert.deepEqual(after.cage_sheet_overrides,{ear_mark:true,cage_sid:false,comment:true,date_of_birth:true});assert.equal(after.cage_sheet_source_links,undefined);
+ const row=cageSheetAnimals(d,{position:d.tables.locations[0]})[0];assert.equal(row.mouseSid,'101');assert.equal(row.note,'');assert.equal(row.earMark,null);assert.equal(row.dateOfBirth,'2026-07-24');
+ const unchanged=prepareMouseCageSheetEdit(d,after,{...after,manager:'Another keeper'});assert.deepEqual(unchanged.cage_sheet_overrides,after.cage_sheet_overrides);
+});
+test('renames never bind uncertain, duplicated, stale or historical observations',()=>{
+ for(const mutate of [
+  d=>d.tables.mice[0].date_of_birth='2026-07-24',
+  d=>d.tables.mice[0].sex='Female',
+  d=>d.tables.mice[0].state='Ended',
+  d=>d.tables.locations[0].source_block_text=d.tables.locations[0].source_block_text.replace('Protocol note','Transferred previously'),
+  d=>d.tables.locations[0].source_current=false,
+  d=>d.tables.locations[0].history_read_only=true,
+  d=>d.tables.locations[0].source_historical=true,
+  d=>d.tables.locations.push({...d.tables.locations[0],location_id:'OTHER'}),
+  d=>d.tables.locations.push({...d.tables.locations[0]}),
+  d=>d.tables.mice.push({...d.tables.mice[0],mouse_sid:'OTHER',physical_tag:"PB'-M101"})
+ ]){const d=editableDataset();mutate(d);const after=editMouse(d,{physical_tag:'Renamed-M101'});assert.deepEqual(after.cage_sheet_source_links,[]);}
+ const d=editableDataset();d.history_projection={read_only:true};const before=d.tables.mice[0],after=prepareMouseCageSheetEdit(d,before,{...before,physical_tag:'Renamed-M101'});assert.equal(after.cage_sheet_source_links,undefined);assert.equal(after.cage_sheet_overrides,undefined);
+});
+test('retained links fail closed when a source observation changes or appears in another location',()=>{
+ const original=editableDataset();editMouse(original,{physical_tag:'Renamed-M101'});
+ for(const mutate of [
+  p=>p.location_id='NEW',p=>p.source_current=false,p=>p.history_read_only=true,p=>p.source_historical=true,
+  p=>p.source_block_text=p.source_block_text.replace("PB'-M101","PB'-M999"),
+  p=>p.source_block_text=p.source_block_text.replace('Protocol note','Another observation'),
+  p=>p.source_block_text=p.source_block_text.replace('V10: 2026-07-23','V10: 2026-07-24'),
+  p=>p.source_block_text=p.source_block_text.replace('W10: 1','W10: 2'),
+  p=>p.source_block_text=p.source_block_text.replace('T13: 2025-12-29','T13: 2026-01-01')
+ ]){const d=structuredClone(original);mutate(d.tables.locations[0]);const row=cageSheetAnimals(d,{position:d.tables.locations[0]})[0];assert.equal(row.mouseSid,null);assert.equal(row.matchStatus,'unlinked');}
+ const d=structuredClone(original);d.tables.locations[0].source_snapshot_date='2026-10-17';d.tables.locations[0].source_last_seen_at='2026-10-17T01:00:00Z';assert.equal(cageSheetAnimals(d,{position:d.tables.locations[0]})[0].mouseSid,'101');
+ // Sanitized lower-privilege source projections retain the same link.
+ const projected={location_id:'POS',source_cage_observation:cageObservations(d.tables.locations[0])};assert.equal(cageSheetAnimals(d,{position:projected})[0].mouseSid,'101');
+ d.history_projection={read_only:true};assert.equal(cageSheetAnimals(d,{position:projected})[0].mouseSid,null);
+});
+test('stored links cannot override a competing literal identity or duplicate source tags',()=>{
+ const original=editableDataset();editMouse(original,{physical_tag:'Renamed-M101'});
+ const d=structuredClone(original);d.tables.mice.push({mouse_sid:'OTHER',physical_tag:"PB'-M101",sex:'Male',date_of_birth:'2026-07-23'});assert.equal(cageSheetAnimals(d,{position:d.tables.locations[0]})[0].matchStatus,'ambiguous');
+ const duplicate=structuredClone(original);duplicate.tables.locations[0].source_block_text=duplicate.tables.locations[0].source_block_text.replace("PB'-M102","PB'-M101");assert.equal(cageSheetAnimals(duplicate,{position:duplicate.tables.locations[0]})[0].matchStatus,'ambiguous');
+ const wrongSid=structuredClone(original);wrongSid.tables.mice[0].mouse_sid='OTHER';assert.equal(cageSheetAnimals(wrongSid,{position:wrongSid.tables.locations[0]})[0].mouseSid,null);
+});
+test('explicit transfer still suppresses a renamed mouse only at its old source position',()=>{
+ const d=editableDataset();editMouse(d,{physical_tag:'Renamed-M101'});d.tables.cages=[{cage_sid:'NEW',location_id:'NEXT'}];d.tables.mice[0].cage_sid='NEW';d.tables.mice[0].cage_sheet_overrides.cage_sid=true;
+ assert.deepEqual(cageSheetAnimals(d,{position:d.tables.locations[0]}).map(row=>row.mouseSid),['102','103']);
+ const next=cageSheetAnimals(d,{position:{location_id:'NEXT'},cage:d.tables.cages[0],mice:[d.tables.mice[0]]});assert.equal(next[0].tag,'Renamed-M101');assert.equal(next[0].mouseSid,'101');assert.equal(next[0].sourceCell,null);
 });

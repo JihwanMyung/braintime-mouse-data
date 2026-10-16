@@ -68,6 +68,50 @@ export function ageWeeks(dob,asOf=todayTaipei()){
  const born=date(dob),today=date(asOf);if(!born||!today||born>today)return null;return Math.floor((Date.parse(today+'T00:00:00Z')-Date.parse(born+'T00:00:00Z'))/604800000);
 }
 const override=(mouse,key)=>mouse?.cage_sheet_overrides?.[key]===true;
+const historical=row=>row?.history_read_only===true||row?.source_historical===true||/^historical_(?:snapshot|assignment)_projection$/.test(row?.record_origin||'');
+const currentPosition=position=>active(position)&&position.source_current!==false&&!historical(position)&&Boolean(text(position.location_id));
+// Only sanitized observations enter this fingerprint. Capture timestamps are
+// excluded so an unchanged daily import does not invalidate an explicit edit.
+// Location, row, original identity and observed details must all still agree.
+const observationFingerprint=(position,animal,observations)=>JSON.stringify([
+ text(position.location_id),animal.sourceCell,animal.tag,animal.note,animal.dateOfBirth,
+ animal.earMark,animal.sex,animal.requiresReview,observations.startedDate
+]);
+function linkedMice(mice,position,animal,observations){
+ if(!currentPosition(position)||!animal.sourceCell)return [];
+ const fingerprint=observationFingerprint(position,animal,observations);
+ return mice.filter(mouse=>!historical(mouse)&&Array.isArray(mouse.cage_sheet_source_links)&&mouse.cage_sheet_source_links.some(link=>
+  object(link)&&link.schema_version===1&&link.mouse_sid===text(mouse.mouse_sid)&&link.location_id===text(position.location_id)&&link.source_cell===animal.sourceCell&&link.source_fingerprint===fingerprint));
+}
+/** Retain deliberate Mouse-editor values and already verified cage links.
+ * This is a pure record transformation; source positions and assignments never
+ * change. A rename binds only one unique current observation. Any changed source
+ * details invalidate that binding rather than identifying a new occupant. */
+export function prepareMouseCageSheetEdit(dataset,before,after){
+ const result=structuredClone(after);
+ if(!object(before)||!object(after)||!text(before.mouse_sid)||text(before.mouse_sid)!==text(after.mouse_sid)||historical(before)||dataset?.history_projection?.read_only===true)return result;
+ const fields=['comment','ear_mark','date_of_birth','physical_tag'],changed=fields.filter(field=>text(before[field])!==text(after[field]));
+ if(!changed.length)return result;
+ result.cage_sheet_overrides={...(object(before.cage_sheet_overrides)?before.cage_sheet_overrides:{}),...(object(after.cage_sheet_overrides)?after.cage_sheet_overrides:{}),...Object.fromEntries(changed.map(field=>[field,true]))};
+ if(!changed.includes('physical_tag'))return result;
+ const id=text(before.mouse_sid),mice=dataset?.tables?.mice||[];
+ // Stable SID uniqueness is required before retaining a prior verification.
+ if(mice.filter(mouse=>active(mouse)&&text(mouse.mouse_sid)===id).length!==1)return result;
+ const original={...dataset,tables:{...dataset.tables,mice:mice.map(mouse=>text(mouse.mouse_sid)===id?before:mouse)}};
+ const positions=(dataset?.tables?.locations||[]).filter(currentPosition),matches=[];
+ for(const position of positions){
+  if(positions.filter(other=>text(other.location_id)===text(position.location_id)).length!==1)continue;
+  const observations=cageObservations(position),rows=cageSheetAnimals(original,{position});
+  for(const row of rows.filter(row=>row.matchStatus==='matched'&&row.mouseSid===id)){
+   const animal=observations.animals.find(animal=>animal.sourceCell===row.sourceCell&&animal.tag===(row.sourceTag||row.tag));
+   if(animal)matches.push({schema_version:1,mouse_sid:id,location_id:text(position.location_id),source_cell:animal.sourceCell,source_tag:animal.tag,source_fingerprint:observationFingerprint(position,animal,observations)});
+  }
+ }
+ // Multiple observations do not establish which cage currently holds a mouse.
+ // Do not preserve an old binding when the current evidence is no longer unique.
+ result.cage_sheet_source_links=matches.length===1?matches:[];
+ return result;
+}
 function managedRow(mouse,locationId){
  const id=text(mouse.mouse_sid),tag=text(mouse.physical_tag)||id;
  // SoftMouse keeps the genotype/sex prefix separately from its numeric SID.
@@ -82,11 +126,11 @@ export function cageSheetAnimals(dataset,item={}){
  for(const mouse of mice){const tag=text(mouse.physical_tag),id=text(mouse.mouse_sid);if(!id||!tag)continue;const identifiers=[{value:tag,requiresDob:false}];if(/[-\s][MF]$/.test(tag)&&/^\d+$/.test(id))identifiers.push({value:tag+id,requiresDob:false});if(shorthand(tag)&&sex(mouse.sex)&&/^\d+$/.test(id))identifiers.push({value:`${tag}-${sex(mouse.sex)[0]}${id}`,requiresDob:true});for(const {value,requiresDob} of identifiers){const key=identifierKey(value),matches=index.get(key)||[];if(!matches.some(m=>m.mouse===mouse))matches.push({mouse,requiresDob});index.set(key,matches);}}
  const sourceCounts=new Map();for(const animal of observations.animals){const key=identifierKey(animal.tag);sourceCounts.set(key,(sourceCounts.get(key)||0)+1);}
  const rows=observations.animals.map(animal=>{
-  const key=identifierKey(animal.tag),candidates=(animal.sourceCell?index.get(key)||[]:[]).filter(m=>!m.requiresDob||(animal.dateOfBirth&&(animal.dateOfBirth===date(m.mouse.date_of_birth)||override(m.mouse,'date_of_birth')))).map(m=>m.mouse),unique=candidates.length===1&&sourceCounts.get(key)===1?candidates[0]:null;
+  const key=identifierKey(animal.tag),literal=(animal.sourceCell?index.get(key)||[]:[]).filter(m=>!m.requiresDob||(animal.dateOfBirth&&(animal.dateOfBirth===date(m.mouse.date_of_birth)||override(m.mouse,'date_of_birth')))).map(m=>m.mouse),retained=dataset?.history_projection?.read_only===true?[]:linkedMice(mice,position,animal,observations),candidates=[...new Set([...literal,...retained])],unique=candidates.length===1&&sourceCounts.get(key)===1?candidates[0]:null;
   const conflicting=unique&&(unique.state==='Ended'||animal.requiresReview||(animal.sex&&sex(unique.sex)&&animal.sex!==sex(unique.sex))||(animal.dateOfBirth&&date(unique.date_of_birth)&&animal.dateOfBirth!==date(unique.date_of_birth)&&!override(unique,'date_of_birth')));
   const status=candidates.length>1||sourceCounts.get(key)>1?'ambiguous':conflicting?'conflict':unique?'matched':'unlinked',mouse=status==='matched'?unique:null;
   const take=(key,source,stored)=>mouse&&override(mouse,key)?stored:source??stored;
-  return {...animal,mouseSid:mouse?text(mouse.mouse_sid):null,dateOfBirth:take('date_of_birth',animal.dateOfBirth,mouse?date(mouse.date_of_birth):null),earMark:take('ear_mark',animal.earMark,mouse?text(mouse.ear_mark)||null:null),note:mouse&&override(mouse,'comment')?text(mouse.comment):animal.note||text(mouse?.comment),sourceNote:animal.note,sex:animal.sex||sex(mouse?.sex),locationId,matchStatus:status};
+  return {...animal,tag:mouse&&override(mouse,'physical_tag')?managedRow(mouse,locationId).tag:animal.tag,sourceTag:animal.tag,mouseSid:mouse?text(mouse.mouse_sid):null,dateOfBirth:take('date_of_birth',animal.dateOfBirth,mouse?date(mouse.date_of_birth):null),earMark:take('ear_mark',animal.earMark,mouse?text(mouse.ear_mark)||null:null),note:mouse&&override(mouse,'comment')?text(mouse.comment):animal.note||text(mouse?.comment),sourceNote:animal.note,sex:animal.sex||sex(mouse?.sex),locationId,matchStatus:status};
  }).filter(row=>{
   if(row.matchStatus!=='matched')return true;
   const mouse=mice.find(m=>text(m.mouse_sid)===row.mouseSid);

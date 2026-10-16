@@ -1,5 +1,5 @@
 /* Pure physical cage movements. SIDs and source observations never change. */
-import {cageSheetAnimals} from './cage-observations.js?v=63';
+import {cageSheetAnimals} from './cage-observations.js?v=70';
 const present=v=>v!==null&&v!==undefined&&v!=='';
 const active=r=>r&&!r.app_archived_at&&!r.archived;
 const textId=(v,label)=>{if(typeof v!=='string'||!v||v.trim()!==v)throw new Error(`Choose a valid ${label}.`);return v;};
@@ -89,7 +89,7 @@ function mouseMoveContext(dataset,mouseSid,targetCageSid,{sourceMatch=null,targe
   textId(sourceMatch.locationId,'source position');
   if(!(mouse.cage_sid===targetCageSid&&mouse.cage_sheet_overrides?.cage_sid===true)){
    const position=ctx.location(sourceMatch.locationId,{destination:true});
-   sourceObservation=cageSheetAnimals(dataset,{position}).find(row=>row.matchStatus==='matched'&&row.mouseSid===mouseSid&&row.tag===sourceMatch.tag&&row.sourceCell===sourceMatch.sourceCell);
+   sourceObservation=cageSheetAnimals(dataset,{position}).find(row=>row.matchStatus==='matched'&&row.mouseSid===mouseSid&&(row.sourceTag||row.tag)===sourceMatch.tag&&row.sourceCell===sourceMatch.sourceCell);
    if(historical(position)||!sourceObservation)throw new Error('Animal match changed. Reload the sheet before moving this mouse.');
   }
  }
@@ -233,6 +233,6 @@ export function buildMouseMoveEvent(before,after,change,{at=new Date().toISOStri
  const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(instant),date=change.mouseMove.effectiveDate||today;
  if(date>today||validDate(mouse.date_of_birth)&&date<mouse.date_of_birth)throw new Error('The effective move date must be on or after DOB and no later than today.');
  const previous=(before.tables.cages||[]).find(row=>row.cage_sid===old.cage_sid),currentPath=cagePath(after,target),oldPath=cagePath(before,previous);
- const sourceContext=sourceObservation?{source_observation:{location_id:change.sourceMatch.locationId,tag:sourceObservation.tag,source_cell:sourceObservation.sourceCell,...sourceFieldValues(sourceObservation)}}:{};
+ const sourceContext=sourceObservation?{source_observation:{location_id:change.sourceMatch.locationId,tag:sourceObservation.sourceTag||sourceObservation.tag,source_cell:sourceObservation.sourceCell,...sourceFieldValues(sourceObservation)}}:{};
  return {event_id:eventId===undefined?`MOVE-${crypto.randomUUID()}`:textId(eventId,'movement event ID'),record_origin:'app_created',event_type:present(old.cage_sid)?'cage_move':'cage_assignment',mouse_sid:id,old_cage_sid:old.cage_sid??null,cage_sid:target.cage_sid,cage_tag:target.cage_tag??null,event_date:date,...currentPath,...Object.fromEntries(Object.entries(oldPath).map(([key,value])=>['old_'+key,value])),...sourceContext,notes:'Moved from the editable Animal Sheet view.',app_created_at:at,app_modified_at:at};
 }
