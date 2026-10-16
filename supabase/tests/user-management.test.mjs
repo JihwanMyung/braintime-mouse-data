@@ -131,6 +131,55 @@ test('list paginates memberships and preserves unavailable authentication accoun
   const {data} = await f.request({action: 'list'}); assert.equal(data.users.length, 501); assert.equal(data.users[500].status, 'unavailable');
   assert.ok(f.calls.some(call => call.url.searchParams.get('offset') === '500'));
 });
+test('list uses linked roster names even when Auth metadata is empty or outdated and email changed', async () => {
+  for (const metadata of [{}, {full_name: 'Old name'}]) {
+    const f = fixture({accounts: [user(owner, 'owner@example.org'), user(target, 'member@example.org', {user_metadata: metadata})],
+      roster: [preregistered({linked_user_id: target, email: 'former@example.org', name: '  Saved Member  ', phone: 'PRIVATE PHONE', secondary_emails: ['PRIVATE CONTACT']})]});
+    const {response, data} = await f.request({action: 'list'});
+    assert.equal(response.status, 200); assert.equal(data.users[1].name, 'Saved Member');
+    assert.equal(data.users[1].email, 'member@example.org');
+    assert.ok(!JSON.stringify(data).includes('PRIVATE'));
+    assert.deepEqual(mutations(f.calls).map(call => call.url.pathname), ['/rest/v1/rpc/list_lab_members']);
+    assert.ok(adminCalls(f.calls).every(call => call.init.method === 'GET'));
+  }
+});
+test('list matches a unique unlinked primary email, with linked identity taking precedence', async () => {
+  const unlinked = preregistered({email: ' MEMBER@EXAMPLE.ORG ', name: 'Preregistered Member'});
+  const a = fixture({roster: [unlinked]});
+  assert.equal((await a.request({action: 'list'})).data.users[1].name, 'Preregistered Member');
+  const b = fixture({roster: [unlinked, preregistered({linked_user_id: target, email: 'old@example.org', name: 'Linked Member', archived: true})]});
+  assert.equal((await b.request({action: 'list'})).data.users[1].name, 'Linked Member');
+});
+test('list never borrows names from secondary contacts, other linked accounts, archived unlinked or ambiguous records', async () => {
+  for (const roster of [
+    [preregistered({secondary_emails: ['member@example.org']})],
+    [preregistered({linked_user_id: other, email: 'member@example.org'})],
+    [preregistered({archived: true, email: 'member@example.org'})],
+    [preregistered({email: 'member@example.org', name: 'One'}), preregistered({email: 'member@example.org', name: 'Two'})],
+    [preregistered({linked_user_id: target, name: 'One'}), preregistered({linked_user_id: target, name: 'Two'})],
+    [preregistered({linked_user_id: target, name: '   '})],
+  ]) {
+    const f = fixture({roster});
+    assert.equal((await f.request({action: 'list'})).data.users[1].name, 'Member');
+  }
+  const f = fixture({roster: [], accounts: [user(owner, 'owner@example.org'), user(target, 'member@example.org', {user_metadata: {full_name: '  '}})]});
+  assert.equal((await f.request({action: 'list'})).data.users[1].name, null);
+});
+test('list preserves names for unavailable linked accounts without changing account status', async () => {
+  const f = fixture({accounts: [user(owner, 'owner@example.org')], roster: [preregistered({linked_user_id: target, name: 'Historical Member', archived: true})]});
+  const {data} = await f.request({action: 'list'});
+  assert.equal(data.users[1].name, 'Historical Member'); assert.equal(data.users[1].status, 'unavailable'); assert.equal(data.users[1].email, null);
+});
+test('list fails explicitly when the authorized roster cannot be verified', async () => {
+  for (const [status, body, expected] of [[401, {}, 401], [403, {}, 403], [500, {message: 'PRIVATE ERROR'}, 503],
+    [200, {}, 503], [200, {members: [null]}, 503], [200, {members: [preregistered({colony_id: foreign})]}, 503]]) {
+    const f = fixture({intercept: ({url}) => url.pathname === '/rest/v1/rpc/list_lab_members' ? json(body, status) : null});
+    const {response, data} = await f.request({action: 'list'});
+    assert.equal(response.status, expected); assert.equal(data.users, undefined);
+    assert.ok(!JSON.stringify(data).includes('PRIVATE')); assert.equal(adminCalls(f.calls).length, 0);
+    assert.deepEqual(mutations(f.calls).map(call => call.url.pathname), ['/rest/v1/rpc/list_lab_members']);
+  }
+});
 test('all owner rows and self are protected; foreign target cannot gain membership through update', async () => {
   for (const id of [owner, target]) {
     const f = fixture({members: [membership(owner), membership(target, {role: 'owner'})]});

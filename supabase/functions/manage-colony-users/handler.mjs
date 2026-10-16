@@ -6,6 +6,7 @@ const validPermissions = value => value !== null && typeof value === 'object' &&
   Object.entries(value).every(([key, allowed]) => PERMISSIONS.includes(key) && typeof allowed === 'boolean');
 const normalizedPermissions = value => Object.fromEntries(PERMISSIONS.map(key => [key, Object.hasOwn(value || {}, key) ? value[key] === true : true]));
 const emailValue = value => typeof value === 'string' ? value.trim().toLowerCase() : '';
+const displayName = value => typeof value === 'string' ? value.trim().slice(0, 200) || null : null;
 const validEmail = value => value.length <= 254 && /^[^\s<>\x00-\x1f@]+@[^\s<>\x00-\x1f@]+\.[^\s<>\x00-\x1f@]+$/.test(value);
 class Failure extends Error {
   constructor(status, code, message, extra = {}) { super(message); Object.assign(this, {status, code, extra}); }
@@ -110,8 +111,8 @@ export function createHandler({env, fetchImpl = fetch}) {
         if (!result.ok || result.data?.id !== id) fail(503, 'profile_read_failed', 'Account details could not be loaded.');
         return result.data;
       };
-      const publicUser = (row, user) => ({user_id: row.user_id, email: user?.email || null,
-        name: typeof user?.user_metadata?.full_name === 'string' ? user.user_metadata.full_name.slice(0, 200) : null,
+      const publicUser = (row, user, rosterName = null) => ({user_id: row.user_id, email: user?.email || null,
+        name: rosterName || displayName(user?.user_metadata?.full_name),
         role: row.role, active: row.active, export_level: row.role === 'owner' ? 'max' : EXPORT_LEVELS.includes(row.export_level) ? row.export_level : 'low',
         permissions: normalizedPermissions(row.permissions),
         status: !user ? 'unavailable' : !row.active ? 'disabled' : !user.email_confirmed_at && user.invited_at ? 'invited' : 'active'});
@@ -156,8 +157,24 @@ export function createHandler({env, fetchImpl = fetch}) {
           if (!result.ok || !Array.isArray(result.data) || result.data.some(row => row.colony_id !== config.colonyId || !UUID.test(row.user_id))) fail(503, 'membership_read_failed', 'Colony users could not be loaded.');
           rows.push(...result.data); if (result.data.length < 500) break;
         }
+        // Profile edits are saved in the member roster, independently of Auth metadata.
+        // Read with the owner's JWT; never infer identity from names or secondary contacts.
+        const roster = await call('/rest/v1/rpc/list_lab_members', {method: 'POST', payload: {p_colony_id: config.colonyId}});
+        if ([401, 403].includes(roster.status)) fail(roster.status, 'roster_access_denied', 'Member names could not be verified. Sign in again.');
+        if (!roster.ok || !Array.isArray(roster.data?.members) || roster.data.members.some(person => !person || person.colony_id !== config.colonyId)) fail(503, 'roster_read_failed', 'Member names could not be loaded. Refresh the user list.');
+        const rosterName = (row, user) => {
+          const linked = roster.data.members.filter(person => person.linked_user_id === row.user_id);
+          if (linked.length) return linked.length === 1 ? displayName(linked[0].name) : null;
+          const email = emailValue(user?.email);
+          if (!email) return null;
+          const matches = roster.data.members.filter(person => person.linked_user_id === null && person.archived === false && emailValue(person.email) === email);
+          return matches.length === 1 ? displayName(matches[0].name) : null;
+        };
         const users = [];
-        for (let i = 0; i < rows.length; i += 5) users.push(...await Promise.all(rows.slice(i, i + 5).map(async row => publicUser(row, await profile(row.user_id)))));
+        for (let i = 0; i < rows.length; i += 5) users.push(...await Promise.all(rows.slice(i, i + 5).map(async row => {
+          const user = await profile(row.user_id);
+          return publicUser(row, user, rosterName(row, user));
+        })));
         return reply({colony_id: config.colonyId, users});
       }
       if (body.action === 'update_access') {

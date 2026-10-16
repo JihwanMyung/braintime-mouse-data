@@ -83,7 +83,7 @@ Responses:
 {code, message, invitation_sent /* only when relevant */, delivery_status /* if known */}
 ```
 
-`status` is `active`, `invited`, `disabled`, or `unavailable`. Profile metadata is restricted to a display name; tokens, private metadata and unrelated project accounts are never returned. Clients must render email/name/message as text, never HTML. Responses are `no-store` and the function logs no request bodies, tokens or upstream error bodies.
+`status` is `active`, `invited`, `disabled`, or `unavailable`. The list reads saved display names through the owner-authorized roster RPC, matching a unique linked user ID first or an unlinked, nonarchived primary email. It never matches secondary contacts or guesses between duplicate records. Auth `full_name` remains a fallback for legacy accounts. This lookup changes no account or roster records. Profile metadata is restricted to a display name; tokens, private metadata and unrelated project accounts are never returned. Clients must render email/name/message as text, never HTML. Responses are `no-store` and the function logs no request bodies, tokens or upstream error bodies.
 
 ## Verification
 
