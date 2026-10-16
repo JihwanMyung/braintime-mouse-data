@@ -19,7 +19,7 @@ import { createAccessActivity } from './access-activity.js?v=28';
 import { projectCageHistory, getCageHistoryDates } from './cage-history.js?v=24';
 import { projectAnimalSheet } from './animal-sheet-export.js?v=48';
 import { sortRooms, compareRooms } from './room-order.js?v=24';
-import { renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts, cageSheetHelpHTML } from './cage-sheet.js?v=67';
+import { renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts, cageSheetHelpHTML } from './cage-sheet.js?v=68';
 import { renderCageLabelEditor } from './cage-label.js?v=58';
 import { renderAccountSetup, clearAccountSetup } from './account-setup.js?v=64';
 import { renderAccountAcronym } from './account-acronym.js';

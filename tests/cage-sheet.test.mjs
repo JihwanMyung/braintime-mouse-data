@@ -452,7 +452,7 @@ test('sheet import follows Save to Mouse Data and calls only the authorized impo
  let imports=0;const data=sample(),original=structuredClone(data),ui=renderHarness(data,{canImport:()=>true,importFromSheet:async()=>{imports++;}});
  assert.match(ui.host.innerHTML,/title="Cage edits → Mouse Data"/);
  assert.match(ui.host.innerHTML,/title="Animal sheet → Mouse Data"/);
- assert.match(ui.host.innerHTML,/id="cage-sheet-sync"[^]*?<\/button><button id="cage-sheet-import"/);
+ assert.match(ui.host.innerHTML,/<div class="sheet-transfer-actions"><button id="cage-sheet-sync"[^]*?<\/button><button id="cage-sheet-import"[^]*?<\/button><\/div><button[^]*?id="cage-sheet-discard"/);
  assert.match(ui.host.innerHTML,/>Import from Animal sheet<\/span>/);
  await ui.host.querySelector('#cage-sheet-import').onclick();
  assert.equal(imports,1);assert.equal(ui.saved.length,0);assert.deepEqual(data,original);
