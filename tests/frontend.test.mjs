@@ -214,7 +214,7 @@ assert(typeof printHooks.printPositionLabel==='function');
 const tablesBefore=JSON.stringify(dataset.tables);await printHooks.printPositionLabel('SOURCE-POS');
 let positionLabel=labelRenders.at(-1);assert(positionLabel.hooks.initialPosition==='SOURCE-POS');assert(positionLabel.hooks.initialCage==='');assert(JSON.stringify(dataset.tables)===tablesBefore,'source printing never creates cage/animal records');positionLabel.hooks.onClose();
 const originalDraftCheck=hasCageSheetDrafts,beforePending=labelRenders.length;hasCageSheetDrafts=()=>true;
-await openCageLabel('SYN-C1');await openCageLabel(null,'front','SOURCE-POS');assert(labelRenders.length===beforePending);assert($('toast').textContent.includes('Sync or discard'));
+await openCageLabel('SYN-C1');await openCageLabel(null,'front','SOURCE-POS');assert(labelRenders.length===beforePending);assert($('toast').textContent.includes('Save or discard'));
 hasCageSheetDrafts=originalDraftCheck;
 const sourcePosition={location_id:'SOURCE-POS',label:'L7',source_current:true,source_snapshot_date:'2026-10-16'};dataset.tables.locations.push(sourcePosition);
 await printHooks.printPositionLabel('SOURCE-POS');positionLabel=labelRenders.at(-1);
@@ -273,7 +273,7 @@ vm.runInContext(`
  setCageDate('2020-01-02');const historic=cageSheetRenders.at(-1);
  assert(historic.hooks.readOnly&&historic.hooks.selectedDate==='2020-01-02');assert(!historic.hooks.canEdit('cages'));assert(!historic.hooks.openCage&&!historic.hooks.openMouse&&!historic.hooks.printLabel&&!historic.hooks.printPositionLabel&&!historic.hooks.openLocobox);
  assert(historic.sheetDataset.history_projection.read_only);assert(historic.sheetDataset.tables.mice.length===0,'present-day mice are never projected backward');assert($('main').innerHTML.includes('Historical view · Read only'));assert($('add-button').hidden);assert(currentHook.context!==historic.hooks.context);
- const pending=hasCageSheetDrafts;hasCageSheetDrafts=()=>true;setCageDate('');assert(cageDate==='2020-01-02');assert($('toast').textContent.includes('Sync or discard'));hasCageSheetDrafts=pending;
+ const pending=hasCageSheetDrafts;hasCageSheetDrafts=()=>true;setCageDate('');assert(cageDate==='2020-01-02');assert($('toast').textContent.includes('Save or discard'));hasCageSheetDrafts=pending;
  cageView='table';render();assert($('main').innerHTML.includes('SYN-OLD'));assert(!$('main').innerHTML.includes('data-action="edit"'));
  setCageDate('');cageView='rack';render();assert(!cageSheetRenders.at(-1).hooks.readOnly);
  for(const denied of [{mode:'local',signedIn:true,role:'owner'},{mode:'cloud',signedIn:false,role:'owner'},...['viewer','editor','manager','pending'].map(role=>({mode:'cloud',signedIn:true,role}))]){
@@ -293,15 +293,15 @@ await vm.runInContext(`(async()=>{
  dataset=model.createSyntheticDataset();route='cages';detail=null;cageDate='';cloudReady=true;
  cloud={mode:'cloud',signedIn:true,role:'owner',colonyId:'synthetic-colony',email:'owner@example.test'};
  store.getCloudStatus=()=>({...cloud});
- for(const view of ['rack','sheet','table']){cageView=view;render();assert($('main').innerHTML.includes('data-action="cage-import"'),'shortcut in '+view);}
+ for(const view of ['rack','sheet','table']){cageView=view;render();if(view==='table')assert($('main').innerHTML.includes('data-action="cage-import"'),'record-table shortcut');else {assert(!$('main').innerHTML.includes('data-action="cage-import"'),'no duplicate toolbar import');assert(cageSheetRenders.at(-1).hooks.canImport());assert(cageSheetRenders.at(-1).hooks.importFromSheet===openCageSheetImport);}}
  await action('cage-import');assert(mounted&&$('cage-import-dialog').open);assert(starts===0,'opening does not start an import');assert(mounted.canImport());
- hasCageSheetDrafts=()=>true;assert(!mounted.canImport());await assert.rejects(mounted.start(),/Sync or discard/);hasCageSheetDrafts=previous.hasCageSheetDrafts;
+ hasCageSheetDrafts=()=>true;assert(!mounted.canImport());await assert.rejects(mounted.start(),/Save or discard/);hasCageSheetDrafts=previous.hasCageSheetDrafts;
  await mounted.start();assert(starts===1);
  store.pullFromCloud=async()=>{pulls++;const fresh=model.createSyntheticDataset();fresh.tables.cages[0].cage_tag='IMPORTED-CAGE';return fresh;};
  await mounted.onComplete();assert(pulls===1&&route==='cages'&&!cageDate);assert(dataset.tables.cages[0].cage_tag==='IMPORTED-CAGE');assert($('main').innerHTML.includes('IMPORTED-CAGE'));
  const old=mounted;cloud={...cloud,colonyId:'another-colony'};assert(!old.canImport());await assert.rejects(old.start(),/Reopen/);await assert.rejects(old.onComplete(),/Reopen/);assert(pulls===1);
  $('cage-import-close').onclick();assert(disposed===1&&!$('cage-import-dialog').open);
- mounted=null;hasCageSheetDrafts=()=>true;await openCageSheetImport();assert(!mounted&&$('toast').textContent.includes('Sync or discard'));hasCageSheetDrafts=previous.hasCageSheetDrafts;
+ mounted=null;hasCageSheetDrafts=()=>true;await openCageSheetImport();assert(!mounted&&$('toast').textContent.includes('Save or discard'));hasCageSheetDrafts=previous.hasCageSheetDrafts;
  cageDate='2020-01-02';assert(cageViewMenuHTML().includes('disabled title="Select Current to import"'));await openCageSheetImport();assert(!mounted);cageDate='';
  for(const denied of [{mode:'local',signedIn:true,role:'owner'},{mode:'cloud',signedIn:false,role:'owner'},...['viewer','pending'].map(role=>({mode:'cloud',signedIn:true,role})),{mode:'cloud',signedIn:true,role:'manager',permissions:{housing:true,imports:false}},{mode:'cloud',signedIn:true,role:'manager',permissions:{housing:false,imports:true}}]){cloud=denied;assert(!cageViewMenuHTML().includes('data-action="cage-import"'));await openCageSheetImport();assert(!mounted);}
  cloud={mode:'cloud',signedIn:true,role:'manager',permissions:{housing:true,imports:true}};assert(canImportAnimalsSheet());

@@ -320,7 +320,7 @@ function dragTo(ui,source,destination){
 test('mouse tag drag stages a cross-room move, retains original data, then saves one dated event with guarded dependencies',async()=>{
  const data=registeredMoveSample(),original=structuredClone(data),calls=[];
  const ui=renderHarness(data,{save:async(next,options)=>calls.push({next,options})});
- assert.match(ui.host.innerHTML,/Save changes/);assert.match(ui.host.innerHTML,/data-sheet-drag-mouse=/);
+ assert.match(ui.host.innerHTML,/Save to Mouse Data/);assert.match(ui.host.innerHTML,/data-sheet-drag-mouse=/);
  dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{cage:'C2'}));
  assert.equal(calls.length,0);assert.equal(hasCageSheetDrafts(),true);assert.deepEqual(data,original);
  const destination=[...ui.host.innerHTML.matchAll(/<article\b([^>]*)>([\s\S]*?)<\/article>/g)].find(([,attrs])=>attributes(attrs)['data-cage']==='C2');assert.match(destination[2],/>P1<\/button>/);
@@ -445,4 +445,54 @@ test('source earmark and note remain visible after staging and returning home re
  const ui=renderHarness(data);dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{position:'P2'}));
  assert.match(ui.host.innerHTML,/>L0R0<\/button>/);assert.match(ui.host.innerHTML,/Source note/);assert.equal(ui.saved.length,0);
  dragTo(ui,firstRenderedButton(ui.host,'data-sheet-drag-mouse'),renderedCardTarget(ui.host,{cage:'C1'}));assert.equal(hasCageSheetDrafts(),false);assert.equal(data.tables.mice[0].ear_mark,null);
+});
+
+
+test('sheet import follows Save to Mouse Data and calls only the authorized import hook',async()=>{
+ let imports=0;const data=sample(),original=structuredClone(data),ui=renderHarness(data,{canImport:()=>true,importFromSheet:async()=>{imports++;}});
+ assert.match(ui.host.innerHTML,/title="Cage edits → Mouse Data"/);
+ assert.match(ui.host.innerHTML,/title="Animal sheet → Mouse Data"/);
+ assert.match(ui.host.innerHTML,/id="cage-sheet-sync"[^]*?<\/button><button id="cage-sheet-import"/);
+ assert.match(ui.host.innerHTML,/>Import from Animal sheet<\/span>/);
+ await ui.host.querySelector('#cage-sheet-import').onclick();
+ assert.equal(imports,1);assert.equal(ui.saved.length,0);assert.deepEqual(data,original);
+});
+
+test('sheet import is hidden without permission, callback, or in a historical view',()=>{
+ for(const hooks of [{canImport:()=>false,importFromSheet:async()=>{}},{canImport:()=>true},{canImport:()=>true,importFromSheet:async()=>{},readOnly:true}]){
+  const ui=renderHarness(sample(),hooks);assert.equal(ui.host.querySelector('#cage-sheet-import'),null);
+ }
+});
+
+test('sheet import preserves drafts and rechecks permission and account context',async()=>{
+ let allowed=true,account='test-colony',imports=0;
+ const ui=renderHarness(sample(),{canImport:()=>allowed,currentContext:()=>account,importFromSheet:async()=>{imports++;}});
+ const click=()=>ui.host.querySelector('#cage-sheet-import').onclick();
+ ui.input({sheetType:'mice',sheetId:'M1',sheetField:'comment'},'Unwritten note');
+ assert.equal(ui.host.querySelector('#cage-sheet-import').disabled,true);
+ assert.equal(ui.host.querySelector('#cage-sheet-import').title,'Save or discard changes before importing.');
+ await click();assert.equal(imports,0);assert.equal(hasCageSheetDrafts(),true);assert.equal(ui.saved.length,0);
+ clearCageSheetDrafts();
+ const retry=renderHarness(sample(),{canImport:()=>allowed,currentContext:()=>account,importFromSheet:async()=>{imports++;}});
+ allowed=false;await retry.host.querySelector('#cage-sheet-import').onclick();assert.equal(imports,0);
+ allowed=true;account='another-colony';await retry.host.querySelector('#cage-sheet-import').onclick();assert.equal(imports,0);
+});
+
+test('sheet import cannot overlap or overwrite a fresh cage render',async()=>{
+ let finish,imports=0;
+ const data=sample(),ui=renderHarness(data,{canImport:()=>true,importFromSheet:()=>{imports++;return new Promise(resolve=>{finish=resolve;});}});
+ const first=ui.host.querySelector('#cage-sheet-import').onclick();
+ assert.match(ui.host.innerHTML,/>Opening…<\/span>/);
+ await ui.host.querySelector('#cage-sheet-import').onclick();assert.equal(imports,1);
+ ui.input({sheetType:'mice',sheetId:'M1',sheetField:'comment'},'Blocked during import');assert.equal(hasCageSheetDrafts(),false);
+ const fresh=structuredClone(data);fresh.tables.locations[0].label='NEW POSITION';
+ renderCageSheet(ui.host,fresh,ui.hooks);const current=ui.host.innerHTML;
+ finish();await first;assert.equal(ui.host.innerHTML,current);assert.match(current,/NEW POSITION/);
+});
+
+test('sheet import failure leaves a retryable error without saving anything',async()=>{
+ const ui=renderHarness(sample(),{canImport:()=>true,importFromSheet:async()=>{throw new Error('Sheet connection unavailable');}});
+ await ui.host.querySelector('#cage-sheet-import').onclick();
+ assert.match(ui.host.innerHTML,/Sheet connection unavailable/);assert.equal(ui.saved.length,0);assert.equal(hasCageSheetDrafts(),false);
+ assert.match(ui.host.innerHTML,/>Import from Animal sheet<\/span>/);
 });

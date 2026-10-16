@@ -19,7 +19,7 @@ import { createAccessActivity } from './access-activity.js?v=28';
 import { projectCageHistory, getCageHistoryDates } from './cage-history.js?v=24';
 import { projectAnimalSheet } from './animal-sheet-export.js?v=48';
 import { sortRooms, compareRooms } from './room-order.js?v=24';
-import { renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts, cageSheetHelpHTML } from './cage-sheet.js?v=63';
+import { renderCageSheet, clearCageSheetDrafts, hasCageSheetDrafts, cageSheetHelpHTML } from './cage-sheet.js?v=67';
 import { renderCageLabelEditor } from './cage-label.js?v=58';
 import { renderAccountSetup, clearAccountSetup } from './account-setup.js?v=64';
 import { renderAccountAcronym } from './account-acronym.js';
@@ -327,15 +327,15 @@ let cageImportSession=null;
 function canImportAnimalsSheet(){return cloud.mode==='cloud'&&canEditRecords('housing')&&canWriteCloud();}
 async function openCageSheetImport(){
  if(!canImportAnimalsSheet()){showToast('Housing and import access are required.',true);return;}
- if(cageDate){showToast('Select Current before importing from Animals sheet.',true);return;}
- if(hasCageSheetDrafts()){showToast('Sync or discard pending cage edits before importing.',true);return;}
+ if(cageDate){showToast('Select Current before importing from Animal sheet.',true);return;}
+ if(hasCageSheetDrafts()){showToast('Save or discard pending cage edits before importing.',true);return;}
  let dialog=$('cage-import-dialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='cage-import-dialog';document.body.appendChild(dialog)}
  cageImportSession?.close();
  const context=cageSheetContext();let cleanup=null,closed=false;
  const valid=()=>!closed&&dialog.open&&route==='cages'&&!detail&&!cageDate&&context===cageSheetContext()&&canImportAnimalsSheet();
- const check=()=>{if(!valid())throw new Error('Reopen the import controls for the current colony.');if(hasCageSheetDrafts())throw new Error('Sync or discard pending cage edits before importing.');};
+ const check=()=>{if(!valid())throw new Error('Reopen the import controls for the current colony.');if(hasCageSheetDrafts())throw new Error('Save or discard pending cage edits before importing.');};
  const close=()=>{closed=true;cleanup?.();cleanup=null;dialog.innerHTML='';if(dialog.open)dialog.close();if(cageImportSession?.close===close)cageImportSession=null;};
- dialog.innerHTML='<div class="dialog-heading"><h2>Import from Animals sheet</h2><button class="icon-button" id="cage-import-close" aria-label="Close Animals sheet import">×</button></div><div class="dialog-content" id="cage-import-content"></div>';
+ dialog.innerHTML='<div class="dialog-heading"><h2>Import from Animal sheet</h2><button class="icon-button" id="cage-import-close" aria-label="Close Animal sheet import">×</button></div><div class="dialog-content" id="cage-import-content"></div>';
  $('cage-import-close').onclick=close;dialog.oncancel=event=>{event.preventDefault();close()};dialog.onclose=()=>{if(!dialog.open)close()};dialog.showModal();cageImportSession={valid,close};
  cleanup=await renderAnimalSheetImport($('cage-import-content'),{
   canImport:()=>valid()&&!hasCageSheetDrafts(),
@@ -343,14 +343,14 @@ async function openCageSheetImport(){
   start:async()=>{check();return store.startAnimalSheetImport();},
   getConflicts:async options=>{check();return store.getAnimalSheetImportConflicts(options);},
   help:()=>showHelp(),
-  onComplete:async()=>{check();const fresh=await store.pullFromCloud();check();dataset=model.normalizeDataset(fresh);cloudReady=true;await refreshCloud();if(!valid())return;render();showToast('Animals sheet imported. Cages updated.');}
+  onComplete:async()=>{check();const fresh=await store.pullFromCloud();check();dataset=model.normalizeDataset(fresh);cloudReady=true;await refreshCloud();if(!valid())return;render();showToast('Animal sheet imported. Cages updated.');}
  });
  if(closed)cleanup?.();
 }
 
-function cageViewMenuHTML(){return `<div class="cage-view-menu" style="display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-bottom:12px">${canImportAnimalsSheet()?button('Import from Animals sheet','cage-import',false,cageDate?'disabled title="Select Current to import"':''):''}<label for="cage-date">Date</label><input id="cage-date" type="date" value="${esc(cageDate)}" max="${localDate()}" aria-label="Cage history date" style="width:150px"><button type="button" class="button secondary" data-action="cage-current"${!cageDate?' disabled':''}>Current</button><label for="cage-snapshot" class="sr-only">Available snapshots</label><select id="cage-snapshot" aria-label="Available snapshots" style="max-width:180px"><option value="">Available dates…</option>${getCageHistoryDates(dataset).reverse().map(d=>`<option value="${esc(d)}"${cageDate===d?' selected':''}>${esc(d)}</option>`).join('')}</select><label for="cage-view">View</label><select id="cage-view"><option value="rack"${cageView==='rack'?' selected':''}>Compact Animal Sheet</option><option value="sheet"${cageView==='sheet'?' selected':''}>Detailed cards</option><option value="table"${cageView==='table'?' selected':''}>Record table</option></select></div>`;}
+function cageViewMenuHTML(){return `<div class="cage-view-menu" style="display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-bottom:12px">${cageView==='table'&&canImportAnimalsSheet()?button('Import from Animal sheet','cage-import',false,cageDate?'disabled title="Select Current to import"':''):''}<label for="cage-date">Date</label><input id="cage-date" type="date" value="${esc(cageDate)}" max="${localDate()}" aria-label="Cage history date" style="width:150px"><button type="button" class="button secondary" data-action="cage-current"${!cageDate?' disabled':''}>Current</button><label for="cage-snapshot" class="sr-only">Available snapshots</label><select id="cage-snapshot" aria-label="Available snapshots" style="max-width:180px"><option value="">Available dates…</option>${getCageHistoryDates(dataset).reverse().map(d=>`<option value="${esc(d)}"${cageDate===d?' selected':''}>${esc(d)}</option>`).join('')}</select><label for="cage-view">View</label><select id="cage-view"><option value="rack"${cageView==='rack'?' selected':''}>Compact Animal Sheet</option><option value="sheet"${cageView==='sheet'?' selected':''}>Detailed cards</option><option value="table"${cageView==='table'?' selected':''}>Record table</option></select></div>`;}
 function setCageDate(value){
- if(hasCageSheetDrafts()){showToast('Sync or discard pending cage edits before changing the date.',true);render();return;}
+ if(hasCageSheetDrafts()){showToast('Save or discard pending cage edits before changing the date.',true);render();return;}
  try{projectCageHistory(dataset,value,{today:localDate()});cageDate=value||'';render();}catch(error){showToast(error.message,true);render();}
 }
 function cageHistoryNotice(view){if(!view.readOnly)return '';return `<section class="panel" style="margin-bottom:12px"><b>${esc(view.selectedDate)} · Historical view · Read only</b><p class="small muted">${view.snapshotDate?`Source snapshot: ${esc(view.snapshotDate)} · `:''}${view.coverage.sourceBlocks} source blocks · ${view.coverage.identifiedCages} dated cage assignments · ${view.coverage.identifiedMice} identified mice</p><details><summary>Evidence and coverage</summary>${view.warnings.map(w=>`<p class="small">${esc(w)}</p>`).join('')}</details></section>`;}
@@ -365,6 +365,7 @@ function renderCages(){
  if(cageView==='table')return;
  renderCageSheet($('cage-sheet-content'),view.dataset,{layout:cageView==='sheet'?'detailed':'compact',readOnly:view.readOnly,selectedDate:view.selectedDate,newCage:positionId=>{const position=records('locations').find(p=>p.location_id===positionId);if(position)openEditor('cages',null,{cage_tag:position.label,location_id:positionId,room_id:position.room_id,rack_id:position.rack_id});},context:cageSheetContext()+cageDate,currentContext:()=>cageSheetContext()+cageDate,
   canEdit:type=>!view.readOnly&&canEditRecords(type==='mice'?'mice':'housing'),
+  canImport:()=>!view.readOnly&&canImportAnimalsSheet(),importFromSheet:openCageSheetImport,
   openCage:view.readOnly?undefined:id=>navigate('cages',id),openMouse:view.readOnly?undefined:id=>navigate('mice',id),printLabel:view.readOnly?undefined:id=>openCageLabel(id),printPositionLabel:view.readOnly?undefined:id=>openCageLabel(null,'front',id),
   openLocobox:view.readOnly?undefined:(cage,position)=>{locoboxContextKey++;locoboxCage=cage;locoboxPosition=position;navigate('locobox')},
   help:()=>showHelp(false,false,true),confirm:message=>confirmAction('Discard pending edits',`<p>${esc(message)}</p>`,'Discard'),
@@ -445,11 +446,11 @@ function printCards(mouseIds){const mice=mouseIds.map(id=>findRecord('mice',id))
  ['Location',housing.housing,true],['Light record',housing.light,true],
  ['Sire',(ids(m.sire_sids).join(', ')||'Not recorded')+(ids(m.sire_sids).length>1?' (alternatives)':'')],['Dam',(ids(m.dam_sids).join(', ')||'Not recorded')+(ids(m.dam_sids).length>1?' (alternatives)':'')],['IACUC',protocolsForEntity(dataset,'mice',m.mouse_sid).map(r=>r.iacuc_protocol.number).join(', ')||m.protocol,true]
  ])}${cardFooter()}</article>`}),`Animal ID cards · ${mice.length} ${mice.length===1?'mouse':'mice'}`)}
-function printCageCards(cageIds){if(hasCageSheetDrafts()){showToast('Sync or discard pending edits before printing.',true);return;}const cages=cageIds.map(id=>findRecord('cages',id)).filter(Boolean);if(!cages.length){showToast('Choose a cage to print.');return}showCardPreview(cages.map(c=>{const members=records('mice',false).filter(m=>m.state==='Stock'&&String(m.cage_sid)===String(c.cage_sid)),housing=cageHousing(c);return `<article class="animal-card cage-id-card"><div class="card-heading"><strong>${esc(c.cage_tag||'Untagged cage')}</strong><span>Cage ${esc(c.cage_sid)}</span></div><div class="card-state">${esc(c.state||'Recorded cage')} · ${members.length} Stock ${members.length===1?'mouse':'mice'}</div>${cardFields([['Cage manager',managerText(model.cageManager(c,records('mice')))],['Type',c.cage_type],['Location',housing.housing,true],['Light record',housing.light,true],['IACUC',protocolsForEntity(dataset,'cages',c.cage_sid).map(r=>r.iacuc_protocol.number).join(', ')||c.cage_protocol||c.protocol,true]])}<table class="card-occupants"><thead><tr><th>Mouse · SID</th><th>Sex · Manager</th></tr></thead><tbody>${members.map(m=>`<tr><td><strong>${esc(m.physical_tag||'Untagged')}</strong><br>${esc(m.mouse_sid)}${m.ear_mark?` · ${esc(m.ear_mark)}`:''}</td><td>${esc(m.sex||'Unknown')}<br>${esc(managerText(model.mouseManager(m)))}</td></tr>`).join('')||'<tr><td colspan="2">No Stock mice assigned</td></tr>'}</tbody></table>${cardFooter()}</article>`}),`Cage cards · ${cages.length}`,cageIds)}
+function printCageCards(cageIds){if(hasCageSheetDrafts()){showToast('Save or discard pending edits before printing.',true);return;}const cages=cageIds.map(id=>findRecord('cages',id)).filter(Boolean);if(!cages.length){showToast('Choose a cage to print.');return}showCardPreview(cages.map(c=>{const members=records('mice',false).filter(m=>m.state==='Stock'&&String(m.cage_sid)===String(c.cage_sid)),housing=cageHousing(c);return `<article class="animal-card cage-id-card"><div class="card-heading"><strong>${esc(c.cage_tag||'Untagged cage')}</strong><span>Cage ${esc(c.cage_sid)}</span></div><div class="card-state">${esc(c.state||'Recorded cage')} · ${members.length} Stock ${members.length===1?'mouse':'mice'}</div>${cardFields([['Cage manager',managerText(model.cageManager(c,records('mice')))],['Type',c.cage_type],['Location',housing.housing,true],['Light record',housing.light,true],['IACUC',protocolsForEntity(dataset,'cages',c.cage_sid).map(r=>r.iacuc_protocol.number).join(', ')||c.cage_protocol||c.protocol,true]])}<table class="card-occupants"><thead><tr><th>Mouse · SID</th><th>Sex · Manager</th></tr></thead><tbody>${members.map(m=>`<tr><td><strong>${esc(m.physical_tag||'Untagged')}</strong><br>${esc(m.mouse_sid)}${m.ear_mark?` · ${esc(m.ear_mark)}`:''}</td><td>${esc(m.sex||'Unknown')}<br>${esc(managerText(model.mouseManager(m)))}</td></tr>`).join('')||'<tr><td colspan="2">No Stock mice assigned</td></tr>'}</tbody></table>${cardFooter()}</article>`}),`Cage cards · ${cages.length}`,cageIds)}
 
 
 function printPositionCard(positionId,draft){
- if(hasCageSheetDrafts()){showToast('Sync or discard pending edits before printing.',true);return;}
+ if(hasCageSheetDrafts()){showToast('Save or discard pending edits before printing.',true);return;}
  const position=records('locations').find(p=>p.location_id===positionId&&!archived(p)&&p.source_current!==false);
  if(!position){showToast('This position is no longer current.',true);return;}
  const rack=records('racks').find(r=>r.rack_id===position.rack_id);
@@ -460,7 +461,7 @@ function printPositionCard(positionId,draft){
 
 let cageLabelRenderToken=0,cageLabelSession=null;
 async function openCageLabel(cageSid,initialSide='front',positionId=''){
- if(hasCageSheetDrafts()){showToast('Sync or discard pending edits before printing.',true);return;}
+ if(hasCageSheetDrafts()){showToast('Save or discard pending edits before printing.',true);return;}
  if(!dataset){showToast('Open a workspace before printing.');return}
  cageLabelSession?.close();
  const token=++cageLabelRenderToken,sourceDataset=dataset;
