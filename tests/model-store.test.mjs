@@ -9,7 +9,7 @@ import {normalizeDataset,createSyntheticDataset,validateRecord,ID_FIELDS} from '
 import {encodeArchive,decodeArchive,canonicalStringify,MAX_ARCHIVE_PAYLOAD_BYTES,MAX_RPC_BYTES,utf8Size,isArchiveChunk,partitionChanges} from '../web/archive-format.js';
 import * as store from '../web/data-store.js';
 import {buildCryoActivity} from '../web/cryopreservation-model.js';
-import {saveHistoryIndex,loadHistoryIndex} from '../web/history-index.js';
+import {saveHistoryIndex,loadHistoryIndex} from '../web/history-index.js?v=65';
 
 class Storage { values=new Map();getItem(k){return this.values.get(k)??null;}setItem(k,v){this.values.set(k,String(v));}removeItem(k){this.values.delete(k);}clear(){this.values.clear();} }
 globalThis.localStorage=new Storage();globalThis.sessionStorage=new Storage();
@@ -798,7 +798,7 @@ test('fee visibility refresh clears raw source caches and partial cloud editing 
  const before=structuredClone([...server.records.values()].filter(r=>r.entity_type==='archive'||r.entity_id==='fee-private'));
  partial.tables.mice[0].comment='ordinary animal edit';await store.saveDataset(partial);assert.equal(server.records.get('mice:SYN-M001').payload.comment,'ordinary animal edit');assert.deepEqual([...server.records.values()].filter(r=>r.entity_type==='archive'||r.entity_id==='fee-private'),before);
  const changed=structuredClone(partial);changed.tables.husbandry_events[0].lac_fee_month.actual_total=1;await assert.rejects(store.saveDataset(changed),/Both estimate and actual/);assert.deepEqual([...server.records.values()].filter(r=>r.entity_type==='archive'||r.entity_id==='fee-private'),before);
- await assert.rejects(store.pushToCloud(partial),/Full financial visibility/);await assert.rejects(store.uploadHistoryIndex({sources:[],sheets:[],cells:[]}),/Full financial visibility/);
+ await assert.rejects(store.pushToCloud(partial),/Full financial visibility/);await assert.rejects(store.uploadHistoryIndex({sources:[],sheets:[],cells:[]}),/Source archive is available/);
  await store.signOut();assert.equal(await store.loadDataset(),null);
 });
 test('partial fee access accepts only sanitized cage source snapshots and preserves hidden originals',async()=>{
@@ -807,7 +807,7 @@ test('partial fee access accepts only sanitized cage source snapshots and preser
  const raw=structuredClone(server.records.get('husbandry_events:snapshot'));server.feeRows=[{...raw,payload:{event_id:'snapshot',event_type:'animal_sheet_cage_snapshot',event_date:'2026-01-01',fee_visibility:{estimate:true,actual:false}}}];
  const partial=await store.pullFromCloud();assert.equal(partial.tables.husbandry_events.length,1);assert(!JSON.stringify(partial).includes('PRIVATE'));assert(!partial.tables.husbandry_events[0].source_cage_snapshot);
  partial.tables.mice[0].comment='ordinary edit';await store.saveDataset(partial);assert.deepEqual(server.records.get('husbandry_events:snapshot'),raw);
- partial.tables.husbandry_events[0].source_cage_snapshot={body:[]};await assert.rejects(store.saveDataset(partial),/Both estimate and actual/);
+ partial.tables.husbandry_events[0].source_cage_snapshot={body:[]};await assert.rejects(store.saveDataset(partial),/Source archive editing requires/);
 });
 test('cloud cache is never reused across account contexts and fee policy changes mid-pull abort',async()=>{
  await connected();server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:false,source_archive_allowed:false};server.feeRows=[];
@@ -944,12 +944,12 @@ test('owner fee visibility saves preserve default visibility and reject nonowner
  server.role='editor';await assert.rejects(store.saveLacFeeVisibility({version:1,levels}),/Only the owner/);
 });
 
-test('Brainbot RPCs remain owner-only and transient; actual corrections invalidate stale edit state',async()=>{
+test('Bot monitoring is tier-aware while mutations remain owner-only and transient',async()=>{
  await connected();server.brainbotReply={principal:{principal_id:'test-principal',role:'manager',acronym:'BB'},settings:{version:1},runs:[],issues:[],last_run:null};
  const before=structuredClone(idbData.get('current'));assert.equal((await store.getBrainbotStatus()).principal.acronym,'BB');
  assert.equal((await store.saveBrainbotSettings({version:1,enabled:true})).settings.version,1);await store.reviewBrainbotIssue({issue_id:'issue',version:1,status:'acknowledged',note:'Reviewed'});assert.deepEqual(idbData.get('current'),before);
  server.brainbotReply={...server.brainbotReply,last_run:{fixed_count:1}};await store.runBrainbot();assert.equal(store.getCloudStatus().readyForEdits,false);
- server.role='manager';for(const action of [()=>store.getBrainbotStatus(),()=>store.runBrainbot(),()=>store.saveBrainbotSettings({}),()=>store.reviewBrainbotIssue({})])await assert.rejects(action(),/Only the owner/);
+ server.role='manager';assert.equal((await store.getBrainbotStatus()).principal.acronym,'BB');for(const action of [()=>store.runBrainbot(),()=>store.saveBrainbotSettings({}),()=>store.reviewBrainbotIssue({})])await assert.rejects(action(),/Only the owner/);
 });
 test('Brainbot never returns a private response after account switch or malformed service result',async()=>{
  await connected();server.brainbotReply={principal:{role:'manager'},settings:{version:1},runs:[],issues:[]};
@@ -1464,4 +1464,37 @@ test('restricted sync replaces an ordinary event reclassified as a fee with its 
  const originalFetch=fetch;globalThis.fetch=async(url,options)=>{const reply=await originalFetch(url,options),u=new URL(url);if(u.pathname.endsWith('/entity_records')&&u.searchParams.get('entity_type')==='eq.husbandry_events')return response((await reply.json()).filter(item=>item.entity_id!=='changing-event'));return reply;};
  try{const client=await restartStore(),loaded=await client.pullFromCloud(),events=loaded.tables.husbandry_events.filter(item=>item.event_id==='changing-event');assert.equal(events.length,1);assert.equal(events[0].event_type,'lac_fee_month');assert(!JSON.stringify(loaded).includes('PRIVATE NEW FINANCIAL'));assert(!idbData.get('current-cloud-baseline').entries.some(entry=>entry[1]==='changing-event'));}
  finally{globalThis.fetch=originalFetch;}
+});
+
+test('bot status reads accept higher export tiers but reject low and keep all mutations owner-only',async()=>{await connected();server.brainbotReply={principal:{role:'manager'},settings:{version:1},runs:[],issues:[]};for(const role of ['editor','viewer']){server.role=role;for(const level of ['high','max']){server.exportLevel=level;server.memberships=[{role,active:true,export_level:level}];assert.equal((await store.getBrainbotStatus()).principal.role,'manager');for(const mutation of [()=>store.runBrainbot(),()=>store.saveBrainbotSettings({}),()=>store.reviewBrainbotIssue({})])await assert.rejects(mutation(),/Only the owner/);}server.exportLevel='low';server.memberships=[{role,active:true,export_level:'low'}];await assert.rejects(store.getBrainbotStatus(),/unavailable/);}});
+
+test('role-based source restriction keeps fee visibility but clears archive cache',async()=>{await connected();idbData.set('active',{index:{cells:[['PRIVATE source']]}});server.role='editor';server.feePolicy={version:0,owner:false,estimate:true,actual:true,source_archive_allowed:false};const policy=await store.getLacFeeVisibility();assert.equal(policy.estimate,true);assert.equal(policy.actual,true);assert.equal(policy.source_archive_allowed,false);assert.equal(await loadHistoryIndex(),null);assert.equal(store.getCloudStatus().readyForEdits,false);});
+
+
+test('ordinary editors can save permitted managed fees without gaining raw archive access',async()=>{
+ const d=createSyntheticDataset();d.tables.husbandry_events=[{event_id:'fee-visible',event_type:'lac_fee_month',event_date:'2026-01-01',lac_fee_month:{schema_version:1,month:'2026-01',currency:'TWD',revision:1,actual_total:2468,lines:[]}}];
+ await connected(d);server.role='editor';server.feePolicy={version:1,owner:false,estimate:true,actual:true,source_archive_allowed:false};
+ server.feeRows=[structuredClone(server.records.get('husbandry_events:fee-visible'))];
+ const partial=await store.pullFromCloud();const revision=structuredClone(partial.tables.husbandry_events[0]);revision.event_id='fee-revision';revision.lac_fee_month.revision=2;revision.lac_fee_month.actual_total=2500;partial.tables.husbandry_events.push(revision);await store.saveDataset(partial);
+ assert.equal(server.records.get('husbandry_events:fee-revision').payload.lac_fee_month.actual_total,2500);assert.equal(server.records.get('husbandry_events:fee-visible').payload.lac_fee_month.actual_total,2468);
+ const source=structuredClone(partial);source.tables.husbandry_events.push({event_id:'forged-source',event_type:'animal_sheet_cage_snapshot',source_cage_snapshot:{raw:'forged'}});
+ await assert.rejects(store.saveDataset(source),/Source archive editing requires/);assert(!server.records.has('husbandry_events:forged-source'));
+});
+
+
+test('source upload cannot carry an old index into a newly configured colony during hashing',async()=>{
+ await fresh();await store.signIn('demo@example.test','test-password');const digest=crypto.subtle.digest;
+ crypto.subtle.digest=async function(...args){const result=await digest.apply(this,args);await store.configureCloud({url:'https://test.supabase.co',anonKey:jwt('anon'),colonyId:uid});return result;};
+ try{await assert.rejects(store.uploadHistoryIndex({sources:[],sheets:[],cells:[['PRIVATE A']]}),/account or colony changed/);assert.equal(server.objects.size,0);assert(!server.calls.some(call=>call.url.includes('/storage/v1/object/')));}
+ finally{crypto.subtle.digest=digest;}
+});
+test('source download discards bytes and locator when account signs out while reading the response',async()=>{
+ await fresh();await store.signIn('demo@example.test','test-password');const index={sources:[],sheets:[],cells:[['PRIVATE A']]},meta=await store.uploadHistoryIndex(index),baseFetch=globalThis.fetch;const cfg=JSON.parse(localStorage.getItem('mouse-colony.cloud.v1'));delete cfg.historyPath;localStorage.setItem('mouse-colony.cloud.v1',JSON.stringify(cfg));
+ globalThis.fetch=async(url,options)=>{const reply=await baseFetch(url,options);if(String(url).includes('/object/authenticated/')){const read=reply.text.bind(reply);reply.text=async()=>{const text=await read();await store.signOut();return text;};}return reply;};
+ try{await assert.rejects(store.fetchHistoryArchive(meta.path),/account or colony changed/);assert.equal(store.getCloudStatus().signedIn,false);assert(!store.getCloudStatus().historyPath);}
+ finally{globalThis.fetch=baseFetch;}
+});
+test('full history level alone never grants raw archive storage access',async()=>{
+ await fresh();await store.signIn('demo@example.test','test-password');server.role='editor';server.memberships=[{role:'editor',active:true,export_level:'max'}];
+ await assert.rejects(store.downloadHistoryIndex(),/managers and the owner/);assert(!server.calls.some(call=>call.url.includes('/storage/v1/')));
 });

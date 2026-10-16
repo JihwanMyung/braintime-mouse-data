@@ -253,3 +253,6 @@ supabase/account-profile.sql
 supabase/tests/account-profile.test.mjs
 tests/cage-save-contract.test.mjs
 supabase/ACCOUNT_PROFILE.md
+supabase/MONITORING_ACCESS.md
+supabase/monitoring-archive-access.sql
+supabase/tests/monitoring-archive-access.test.mjs

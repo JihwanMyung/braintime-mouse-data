@@ -11,6 +11,7 @@ async function mount(options={},overrides={}) {
   const container={innerHTML:'',querySelector:()=>null},calls={permissions:0,records:[],backups:0,sources:0,downloads:[],prints:[],closed:0};
   const state={grant:permission(),fresh:dataset(),local:dataset()};
   const hooks={
+    canViewSourceArchive:()=>true,
     getPermission:async()=>{calls.permissions++;return structuredClone(state.grant)},
     getRecords:async request=>{calls.records.push(structuredClone(request));return {dataset:structuredClone(state.fresh),metadata:{export_level:state.grant.level,cutoff_date:state.grant.cutoff_date,as_of_date:state.grant.as_of_date,captured_at:'2026-10-14T04:12:34Z',scope:request.scope,from_date:request.fromDate,to_date:request.toDate,excluded_undated:0,snapshot_revision:'revision-1',local:false}}},
     getBackup:async()=>{calls.backups++;return structuredClone(state.fresh)},
@@ -34,10 +35,10 @@ test('opening verifies permission and fails closed without using local or raw da
   assert.equal(calls.records.length,0);assert.equal(calls.backups,0);assert.equal(calls.sources,0);assert.equal(calls.downloads.length,0);
 });
 
-test('Low and High labels follow the final three and six year limits and server cutoff',async()=>{
+test('export windows show date ranges without tier labels',async()=>{
   const {container,state}=await mount({scope:'records'});
-  assert.match(container.innerHTML,/Low \(past 3 years\)/);assert.match(container.innerHTML,/High the past 6 years/);assert.match(container.innerHTML,/min="2023-10-14"/);
-  state.grant=permission('high');await click(container,'refresh');assert.match(container.innerHTML,/High \(past 6 years\)/);assert.match(container.innerHTML,/min="2020-10-14"/);
+  assert.match(container.innerHTML,/Past 3 years/);assert.doesNotMatch(container.innerHTML,/\b(?:Low|High|Max)\b/);assert.match(container.innerHTML,/min="2023-10-14"/);
+  state.grant=permission('high');await click(container,'refresh');assert.match(container.innerHTML,/Past 6 years/);assert.doesNotMatch(container.innerHTML,/\b(?:Low|High|Max)\b/);assert.match(container.innerHTML,/min="2020-10-14"/);
 });
 
 test('history dates are inclusive, ordered and restricted before any record request',async()=>{
@@ -60,7 +61,7 @@ test('permission downgrade invalidates a preview and does not export or fetch st
 
 test('local backup requires High or Max; full source archive still requires Max',async()=>{
   const {container,calls,state}=await mount({scope:'backup'});
-  await click(container,'preview');assert.equal(calls.backups,0);assert.match(container.innerHTML,/High or Max export access is required/);
+  await click(container,'preview');assert.equal(calls.backups,0);assert.match(container.innerHTML,/Local backup is unavailable/);
   state.grant=permission('max');await click(container,'preview');assert.equal(calls.backups,1);
   state.grant=permission('low');await click(container,'export');assert.equal(calls.backups,1);assert.equal(calls.downloads.length,0);
   change(container,'scope','source-archive');await click(container,'preview');assert.equal(calls.sources,0);
@@ -219,3 +220,5 @@ test('local backup refuses unexpected full sections for High and redacted Max en
   await click(container,'preview');assert.match(container.innerHTML,/Backup scope could not be verified/);await click(container,'export');assert.equal(calls.downloads.length,0);
  }
 });
+
+ test('ordinary users cannot select or forge the raw-source export scope',async()=>{const {container,calls,state}=await mount({scope:'source-archive'},{canViewSourceArchive:()=>false});state.grant=permission('max');await click(container,'refresh');assert.doesNotMatch(container.innerHTML,/<option value="source-archive"/);await click(container,'preview');assert.equal(calls.sources,0);assert.match(container.innerHTML,/Full source archive is unavailable/);});

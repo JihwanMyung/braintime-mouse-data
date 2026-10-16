@@ -13,7 +13,7 @@ import { protocolsForEntity } from '../web/iacuc-model.js';
 import { renderAnimalSheetImport, animalSheetImportHelpHTML } from '../web/animal-sheet-import.js';
 import { renderLacFees, lacFeeHelpHTML } from '../web/lac-fees.js';
 import { userAcronymHelpHTML, setLabUserDirectory } from '../web/user-acronyms.js';
-import { normalizeManagerPermissions } from '../web/permissions.js';
+import { normalizeManagerPermissions, canViewBrainbot, canViewSourceArchive, canManageBrainbot, visibleRoleLabel } from '../web/permissions.js';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
@@ -45,10 +45,10 @@ let saved=model.createSyntheticDataset();saved.demo=true;
 const store={loadDataset:async()=>structuredClone(saved),saveDataset:async next=>{saved=structuredClone(next)},clearDataset:async()=>{saved=null},getCloudStatus:()=>({mode:'local',configured:false,signedIn:false})};
 const source=fs.readFileSync(new URL('../web/app.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
 const labelRenders=[],cageSheetRenders=[],brainbotRenders=[];
-const context={console,datasetFromLocalBackup,backupViewerLinkHTML,createAccessActivity,renderAccessLogs,isLegacySite,migrationNoticeHTML,movedAccountHTML,brainbotRenders,renderBrainbot:async(container,hooks)=>{brainbotRenders.push({container,hooks});},brainbotHelpHTML:()=>'Brainbot',projectCageHistory,getCageHistoryDates,projectAnimalSheet,compareRooms,sortRooms,cageSheetHelpHTML,cageSheetRenders,renderCageSheet:(container,sheetDataset,hooks)=>{cageSheetRenders.push({container,sheetDataset,hooks});container.innerHTML="Animal Sheet cage view";},clearCageSheetDrafts:()=>{},hasCageSheetDrafts:()=>false,labelRenders,renderCageLabelEditor:(container,labelDataset,hooks)=>{labelRenders.push({container,labelDataset,hooks});container.innerHTML='Cage label editor';},renderLocobox,locoboxHelpHTML,renderIacuc,iacucHelpHTML,protocolsForEntity,renderAnimalSheetImport,animalSheetImportHelpHTML,lightClock,renderLacFees,lacFeeHelpHTML,userAcronymHelpHTML,setLabUserDirectory,normalizeManagerPermissions,renderLabMembers:async()=>{},renderAccountAcronym:async()=>{},renderAccountSetup:async()=>{},model,store,renderExperiments,experimentHelpHTML,experimentsForMouse,samplesForMouse,renderFamilyExplorer,familyHelpHTML,buildFamilyGenotypes,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,strainNamingHelpHTML,summarizeLitters,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
+const context={console,datasetFromLocalBackup,backupViewerLinkHTML,createAccessActivity,renderAccessLogs,isLegacySite,migrationNoticeHTML,movedAccountHTML,brainbotRenders,renderBrainbot:async(container,hooks)=>{brainbotRenders.push({container,hooks});},brainbotHelpHTML:()=>'Brainbot',projectCageHistory,getCageHistoryDates,projectAnimalSheet,compareRooms,sortRooms,cageSheetHelpHTML,cageSheetRenders,renderCageSheet:(container,sheetDataset,hooks)=>{cageSheetRenders.push({container,sheetDataset,hooks});container.innerHTML="Animal Sheet cage view";},clearCageSheetDrafts:()=>{},hasCageSheetDrafts:()=>false,labelRenders,renderCageLabelEditor:(container,labelDataset,hooks)=>{labelRenders.push({container,labelDataset,hooks});container.innerHTML='Cage label editor';},renderLocobox,locoboxHelpHTML,renderIacuc,iacucHelpHTML,protocolsForEntity,renderAnimalSheetImport,animalSheetImportHelpHTML,lightClock,renderLacFees,lacFeeHelpHTML,userAcronymHelpHTML,setLabUserDirectory,normalizeManagerPermissions,canViewBrainbot,canViewSourceArchive,canManageBrainbot,visibleRoleLabel,clearLabMembers:()=>{},clearAccountSetup:()=>{},renderLabMembers:async()=>{},renderAccountAcronym:async()=>{},renderAccountSetup:async()=>{},model,store,renderExperiments,experimentHelpHTML,experimentsForMouse,samplesForMouse,renderFamilyExplorer,familyHelpHTML,buildFamilyGenotypes,MOUSE_LINE_GROUPS,summarizeMice,mouseLineAssignments,getStrainRegistry,strainNamingHelpHTML,summarizeLitters,summarizeOverview,summarizeCages,CAGE_SUMMARY_GROUPS,getCageSummaryOptionsStatus,renderCageSummaryOptions:()=>{},summarizeBreeding,getBreedingOptions,getBreedingOptionsStatus,renderBreedingOptions:()=>{},renderStrainManagement:async()=>{},PUBLIC_CONFIG:{},history:{loadHistoryIndex:async()=>null,clearHistoryIndex:async()=>{}},renderHousing,scheduleApplies,renderUserManagement:async()=>{},renderExportCenter:async()=>{},renderCryopreservation:(container)=>{container.innerHTML='<section>Cryopreservation inventory, dated source balances and history</section>'},renderBreedingPlanner:(container)=>{container.innerHTML='<section>Breeding planner: independent autosomal crosses, genotypes and saved plans</section>'},document:fakeDocument,window:{addEventListener(){},print(){context.printed=true}},location:{hash:'',protocol:'file:'},navigator:{},crypto:webcrypto,setTimeout,clearTimeout,URL,Blob,FormData,MouseEvent:class{},Date,structuredClone,assert};
 vm.createContext(context);vm.runInContext(source,context);await new Promise(resolve=>setTimeout(resolve,10));
 vm.runInContext(`
-assert($('main').innerHTML.includes('Recently born'));
+assert($('main').innerHTML.includes('Recently born'),$('main').innerHTML);
 assert(strainLegendHTML().includes('Meis1-flox has no confirmed shorthand'));
 assert(strainLegendHTML().includes('Vgat-CRE is a legacy lab name for Vgat-flox'));
 const initialOverview=overviewStatsHTML();
@@ -146,7 +146,7 @@ cloud={signedIn:true,role:'viewer'};renderSettings();assert(!$('main').innerHTML
 cloud={signedIn:false,role:'owner'};renderSettings();assert(!$('main').innerHTML.includes('id="user-management"'));
 cloud={mode:'cloud',signedIn:true,role:'viewer'};cloudReady=true;route='mice';detail={type:'mice',id:managedMouse.mouse_sid};render();assert($('add-button').hidden);assert(!$('main').innerHTML.includes('data-action="edit"'));assert(!$('main').innerHTML.includes('data-action="archive-record"'));assert($('main').innerHTML.includes('Print ID card'));
 route='overview';detail=null;render();assert(!$('main').innerHTML.includes('data-action="new-mice"'));
-route='settings';renderSettings();assert($('main').innerHTML.includes('account-new-password'));assert($('main').innerHTML.includes('account-name'));assert(!$('main').innerHTML.includes('Upload local records'));
+route='settings';renderSettings();assert($('main').innerHTML.includes('account-new-password'));assert($('main').innerHTML.includes('account-setup'));assert(!$('main').innerHTML.includes('Upload local records'));
 for(const profile of [{loci:{}},{loci:[null]},{loci:[{id:'bad',name:'Bad'}],calls:{bad:{alleles:'fl',evidence:'confirmed'}}},{loci:[{id:'odd',name:{toString:null}}],calls:{odd:{alleles:[{toString:null},'+'],evidence:'confirmed'}}}]){managedMouse.genetic_profile=profile;assert.doesNotThrow(()=>alleleSummary(managedMouse));route='mice';detail={type:'mice',id:managedMouse.mouse_sid};assert.doesNotThrow(()=>render());}delete managedMouse.genetic_profile;
 managedCage.location='Recorded room / rack';assert(cageHousing(managedCage).housing.includes('Recorded room / rack'));
 cloud={mode:'local'};
@@ -276,10 +276,18 @@ vm.runInContext(`
  const pending=hasCageSheetDrafts;hasCageSheetDrafts=()=>true;setCageDate('');assert(cageDate==='2020-01-02');assert($('toast').textContent.includes('Sync or discard'));hasCageSheetDrafts=pending;
  cageView='table';render();assert($('main').innerHTML.includes('SYN-OLD'));assert(!$('main').innerHTML.includes('data-action="edit"'));
  setCageDate('');cageView='rack';render();assert(!cageSheetRenders.at(-1).hooks.readOnly);
- for(const denied of [{mode:'local',signedIn:true,role:'owner'},{mode:'cloud',signedIn:false,role:'owner'},...['viewer','editor','manager','pending'].map(role=>({mode:'cloud',signedIn:true,role}))]){
-  cloud=denied;route='brainbot';const before=brainbotRenders.length;render();assert(!($('navigation').innerHTML.includes('data-route="brainbot"')));assert($('main').innerHTML.includes('only to the signed-in database owner'));assert(brainbotRenders.length===before);
+ for(const denied of [{mode:'local',signedIn:true,role:'owner'},{mode:'cloud',signedIn:false,role:'owner'},...['viewer','editor'].map(role=>({mode:'cloud',signedIn:true,role}))]){
+  cloud=denied;route='brainbot';const before=brainbotRenders.length;render();assert(!($('navigation').innerHTML.includes('data-route="brainbot"')));assert($('main').innerHTML.includes('unavailable for this account'));assert(brainbotRenders.length===before);
  }
  cloud={mode:'cloud',signedIn:true,role:'owner',colonyId:'synthetic-colony',email:'owner@example.test'};const before=brainbotRenders.length;render();assert($('navigation').innerHTML.includes('data-route="brainbot"'));assert(brainbotRenders.length===before+1);
+ for(const member of [{role:'manager',exportLevel:'low'},{role:'editor',exportLevel:'high'},{role:'viewer',exportLevel:'max'}]){
+  cloud={mode:'cloud',signedIn:true,...member};route='brainbot';render();assert($('navigation').innerHTML.includes('data-route="brainbot"'));assert(!brainbotRenders.at(-1).hooks.canManage());
+  const manager=member.role==='manager';assert.equal($('navigation').innerHTML.includes('data-route="archive"'),manager);
+  if(manager)assert($('navigation').innerHTML.indexOf('data-route="brainbot"')<$('navigation').innerHTML.indexOf('data-route="archive"'));
+  route='archive';render();if(!manager)assert($('main').innerHTML.includes('available to managers and the owner'));
+  route='settings';renderSettings();assert(!/\b(?:High|Low|Max)\b/.test($('main').innerHTML));
+  if(manager){const html=$('main').innerHTML;assert(html.indexOf('<h2>Braintime Bot (BB)</h2>')<html.indexOf('<h2>Source archive</h2>'));}
+ }
  dataset=previous.dataset;route=previous.route;detail=previous.detail;cloud=previous.cloud;cageDate=previous.cageDate;cageView=previous.cageView;
 }
 `,context);
@@ -292,7 +300,7 @@ await vm.runInContext(`(async()=>{
  store.startAnimalSheetImport=async()=>{starts++;return {job_id:'synthetic-job'};};
  dataset=model.createSyntheticDataset();route='cages';detail=null;cageDate='';cloudReady=true;
  cloud={mode:'cloud',signedIn:true,role:'owner',colonyId:'synthetic-colony',email:'owner@example.test'};
- store.getCloudStatus=async()=>({...cloud});
+ store.getCloudStatus=()=>({...cloud});
  for(const view of ['rack','sheet','table']){cageView=view;render();assert($('main').innerHTML.includes('data-action="cage-import"'),'shortcut in '+view);}
  await action('cage-import');assert(mounted&&$('cage-import-dialog').open);assert(starts===0,'opening does not start an import');assert(mounted.canImport());
  hasCageSheetDrafts=()=>true;assert(!mounted.canImport());await assert.rejects(mounted.start(),/Sync or discard/);hasCageSheetDrafts=previous.hasCageSheetDrafts;
@@ -488,3 +496,32 @@ for(const fail of [false,true]){
 }
 
 console.log('PASS: frontend synthetic rendering, current candidate pedigree, editor, table filters, print card, housing, manifest assets and shell-only cache checks. Browser inspection remains separate.');
+
+// Source actions must not carry a prior account's index across asynchronous UI waits.
+await vm.runInContext(`(async()=>{
+ const previous={cloud,history:{...history},confirmAction,refreshCloud,renderArchive,navigate,status:store.getCloudStatus,upload:store.uploadHistoryIndex,download:store.downloadHistoryIndex};
+ const owner={mode:'cloud',signedIn:true,role:'owner',url:'https://source.example.test',colonyId:'colony-a',email:'owner-a@example.test',passwordRecovery:false,setupRequired:false};
+ const index={sources:[],sheets:[],cells:[]};let current,confirms=0,writes=0,clears=0,uploads=0,reads=0,renders=0;
+ const reset=()=>{current={...owner};cloud={...owner};sourceHistoryFileCheck=null;};
+ const switchAccount=()=>{current={...owner,colonyId:'colony-b',email:'owner-b@example.test'};};
+ store.getCloudStatus=()=>({...current});history.validateHistoryIndex=value=>value;history.loadHistoryIndex=async()=>({index});
+ history.saveHistoryIndex=async(value,name,options)=>{assert(typeof options.check==='function');options.check();writes++;};
+ history.clearHistoryIndex=async options=>{assert(typeof options.check==='function');options.check();clears++;};
+ store.uploadHistoryIndex=async()=>{uploads++;return {};};store.downloadHistoryIndex=async()=>index;
+ confirmAction=async()=>{confirms++;return true;};refreshCloud=async()=>{};renderArchive=()=>{renders++;};navigate=()=>{renders++;};
+ const file={size:10,name:'private-source.json',text:async()=>{reads++;return JSON.stringify(index);}};
+ try{
+  reset();current={...current,role:'editor'};await assert.rejects(action('import-history'),/Source archive/);assert.equal(reads,0);
+  reset();await importHistoryFile({...file,text:async()=>{reads++;switchAccount();return JSON.stringify(index);}});assert.equal(confirms,0);assert.equal(writes,0);
+  reset();confirmAction=async()=>{confirms++;switchAccount();return true;};await importHistoryFile(file);assert.equal(writes,0);
+  reset();await action('import-history');switchAccount();const beforeRead=reads;await importHistoryFile(file);assert.equal(reads,beforeRead,'picker retains its original account');
+  reset();await assert.rejects(action('clear-history'),/access changed/);assert.equal(clears,0);
+  reset();history.loadHistoryIndex=async()=>{switchAccount();return {index};};const beforeConfirm=confirms;await assert.rejects(action('upload-history'),/access changed/);assert.equal(confirms,beforeConfirm);assert.equal(uploads,0);
+  reset();history.loadHistoryIndex=async()=>({index});await assert.rejects(action('upload-history'),/access changed/);assert.equal(uploads,0);
+  reset();confirmAction=async()=>true;store.downloadHistoryIndex=async()=>{switchAccount();return index;};await assert.rejects(action('download-history'),/access changed/);assert.equal(writes,0);
+  reset();store.downloadHistoryIndex=async()=>index;await action('download-history');assert.equal(writes,1);assert.equal(renders,1);
+  reset();history.saveHistoryIndex=async(value,name,options)=>{switchAccount();options.check();writes++;};await importHistoryFile(file);assert.equal(writes,1,'transaction guard refuses late account change');
+  reset();history.clearHistoryIndex=async options=>{switchAccount();options.check();clears++;};await assert.rejects(action('clear-history'),/access changed/);assert.equal(clears,0);
+ }finally{cloud=previous.cloud;Object.assign(history,previous.history);confirmAction=previous.confirmAction;refreshCloud=previous.refreshCloud;renderArchive=previous.renderArchive;navigate=previous.navigate;store.getCloudStatus=previous.status;store.uploadHistoryIndex=previous.upload;store.downloadHistoryIndex=previous.download;sourceHistoryFileCheck=null;}
+})()`,context);
+console.log('PASS: source archive actions retain account context across picker, file reads, confirmations, cloud calls and guarded local writes.');
