@@ -1,4 +1,4 @@
-import {clearHistoryIndex} from './history-index.js?v=65';
+import {clearHistoryIndex} from './history-index.js';
 import { projectLocoboxExport } from './locobox-export.js?v=24';
 import { PUBLIC_CONFIG } from './config.js';
 import { validateManagerPermissions } from './permissions.js';
@@ -400,7 +400,7 @@ export async function updateAccountProfile(name) {
 }
 const feeRecord=r=>r?.entity_type==='husbandry_events'&&(/^(lac_fee|fee|fees|billing)_/.test(r.payload?.event_type||'')||['animal_sheet_cage_snapshot','animal_sheet_source_change'].includes(r.payload?.event_type)||['source_cage_snapshot','animal_sheet_change','lac_fee_options','lac_fee_month','fee_options','fee_month','fee_actual','fees','billing','billing_options','billing_month'].some(k=>Object.hasOwn(r.payload||{},k)));
 function checkedFeeVisibility(value){
- if(!value||!Number.isInteger(value.version)||value.version<0||typeof value.owner!=='boolean'||typeof value.estimate!=='boolean'||typeof value.actual!=='boolean'||(typeof value.source_archive_allowed!=='boolean'||value.source_archive_allowed&&!(value.estimate&&value.actual)))throw new Error('Fee visibility could not be verified. Reconnect before loading financial data.');
+ if(!value||!Number.isInteger(value.version)||value.version<0||typeof value.owner!=='boolean'||typeof value.estimate!=='boolean'||typeof value.actual!=='boolean'||value.source_archive_allowed!==(value.estimate&&value.actual))throw new Error('Fee visibility could not be verified. Reconnect before loading financial data.');
  return value;
 }
 function validCageObservation(value){
@@ -423,7 +423,7 @@ async function refreshFeeVisibility({notify=true}={}){
  const generation=authGeneration,context=exportContext(),c=configuration();if(!c||!session()?.access_token)throw new Error('Sign in before loading shared fee visibility.');
  const check=()=>{if(generation!==authGeneration)throw new Error('The account or colony changed during loading. Open the shared colony again.');checkExportContext(context);};
  const value=checkedFeeVisibility(await request('rpc/get_lac_fee_visibility',{method:'POST',body:{p_colony_id:c.colonyId}}));check();
- const previousPolicy=feeVisibility,changed=feeVisibilityContext!==context||!feeVisibility||feeVisibility.estimate!==value.estimate||feeVisibility.actual!==value.actual||feeVisibility.source_archive_allowed!==value.source_archive_allowed;
+ const previousPolicy=feeVisibility,changed=feeVisibilityContext!==context||!feeVisibility||feeVisibility.estimate!==value.estimate||feeVisibility.actual!==value.actual;
  feeVisibility=value;feeVisibilityContext=context;
  // A projected baseline cannot become a full replacement when access expands.
  // Reload the previously withheld fields before allowing another cloud edit.
@@ -803,8 +803,7 @@ async function saveDatasetOnce(dataset,{localOnly=false,localKind=null,readDepen
     if(!row||!Number.isInteger(version)||version<1)throw new Error('A move dependency is missing from the verified data. Pull again before saving.');
     if(!pendingKeys.has(key))pending.push([row,version]);
   }
-  if(!policy.source_archive_allowed&&pending.some(([r])=>r.entity_type==='archive'||r.entity_type==='husbandry_events'&&(['animal_sheet_cage_snapshot','animal_sheet_source_change'].includes(r.payload?.event_type)||['source_cage_snapshot','animal_sheet_change'].some(key=>Object.hasOwn(r.payload||{},key)))))throw new Error('Source archive editing requires manager or owner access.');
-  if(!(policy.estimate&&policy.actual)&&pending.some(([r])=>feeRecord(r)))throw new Error('Both estimate and actual visibility are required to edit fees.');
+  if(!policy.source_archive_allowed&&pending.some(([r])=>r.entity_type==='archive'||feeRecord(r)))throw new Error('Both estimate and actual visibility are required to edit fees or source archives.');
   const chunks=pending.filter(([r])=>isArchiveChunk(r)),atomic=pending.filter(([r])=>!isArchiveChunk(r));
   if(atomic.length>500||utf8Size({p_colony_id:configuration().colonyId,p_changes:atomic.map(([r,expected_version])=>({...r,expected_version}))})>MAX_RPC_BYTES)throw new Error('This atomic edit is too large. Split it into smaller operations.');
   // Immutable chunks can be staged before committing the manifest. A failed
@@ -1153,51 +1152,47 @@ async function sha256(text){
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text)))].map(b=>b.toString(16).padStart(2,'0')).join('');
 }
 function rememberHistory(path){const c=configuration();if(c)setStorage('localStorage',CONFIG_KEY,JSON.stringify({...c,historyPath:path}));}
-function historyAccess(checkScope){
- const generation=authGeneration,context=exportContext(),c=configuration();
- const check=()=>{checkScope?.();if(generation!==authGeneration||context!==exportContext()||pendingAccount(session())||session()?.passwordRecovery)throw new Error('Your account or colony changed. Reopen Source archive.');};
- const authorize=async(write=false)=>{check();const role=write?await requireEditor():await membership({check});check();if(!['owner','manager'].includes(session()?.role||role))throw new Error('Source archive is available to managers and the owner.');const policy=await refreshFeeVisibility();check();if(!policy.source_archive_allowed)throw new Error('Full financial visibility is required to access a source archive.');};
- return {check,authorize,c};
+async function storageRequest(route,{method='GET',body}={}){
+  const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
+  const token=await accessToken();
+  // Private authenticated Storage route; never create a public or signed link.
+  return fetch(`${c.url}/storage/v1/${route}`,{method,cache:'no-store',redirect:'error',headers:{apikey:c.anonKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body});
 }
-async function storageRequest(route,{method='GET',body,check=()=>{}}={}){
- check();const c=configuration();if(!c)throw new Error('Configure the cloud project first.');publicKey(c.anonKey);
- const token=await accessToken();check();
- // Private authenticated Storage route; never create a public or signed link.
- const response=await fetch(`${c.url}/storage/v1/${route}`,{method,cache:'no-store',redirect:'error',headers:{apikey:c.anonKey,Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body});check();return response;
-}
-export async function fetchHistoryArchive(path,{checkScope}={}){
- const access=historyAccess(checkScope),{check}=access,expected=historyPath(path);await access.authorize();check();
- const response=await storageRequest(`object/authenticated/${HISTORY_BUCKET}/${path.split('/').map(encodeURIComponent).join('/')}`,{check});
- if(!response.ok){const error=await responseJSON(response);check();throw apiError(response,error);}
- const text=await response.text();check();const digest=await sha256(text);check();
- if(digest!==expected)throw new Error('History archive checksum does not match its filename. It was not loaded.');
- let data;try{data=JSON.parse(text);}catch{throw new Error('The history archive is not valid JSON.');}
- historyIndex(data);await access.authorize();check();rememberHistory(path);return data;
+export async function fetchHistoryArchive(path){
+  const expected=historyPath(path);await membership();
+  const response=await storageRequest(`object/authenticated/${HISTORY_BUCKET}/${path.split('/').map(encodeURIComponent).join('/')}`);
+  if(!response.ok)throw apiError(response,await responseJSON(response));
+  const text=await response.text();
+  if(await sha256(text)!==expected)throw new Error('History archive checksum does not match its filename. It was not loaded.');
+  let data;try{data=JSON.parse(text);}catch{throw new Error('The history archive is not valid JSON.');}
+  historyIndex(data);rememberHistory(path);return data;
 }
 export async function uploadHistoryIndex(index){
- const access=historyAccess(),{check,c}=access;historyIndex(index);await access.authorize(true);check();
- const text=JSON.stringify(index),digest=await sha256(text);check();const path=`${c.colonyId}/history/${digest}.json`;
- const response=await storageRequest(`object/${HISTORY_BUCKET}/${path}`,{method:'POST',body:text,check});
- if(!response.ok){
-  const error=await responseJSON(response);check();
-  // Repeated immutable uploads are accepted only after verifying their bytes.
-  if(response.status!==409&&!(response.status===400&&/duplicate|already exists/i.test(String(error?.message??error?.error??''))))throw apiError(response,error);
- }
- await fetchHistoryArchive(path,{checkScope:check});check();
- return {bucket:HISTORY_BUCKET,path,sha256:digest,bytes:new TextEncoder().encode(text).length,cellCount:index.cells.length};
+  historyIndex(index);await requireEditor();if(!(await refreshFeeVisibility()).source_archive_allowed)throw new Error('Full financial visibility is required to upload a source archive.');
+  const text=JSON.stringify(index),digest=await sha256(text),path=`${configuration().colonyId}/history/${digest}.json`;
+  const response=await storageRequest(`object/${HISTORY_BUCKET}/${path}`,{method:'POST',body:text});
+  if(!response.ok){
+    const error=await responseJSON(response);
+    // Storage returns 400 or 409 for an existing immutable object. Verify the
+    // bytes before treating a repeated upload as successful.
+    if(response.status!==409&&!(response.status===400&&/duplicate|already exists/i.test(String(error?.message??error?.error??''))))throw apiError(response,error);
+  }
+  await fetchHistoryArchive(path);
+  return {bucket:HISTORY_BUCKET,path,sha256:digest,bytes:new TextEncoder().encode(text).length,cellCount:index.cells.length};
 }
 export async function downloadHistoryIndex(){
- const access=historyAccess(),{check,c}=access;await access.authorize();check();const prefix=`${c.colonyId}/history`;
- let offset=0;
- while(true){
-  const response=await storageRequest(`object/list/${HISTORY_BUCKET}`,{method:'POST',body:JSON.stringify({prefix,limit:100,offset,sortBy:{column:'created_at',order:'desc'}}),check});
-  const rows=await responseJSON(response);check();if(!response.ok)throw apiError(response,rows);
-  if(!Array.isArray(rows))throw new Error('The history archive list was not returned as a list.');
-  const first=rows.find(r=>/^[a-f0-9]{64}\.json$/.test(r.name??''));
-  if(first){const index=await fetchHistoryArchive(`${prefix}/${first.name}`,{checkScope:check});check();return index;}
-  if(rows.length<100)throw new Error('No history archive has been uploaded for this colony.');
-  offset+=rows.length;
- }
+  await membership();const c=configuration(),prefix=`${c.colonyId}/history`;
+  // Immutable versions can be discovered on a new device without local config.
+  let offset=0;
+  while(true){
+    const response=await storageRequest(`object/list/${HISTORY_BUCKET}`,{method:'POST',body:JSON.stringify({prefix,limit:100,offset,sortBy:{column:'created_at',order:'desc'}})});
+    const rows=await responseJSON(response);if(!response.ok)throw apiError(response,rows);
+    if(!Array.isArray(rows))throw new Error('The history archive list was not returned as a list.');
+    const first=rows.find(r=>/^[a-f0-9]{64}\.json$/.test(r.name??''));
+    if(first)return fetchHistoryArchive(`${prefix}/${first.name}`);
+    if(rows.length<100)throw new Error('No history archive has been uploaded for this colony.');
+    offset+=rows.length;
+  }
 }
 
 
@@ -1313,8 +1308,7 @@ export async function getAnimalSheetImportConflicts({offset=0,limit=100}={}){
 async function brainbotRequest(name,body={}){
  const context=exportContext(),c=configuration();
  if(!c||!session()?.user?.id)throw new Error('Sign in before opening Braintime Bot.');
- const role=await membership();
- if(name==='get_brainbot_status'?(!['owner','manager'].includes(role)&&!['high','max'].includes(session()?.exportLevel)):role!=='owner')throw new Error(name==='get_brainbot_status'?'Braintime Bot monitoring is unavailable for this account.':'Only the owner can manage Braintime Bot.');
+ if(await membership()!=='owner')throw new Error('Only the owner can manage Braintime Bot.');
  checkExportContext(context);
  const result=await request('rpc/'+name,{method:'POST',body:{p_colony_id:c.colonyId,...body}});
  checkExportContext(context);

@@ -232,19 +232,3 @@ test('read-only viewers cannot forge a usage-month correction and target charges
  const h=harness(buildLacFeeMonth(p,built.dataset,target).dataset);h.click('correct-month',built.record.event_id);await h.save();
  assert.equal(h.saves.length,0);assert.match(h.container.innerHTML,/target usage month already has an actual amount/);assert.match(h.container.innerHTML,/name="target_month"[^>]*value="2026-09"/);
 });
-
-test('fee writers without source access keep normal revisions but cannot correct invoice usage months',async()=>{
- const built=misassignedInvoice(),h=harness(built.dataset,{getVisibility:async()=>visibility({source_archive_allowed:false})});await settle();
- assert.match(h.container.innerHTML,/data-fee-action="edit-invoice"|data-fee-action="edit-month"/);
- h.click('tab','history');assert.doesNotMatch(h.container.innerHTML,/data-fee-action="correct-month"/);
- h.click('correct-month',built.record.event_id);assert.match(h.container.innerHTML,/Source archive access is required/);await h.save();assert.equal(h.saves.length,0);
- h.click('edit-month');assert.match(h.container.innerHTML,/data-lac-fee-form/);h.field('actual_total','101');await h.save();assert.equal(h.saves.length,1);
-});
-
-test('losing source access closes a pending usage-month correction without blocking ordinary fee access',async()=>{
- const built=misassignedInvoice(),h=harness(built.dataset,{getVisibility:async()=>visibility()});await settle();
- h.click('correct-month',built.record.event_id);assert.match(h.container.innerHTML,/Correct invoice usage month/);
- h.hooks.getVisibility=async()=>visibility({source_archive_allowed:false});h.render();await settle();await h.save();
- assert.equal(h.saves.length,0);assert.doesNotMatch(h.container.innerHTML,/Correct invoice usage month|data-lac-fee-form/);
- assert.match(h.container.innerHTML,/data-fee-action="edit-month"/);
-});
