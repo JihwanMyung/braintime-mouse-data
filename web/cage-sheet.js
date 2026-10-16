@@ -1,9 +1,9 @@
-import { planCageMove, planCageRemoval, validateCageMovementOccupancy, planMouseMove, planMouseMoveToPosition, validateMouseMoveDrafts, buildMouseMoveEvent, getMouseMoveReadDependencies } from './cage-movement.js?v=62';
+import { planCageMove, planCageRemoval, validateCageMovementOccupancy, planMouseMove, planMouseMoveToPosition, validateMouseMoveDrafts, buildMouseMoveEvent, getMouseMoveReadDependencies } from './cage-movement.js?v=63';
 import { sortRooms } from './room-order.js?v=24';
 import { projectAnimalSheet } from './animal-sheet-export.js?v=48';
 import { mouseManager, validateRecord, buildCageLocationEvent } from './model.js?v=48';
-import { lightClock, sourceListedAnimals } from './husbandry.js?v=62';
-import { cageObservations, cageSheetAnimals, ageWeeks, todayTaipei } from './cage-observations.js?v=62';
+import { lightClock, sourceListedAnimals } from './husbandry.js?v=63';
+import { cageObservations, cageSheetAnimals, ageWeeks, todayTaipei } from './cage-observations.js?v=63';
 
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const keys={mice:'mouse_sid',cages:'cage_sid',locations:'location_id'};
